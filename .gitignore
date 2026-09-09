@@ -1,0 +1,19 @@
+# Dependencias
+node_modules/
+
+# Build
+dist/
+
+# Variables de entorno (contienen secretos). Nunca subir.
+.env
+
+# Registro persistente del bot (generado en runtime)
+data/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
