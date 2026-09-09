@@ -150,15 +150,6 @@ async function main(): Promise<void> {
   bot.use(menuNavigation);
   bot.use(moderationActions);
 
-  await bot.start({
-    // Fijar la lista evita conservar una configuración previa que excluya
-    // mensajes normales de grupo del polling.
-    allowed_updates: ["message", "callback_query", "my_chat_member"],
-    onStart: (botInfo) => {
-      console.log(`🤖 ${BOT_NAME} iniciado correctamente como @${botInfo.username}`);
-    },
-  });
-
   // Graceful shutdown: forzar flush de datos antes de cerrar
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`\n${signal} recibido. Cerrando bot de forma segura...`);
@@ -180,6 +171,16 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
+  await bot.start({
+    // Fijar la lista evita conservar una configuración previa que excluya
+    // mensajes normales de grupo del polling.
+    allowed_updates: ["message", "callback_query", "my_chat_member"],
+    onStart: (botInfo) => {
+      console.log(`🤖 ${BOT_NAME} iniciado correctamente como @${botInfo.username}`);
+    },
+  });
+
 }
 
 main().catch((error) => {
