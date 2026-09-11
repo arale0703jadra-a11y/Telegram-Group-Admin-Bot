@@ -5,7 +5,9 @@ import type { MyContext } from "../types.js";
 /**
  * Tipos de estado de miembro de Telegram que se consideran administradores.
  */
-const ADMIN_STATUSES = new Set(["creator", "administrator"]);
+function isAdminStatus(status: string): boolean {
+  return status === "creator" || status === "administrator";
+}
 
 export interface AdminCheckResult {
   isAdmin: boolean;
@@ -57,10 +59,11 @@ export async function checkUserAdminOf(
   }
   try {
     const member = await ctx.api.getChatMember(chatId, userId);
-    const isAdmin = ADMIN_STATUSES.has(member.status);
+    const status = String(member.status).trim().toLowerCase();
+    const isAdmin = isAdminStatus(status);
     console.log(
       `[AUTH] userId=${userId} groupId=${chatId} ` +
-        `telegramStatus=${member.status} access=${isAdmin ? "granted" : "denied"}`,
+        `telegramStatus=${status} access=${isAdmin ? "granted" : "denied"}`,
     );
     return { isAdmin, status: member.status };
   } catch (error) {
