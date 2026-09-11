@@ -15,7 +15,7 @@ import type {
 } from "./types.js";
 import type { PersistenceStore } from "./interface.js";
 import { initialGroupData } from "./initial.js";
-import type { PromotionConfig } from "./types.js";
+import type { IllegalContentConfig, PromotionConfig } from "./types.js";
 
 /**
  * Almacenamiento PERSISTENTE en disco, un archivo JSON por grupo:
@@ -157,6 +157,41 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
       ...(isRecord(parsed.welcome) ? parsed.welcome : {}),
     },
     promotion: normalizePromotion(parsed.promotion, base.promotion),
+    illegalContent: normalizeIllegalContent(
+      parsed.illegalContent,
+      base.illegalContent,
+    ),
+  };
+}
+
+function normalizeIllegalContent(
+  raw: unknown,
+  fallback: IllegalContentConfig,
+): IllegalContentConfig {
+  if (!isRecord(raw)) {
+    return fallback;
+  }
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
+    customTerms: Array.isArray(raw.customTerms)
+      ? raw.customTerms.filter((item): item is string => typeof item === "string")
+      : fallback.customTerms,
+    suspiciousDeletes:
+      typeof raw.suspiciousDeletes === "boolean"
+        ? raw.suspiciousDeletes
+        : fallback.suspiciousDeletes,
+    highConfidenceBan:
+      typeof raw.highConfidenceBan === "boolean"
+        ? raw.highConfidenceBan
+        : fallback.highConfidenceBan,
+    highConfidenceDelete:
+      typeof raw.highConfidenceDelete === "boolean"
+        ? raw.highConfidenceDelete
+        : fallback.highConfidenceDelete,
+    events:
+      typeof raw.events === "number" && raw.events >= 0
+        ? raw.events
+        : fallback.events,
   };
 }
 

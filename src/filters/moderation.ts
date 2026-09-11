@@ -10,7 +10,6 @@ import {
 import { logEvent } from "../moderation/events.js";
 import { OWNER_ID } from "../config.js";
 import { isGroupChat } from "../utils/permissions.js";
-import { scheduleMessageDeletion } from "../utils/cleanup.js";
 import { buildPromotionMessage } from "./messages.js";
 import { detectPromotion } from "./detector.js";
 import type { MyContext } from "../types.js";
@@ -62,7 +61,7 @@ promotionModeration.on("message", async (ctx, next) => {
     detection.hasLink || detection.clearlyPromotional || detection.matches.length >= 2;
   const muteMinutes =
     data.promotion.recurrenceMuteMinutes[
-      Math.min(infraction - 1, data.promotion.recurrenceMuteMinutes.length - 1)
+      Math.min(infraction - 2, data.promotion.recurrenceMuteMinutes.length - 1)
     ] ?? 0;
 
   const warning = await warnUser(
@@ -76,7 +75,7 @@ promotionModeration.on("message", async (ctx, next) => {
     ? await deleteMessageById(ctx, chatId, ctx.message.message_id)
     : { ok: false };
   let muted = false;
-  if (shouldModerate && muteMinutes > 0) {
+  if (shouldModerate && infraction >= 2 && muteMinutes > 0) {
     muted = (await muteUser(ctx, chatId, userId, muteMinutes, ctx.from.first_name)).ok;
   }
 
@@ -87,26 +86,18 @@ promotionModeration.on("message", async (ctx, next) => {
     detail: `Promoción detectada (${detection.matches.join(", ") || "enlace"})`,
   });
 
-  try {
-    await ctx.api.sendMessage(
-      userId,
-      buildPromotionMessage(
-        data.promotion,
-        muted ? "muted" : detection.hasLink ? "link" : "warning",
-      ),
-    );
-  } catch {
-    const brief = muted
-      ? buildPromotionMessage(data.promotion, "muted")
-      : buildPromotionMessage(data.promotion, "removed");
-    const reply = await ctx.reply(brief, {
+  await ctx.reply(
+    buildPromotionMessage(
+      data.promotion,
+      muted ? "muted" : detection.hasLink ? "link" : "removed",
+    ),
+    {
       reply_markup: new InlineKeyboard().url(
-        "🔐 Abrir bot",
+        "🔐 Verifícate",
         `https://t.me/${ctx.me.username}`,
       ),
-    });
-    scheduleMessageDeletion(ctx, chatId, reply.message_id);
-  }
+    },
+  );
   if (!warning.ok) {
     console.error(`[PROMOTION] No se pudo registrar advertencia userId=${userId}`);
   }

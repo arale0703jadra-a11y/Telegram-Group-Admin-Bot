@@ -13,7 +13,7 @@ export interface PromotionDetection {
   clearlyPromotional: boolean;
 }
 
-function normalize(value: string): string {
+export function normalizeFilterTerm(value: string): string {
   return value
     .toLocaleLowerCase("es")
     .normalize("NFD")
@@ -23,7 +23,7 @@ function normalize(value: string): string {
 }
 
 function containsTerm(text: string, term: string): boolean {
-  const escaped = normalize(term).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = normalizeFilterTerm(term).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(
     `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
     "iu",
@@ -34,11 +34,25 @@ export function detectPromotion(
   text: string,
   dictionary: string[],
 ): PromotionDetection {
-  const normalized = normalize(text);
-  const matches = dictionary.filter((term) => containsTerm(normalized, term));
+  const normalized = normalizeFilterTerm(text);
+  const matches = [
+    ...new Map(
+      dictionary
+        .filter((term) => containsTerm(normalized, term))
+        .map((term) => [normalizeFilterTerm(term), term] as const),
+    ).values(),
+  ];
   const signals = new Set<PromotionSignal>();
   const add = (terms: string[], signal: PromotionSignal) => {
-    if (terms.some((term) => matches.includes(term))) signals.add(signal);
+    if (
+      terms.some((term) =>
+        matches.some(
+          (match) => normalizeFilterTerm(match) === normalizeFilterTerm(term),
+        ),
+      )
+    ) {
+      signals.add(signal);
+    }
   };
   add(["vendo", "venta", "vender", "precio", "precios", "tarifa", "tarifas", "oferta", "descuento"], "sale");
   add(["pago", "pagos", "pagar", "cobro", "cobrar", "transferencia", "paypal", "binance", "usdt", "usd"], "payment");

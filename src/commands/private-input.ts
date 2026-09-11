@@ -1,6 +1,7 @@
 import { Composer } from "grammy";
 import { isUserAdminOf } from "../utils/permissions.js";
-import { getGroupData } from "../storage/index.js";
+import { getGroupData, saveGroupData } from "../storage/index.js";
+import { normalizeFilterTerm } from "../filters/detector.js";
 import {
   getTrackedUser,
   getUserCard,
@@ -9,6 +10,8 @@ import {
 } from "../utils/users.js";
 import {
   buildBanConfirmPanel,
+  buildFiltersPanel,
+  buildIllegalPanel,
   buildMuteMenuPanel,
   buildUserCardPanel,
   buildUserSearchResultsPanel,
@@ -55,6 +58,52 @@ privateInput.on("message:text", async (ctx) => {
   }
 
   try {
+    if (pending.kind === "illegalAdd") {
+      const term = text.replace(/\s+/g, " ").trim();
+      const normalized = normalizeFilterTerm(term);
+      const data = await getGroupData(pending.groupId);
+      if (!normalized) {
+        await ctx.reply("❌ Escribe un término válido.");
+        return;
+      }
+      if (data.illegalContent.customTerms.some((item) => normalizeFilterTerm(item) === normalized)) {
+        await ctx.reply("ℹ️ Esa palabra personalizada ya existe.");
+        return;
+      }
+      data.illegalContent.customTerms.push(term);
+      await saveGroupData(pending.groupId, data);
+      ctx.session.user.pendingAction = undefined;
+      await ctx.reply("✅ Palabra personalizada agregada.");
+      await sendPanel(ctx, buildIllegalPanel(data.illegalContent, ctx.session.user.selectedGroupTitle));
+      return;
+    }
+    if (pending.kind === "filterAdd") {
+      const term = text.replace(/\s+/g, " ").trim();
+      const normalized = normalizeFilterTerm(term);
+      if (!normalized) {
+        await ctx.reply("❌ Escribe una palabra o frase válida.");
+        return;
+      }
+      const data = await getGroupData(pending.groupId);
+      const exists = data.promotion.dictionary.some(
+        (item) => normalizeFilterTerm(item) === normalized,
+      );
+      if (exists) {
+        await ctx.reply(`ℹ️ El filtro "${term}" ya existe.`);
+        return;
+      }
+      data.promotion.dictionary.push(term);
+      await saveGroupData(pending.groupId, data);
+      ctx.session.user.pendingAction = undefined;
+      await ctx.reply(
+        `✅ Filtro agregado\n\n"${term}"\n\nLa palabra ya forma parte de los filtros de este grupo.`,
+      );
+      await sendPanel(
+        ctx,
+        buildFiltersPanel(data.promotion, ctx.session.user.selectedGroupTitle),
+      );
+      return;
+    }
     if (pending.kind === "muteMinutes") {
       const handled = await handleMuteMinutes(
         ctx,

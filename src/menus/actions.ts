@@ -1,6 +1,6 @@
 import { Composer, InlineKeyboard } from "grammy";
 import { isUserAdminOf } from "../utils/permissions.js";
-import { getGroupData } from "../storage/index.js";
+import { getGroupData, saveGroupData } from "../storage/index.js";
 import {
   banUser,
   cleanRecentMessages,
@@ -18,6 +18,14 @@ import {
   buildBanConfirmPanel,
   buildCleanupPanel,
   buildDeleteHelpPanel,
+  buildFilterConfirmPanel,
+  buildFilterListPanel,
+  buildFiltersPanel,
+  buildIllegalCategoriesPanel,
+  buildIllegalConfirmPanel,
+  buildIllegalInfoPanel,
+  buildIllegalPanel,
+  buildIllegalTermsPanel,
   buildMainPanel,
   buildMuteMenuPanel,
   buildPromptPanel,
@@ -26,6 +34,7 @@ import {
   buildUserCardPanel,
   buildUsersPanel,
   buildViewWarningsPanel,
+  FilterAction,
   buildWarningsPanel,
   ModAction,
 } from "./panels.js";
@@ -44,12 +53,213 @@ export const moderationActions = new Composer<MyContext>();
 
 moderationActions.on("callback_query:data", async (ctx) => {
   const parts = ctx.callbackQuery.data.split(":");
-  if (parts[0] !== "ma") {
+  if (parts[0] !== "ma" && parts[0] !== "fa") {
     return; // Callback ajeno: lo gestiona otro controlador.
   }
 
   const kind = parts[1];
   if (!kind) {
+    return;
+  }
+
+  const groupId = ctx.session.user.selectedGroupId;
+  if (typeof groupId !== "number" || !Number.isInteger(groupId)) {
+    await ctx.answerCallbackQuery(NO_GROUP_SELECTED_MESSAGE);
+    return;
+  }
+  const isAdmin = await isUserAdminOf(ctx, groupId);
+  if (!isAdmin) {
+    await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
+    return;
+  }
+
+  if (parts[0] === "fa") {
+    const title = ctx.session.user.selectedGroupTitle;
+    if (kind === "add") {
+      ctx.session.user.pendingAction = { kind: "filterAdd", groupId };
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildPromptPanel(
+          "✏️ *AGREGAR FILTRO*\n\nEscribe la palabra o frase que quieres agregar.",
+        ),
+      );
+      return;
+    }
+    if (kind === "illegal") {
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildIllegalCategoriesPanel(title));
+      return;
+    }
+    if (kind === "illegal_list") {
+      const page = Number(parts[2]);
+      if (!Number.isInteger(page) || page < 0) {
+        await ctx.answerCallbackQuery("Página no válida.");
+        return;
+      }
+      const data = await getGroupData(groupId);
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildIllegalTermsPanel(data.illegalContent.customTerms, page, title),
+      );
+      return;
+    }
+    if (kind === "illegal_delete") {
+      const index = Number(parts[2]);
+      const page = Number(parts[3]);
+      const data = await getGroupData(groupId);
+      const term = data.illegalContent.customTerms[index];
+      if (!Number.isInteger(index) || !Number.isInteger(page) || page < 0 || !term) {
+        await ctx.answerCallbackQuery("Palabra no válida.");
+        return;
+      }
+      ctx.session.user.pendingAction = {
+        kind: "illegalDelete",
+        groupId,
+        index,
+        page,
+      };
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildIllegalConfirmPanel(term, title));
+      return;
+    }
+    if (kind === "illegal_confirm") {
+      const pending = ctx.session.user.pendingAction;
+      if (!pending || pending.kind !== "illegalDelete" || pending.groupId !== groupId) {
+        await ctx.answerCallbackQuery("La operación ya no está disponible.");
+        return;
+      }
+      const data = await getGroupData(groupId);
+      if (!data.illegalContent.customTerms[pending.index]) {
+        await ctx.answerCallbackQuery("La palabra ya no existe.");
+        return;
+      }
+      data.illegalContent.customTerms.splice(pending.index, 1);
+      await saveGroupData(groupId, data);
+      ctx.session.user.pendingAction = undefined;
+      await ctx.answerCallbackQuery("✅ Palabra eliminada.");
+      await renderPanel(
+        ctx,
+        buildIllegalTermsPanel(data.illegalContent.customTerms, pending.page, title),
+      );
+      return;
+    }
+    if (kind === "illegal_config" || kind === "illegal_events") {
+      const data = await getGroupData(groupId);
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildIllegalInfoPanel(
+          data.illegalContent,
+          kind === "illegal_config" ? "config" : "events",
+          title,
+        ),
+      );
+      return;
+    }
+    if (kind === "illegal_toggle") {
+      const data = await getGroupData(groupId);
+      data.illegalContent.enabled = !data.illegalContent.enabled;
+      await saveGroupData(groupId, data);
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildIllegalPanel(data.illegalContent, title));
+      return;
+    }
+    if (kind === "illegal_add") {
+      ctx.session.user.pendingAction = { kind: "illegalAdd", groupId };
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildPromptPanel("✏️ Escribe la palabra personalizada que quieres agregar."));
+      return;
+    }
+    if (kind === "cancel") {
+      ctx.session.user.pendingAction = undefined;
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildFiltersPanel((await getGroupData(groupId)).promotion, title));
+      return;
+    }
+    if (kind === "toggle") {
+      const data = await getGroupData(groupId);
+      data.promotion.enabled = !data.promotion.enabled;
+      await saveGroupData(groupId, data);
+      await ctx.answerCallbackQuery(
+        data.promotion.enabled ? "🟢 Filtros activados." : "🔴 Filtros desactivados.",
+      );
+      await renderPanel(ctx, buildFiltersPanel(data.promotion, title));
+      return;
+    }
+    if (kind === "view") {
+      const page = Number(parts[2]);
+      if (!Number.isInteger(page) || page < 0) {
+        await ctx.answerCallbackQuery("Página no válida.");
+        return;
+      }
+      const data = await getGroupData(groupId);
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildFilterListPanel(data.promotion, page, "view", title));
+      return;
+    }
+    if (kind === "deletepage") {
+      const page = Number(parts[2]);
+      if (!Number.isInteger(page) || page < 0) {
+        await ctx.answerCallbackQuery("Página no válida.");
+        return;
+      }
+      const data = await getGroupData(groupId);
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildFilterListPanel(data.promotion, page, "delete", title));
+      return;
+    }
+    if (kind === "delete") {
+      const index = Number(parts[2]);
+      const page = Number(parts[3]);
+      const data = await getGroupData(groupId);
+      const term = data.promotion.dictionary[index];
+      if (
+        !Number.isInteger(index) ||
+        !Number.isInteger(page) ||
+        page < 0 ||
+        !term
+      ) {
+        await ctx.answerCallbackQuery("Filtro no válido.");
+        return;
+      }
+      ctx.session.user.pendingAction = {
+        kind: "filterDelete",
+        groupId,
+        index,
+        page,
+      };
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildFilterConfirmPanel(term, title));
+      return;
+    }
+    if (kind === "confirm") {
+      const pending = ctx.session.user.pendingAction;
+      if (
+        !pending ||
+        pending.kind !== "filterDelete" ||
+        pending.groupId !== groupId
+      ) {
+        await ctx.answerCallbackQuery("La operación ya no está disponible.");
+        return;
+      }
+      const data = await getGroupData(groupId);
+      if (!data.promotion.dictionary[pending.index]) {
+        ctx.session.user.pendingAction = undefined;
+        await ctx.answerCallbackQuery("El filtro ya no existe.");
+        await renderPanel(ctx, buildFiltersPanel(data.promotion, title));
+        return;
+      }
+      const [removed] = data.promotion.dictionary.splice(pending.index, 1);
+      await saveGroupData(groupId, data);
+      ctx.session.user.pendingAction = undefined;
+      await ctx.answerCallbackQuery("✅ Filtro eliminado.");
+      await renderPanel(ctx, buildFilterListPanel(data.promotion, pending.page, "delete", title));
+      console.log(`[FILTER] removed groupId=${groupId} term=${JSON.stringify(removed)}`);
+      return;
+    }
+    await ctx.answerCallbackQuery("❌ Acción de filtros no reconocida.");
     return;
   }
 
@@ -75,6 +285,20 @@ moderationActions.on("callback_query:data", async (ctx) => {
     ctx.session.user.pendingAction = undefined;
     await ctx.answerCallbackQuery();
     const title = ctx.session.user.selectedGroupTitle;
+    if (pending?.kind === "illegalAdd" || pending?.kind === "illegalDelete") {
+      await renderPanel(
+        ctx,
+        buildIllegalPanel((await getGroupData(groupId)).illegalContent, title),
+      );
+      return;
+    }
+    if (
+      pending?.kind === "filterAdd" ||
+      pending?.kind === "filterDelete"
+    ) {
+      await renderPanel(ctx, buildFiltersPanel((await getGroupData(groupId)).promotion, title));
+      return;
+    }
     if (
       pending?.kind === "search" &&
       Number.isInteger(pending.groupId)
@@ -90,31 +314,6 @@ moderationActions.on("callback_query:data", async (ctx) => {
       return;
     }
     await renderPanel(ctx, buildMainPanel(title));
-    return;
-  }
-
-  const groupId = ctx.session.user.selectedGroupId;
-  if (typeof groupId !== "number" || !Number.isInteger(groupId)) {
-    if (searchCallbackAnswered) {
-      await ctx.reply(NO_GROUP_SELECTED_MESSAGE);
-    } else {
-      await ctx.answerCallbackQuery(NO_GROUP_SELECTED_MESSAGE);
-    }
-    return;
-  }
-  if (searchCallbackAnswered) {
-    console.log("[USER SEARCH 2] before admin verification");
-  }
-  const isAdmin = await isUserAdminOf(ctx, groupId);
-  if (searchCallbackAnswered) {
-    console.log(`[USER SEARCH 3] after admin verification isAdmin=${isAdmin}`);
-  }
-  if (!isAdmin) {
-    if (searchCallbackAnswered) {
-      await ctx.reply(NO_ADMIN_MESSAGE);
-    } else {
-      await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
-    }
     return;
   }
 

@@ -17,7 +17,8 @@ export type ModerationType =
   | "BAN"
   | "UNBAN"
   | "DELETE"
-  | "CLEAN";
+  | "CLEAN"
+  | "ILLEGAL";
 
 /**
  * Registro de una acción de moderación realizada por un administrador.
@@ -126,6 +127,17 @@ export interface PromotionConfig {
   infractions: Record<string, number>;
 }
 
+export type IllegalConfidence = "weak" | "suspicious" | "high";
+
+export interface IllegalContentConfig {
+  enabled: boolean;
+  customTerms: string[];
+  suspiciousDeletes: boolean;
+  highConfidenceBan: boolean;
+  highConfidenceDelete: boolean;
+  events: number;
+}
+
 /**
  * Datos persistidos de moderación de un grupo (key = chat_id).
  */
@@ -140,4 +152,5 @@ export interface GroupData {
   events: ModerationEvent[];
   welcome: WelcomeConfig;
   promotion: PromotionConfig;
+  illegalContent: IllegalContentConfig;
 }

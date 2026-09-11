@@ -1,24 +1,27 @@
-import type { GroupData, PromotionConfig } from "./types.js";
+import type { GroupData, IllegalContentConfig, PromotionConfig } from "./types.js";
 
 export const PROMOTION_DICTIONARY = [
   "vendo", "venta", "vender", "vendo contenido", "contenido",
   "contenido privado", "contenido exclusivo", "contenido premium",
   "contenido personalizado", "material", "material privado",
-  "material exclusivo", "pack", "packs", "paquete", "catalogo",
-  "menu", "disponible", "disponibilidad", "precio", "precios",
-  "tarifa", "tarifas", "cuesta", "cuanto", "pago", "pagos", "pagar",
-  "cobro", "cobrar", "transferencia", "paypal", "binance", "usdt",
-  "dolares", "usd", "barato", "privado", "por privado", "escribeme",
-  "hablame", "dm", "inbox", "directo", "contactame", "interesados",
-  "interesada", "informacion", "info", "consulta", "reservas",
-  "reservar", "fotos", "fotos privadas", "videos", "videos privados",
-  "album", "contenido +18", "contenido 18+", "contenido adulto",
-  "adultos", "desnudos", "desnudo", "nudes", "nude", "pic", "pics",
-  "video privado", "foto privada", "personalizado", "personalizada",
-  "llamada", "videollamada", "llamada privada", "videollamada privada",
-  "sesion", "sesion privada", "atencion privada", "novia virtual",
-  "compania virtual", "chat privado", "chat exclusivo", "sexting",
-  "promocion", "oferta", "descuento", "promocion especial",
+  "material exclusivo", "pack", "packs", "paquete", "catálogo",
+  "catalogo", "menú", "menu", "disponible", "disponibilidad",
+  "precio", "precios", "tarifa", "tarifas", "cuesta", "cuánto",
+  "cuanto", "pago", "pagos", "pagar", "cobro", "cobrar",
+  "transferencia", "paypal", "binance", "usdt", "dólares", "dolares",
+  "usd", "barato", "privado", "por privado", "escríbeme", "escribeme",
+  "háblame", "hablame", "dm", "inbox", "directo", "contáctame",
+  "contactame", "interesados", "interesada", "información", "informacion",
+  "info", "consulta", "reservas", "reservar", "fotos", "fotos privadas",
+  "videos", "videos privados", "álbum", "album", "contenido +18",
+  "contenido 18+", "contenido adulto", "adultos", "desnudos", "desnudo",
+  "nudes", "nude", "pic", "pics", "video privado", "foto privada",
+  "personalizado", "personalizada", "llamada", "videollamada",
+  "llamada privada", "videollamada privada", "sesión", "sesion",
+  "sesión privada", "atención privada", "atencion privada", "novia virtual",
+  "compañía virtual", "compania virtual", "chat privado", "chat exclusivo",
+  "sexting", "promoción", "promocion", "oferta", "descuento",
+  "promoción especial",
 ];
 
 export const DEFAULT_PROMOTION_MESSAGES = {
@@ -43,6 +46,27 @@ export function initialPromotionConfig(): PromotionConfig {
   };
 }
 
+export const ILLEGAL_PROTECTED_CATEGORIES = [
+  "Explotación sexual de menores",
+  "Abuso sexual infantil",
+  "Grooming/captación",
+  "Zoofilia/bestialidad",
+  "Intercambio/solicitud de material ilegal",
+  "Venta de material ilegal",
+  "Otras señales de contenido sexual ilegal",
+];
+
+export function initialIllegalContentConfig(): IllegalContentConfig {
+  return {
+    enabled: true,
+    customTerms: [],
+    suspiciousDeletes: true,
+    highConfidenceBan: true,
+    highConfidenceDelete: true,
+    events: 0,
+  };
+}
+
 /**
  * Estado inicial de un grupo recién registrado.
  * Cada grupo (chat_id) parte de estos valores por defecto.
@@ -59,5 +83,6 @@ export function initialGroupData(): GroupData {
     events: [],
     welcome: { enabled: true, message: "" },
     promotion: initialPromotionConfig(),
+    illegalContent: initialIllegalContentConfig(),
   };
 }

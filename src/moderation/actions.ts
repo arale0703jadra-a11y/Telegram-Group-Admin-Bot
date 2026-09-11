@@ -434,17 +434,29 @@ export async function banUser(
   }
 
   const member = await getMemberSafely(ctx, chatId, userId);
-  if (OWNER_ID === userId || (member && isProtectedMember(member))) {
+  if (!member) {
+    await logEvent(ctx, chatId, "BAN", {
+      targetId: userId,
+      targetName: name,
+      result: "error",
+      detail: "Autoban omitido: no se pudo verificar el estado actual del usuario.",
+    });
+    return { ok: false, error: "No se pudo verificar el estado del usuario." };
+  }
+  if (OWNER_ID === userId || isProtectedMember(member)) {
     return { ok: false, error: "No se puede banear al propietario o a un administrador." };
   }
 
   try {
     await ctx.api.banChatMember(chatId, userId);
-  } catch {
+  } catch (error) {
+    const technicalError =
+      error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 300) : "unknown";
     await logEvent(ctx, chatId, "BAN", {
       targetId: userId,
       targetName: name,
       result: "error",
+      detail: `Telegram rechazó el ban: ${technicalError}`,
     });
     return { ok: false, error: "No se pudo banear al usuario." };
   }

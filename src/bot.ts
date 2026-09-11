@@ -6,6 +6,7 @@ import { menuNavigation } from "./menus/index.js";
 import { moderationActions } from "./menus/actions.js";
 import { isGroupChat, isUserAdmin } from "./utils/permissions.js";
 import { promotionModeration } from "./filters/moderation.js";
+import { illegalModeration } from "./filters/illegal-moderation.js";
 import { getGroupData, saveGroupData, store } from "./storage/index.js";
 import {
   markUserAsAdmin,
@@ -121,12 +122,6 @@ async function main(): Promise<void> {
             lastSeen: now,
           };
         }
-        if (Object.keys(data.indexedUsers).length > 300) {
-          const oldest = Object.keys(data.indexedUsers)[0];
-          if (oldest) {
-            delete data.indexedUsers[oldest];
-          }
-        }
       }
 
       data.recentMessages.push(ctx.message.message_id);
@@ -144,6 +139,7 @@ async function main(): Promise<void> {
     await next();
   });
 
+  bot.use(illegalModeration);
   bot.use(promotionModeration);
   registerCommands(bot);
 

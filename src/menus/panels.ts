@@ -1,6 +1,14 @@
 import { InlineKeyboard } from "grammy";
 import type { AdministrableGroup } from "../utils/groups.js";
-import type { IndexedUser, WarningEntry } from "../storage/types.js";
+import {
+  ILLEGAL_PROTECTED_CATEGORIES,
+} from "../storage/initial.js";
+import type {
+  IllegalContentConfig,
+  IndexedUser,
+  PromotionConfig,
+  WarningEntry,
+} from "../storage/types.js";
 import type { ResolvedUser, UserCardData } from "../utils/users.js";
 import type { MyContext } from "../types.js";
 import { getGroupData } from "../storage/index.js";
@@ -62,6 +70,27 @@ export const ModAction = {
   ban: (userId: number): string => `${MA}:ban:${userId}`,
   unban: (userId: number): string => `${MA}:unban:${userId}`,
   cleanup: (count: number): string => `${MA}:cleanup:${count}`,
+};
+
+const FILTER_PREFIX = "fa";
+export const FilterAction = {
+  add: `${FILTER_PREFIX}:add`,
+  cancel: `${FILTER_PREFIX}:cancel`,
+  deletePage: (page: number): string => `${FILTER_PREFIX}:deletepage:${page}`,
+  delete: (index: number, page: number): string =>
+    `${FILTER_PREFIX}:delete:${index}:${page}`,
+  confirm: `${FILTER_PREFIX}:confirm`,
+  viewPage: (page: number): string => `${FILTER_PREFIX}:view:${page}`,
+  toggle: `${FILTER_PREFIX}:toggle`,
+  illegal: `${FILTER_PREFIX}:illegal`,
+  illegalToggle: `${FILTER_PREFIX}:illegal_toggle`,
+  illegalAdd: `${FILTER_PREFIX}:illegal_add`,
+  illegalList: (page: number): string => `${FILTER_PREFIX}:illegal_list:${page}`,
+  illegalDelete: (index: number, page: number): string =>
+    `${FILTER_PREFIX}:illegal_delete:${index}:${page}`,
+  illegalConfirm: `${FILTER_PREFIX}:illegal_confirm`,
+  illegalConfig: `${FILTER_PREFIX}:illegal_config`,
+  illegalEvents: `${FILTER_PREFIX}:illegal_events`,
 };
 
 const PANEL_TITLE = "🛡️ *PANEL DE ADMINISTRACIÓN*";
@@ -137,11 +166,16 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Filtros",
     description: "Control de palabras y frases prohibidas.",
     items: [
-      { id: "ver", label: "📋 Ver filtros" },
-      { id: "agregar", label: "➕ Agregar palabra/frase" },
-      { id: "eliminar", label: "➖ Eliminar palabra/frase" },
+      { id: "ver", label: "📋 Ver filtros", cb: FilterAction.viewPage(0) },
+      { id: "agregar", label: "➕ Agregar palabra/frase", cb: FilterAction.add },
+      {
+        id: "eliminar",
+        label: "🗑️ Eliminar palabra/frase",
+        cb: FilterAction.deletePage(0),
+      },
       { id: "accion", label: "⚙️ Configurar acción" },
-      { id: "activar", label: "🔔 Activar/desactivar filtros" },
+      { id: "activar", label: "🔔 Activar/desactivar filtros", cb: FilterAction.toggle },
+      { id: "ilegal", label: "🔴 Filtro de contenido ilegal", cb: FilterAction.illegal },
     ],
   },
   antispam: {
@@ -324,6 +358,214 @@ export function buildGroupPickerPanel(groups: AdministrableGroup[]): Panel {
 export function buildPromptPanel(text: string): Panel {
   const keyboard = new InlineKeyboard().text("❌ Cancelar", ModAction.cancel);
   return { text, keyboard };
+}
+
+export function buildFiltersPanel(
+  config: PromotionConfig,
+  groupTitle?: string,
+): Panel {
+  const enabled = config.enabled;
+  const keyboard = new InlineKeyboard()
+    .text("➕ Agregar palabra/frase", FilterAction.add)
+    .row()
+    .text("🗑️ Eliminar palabra/frase", FilterAction.deletePage(0))
+    .row()
+    .text("📋 Ver palabras", FilterAction.viewPage(0))
+    .row()
+    .text(
+      enabled ? "🔴 Desactivar filtros" : "🟢 Activar filtros",
+      FilterAction.toggle,
+    )
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🚫 *FILTROS*\n\n" +
+      `Estado: ${enabled ? "🟢 ACTIVADOS" : "🔴 DESACTIVADOS"}\n` +
+      `Palabras configuradas: ${config.dictionary.length}`,
+    keyboard,
+  };
+}
+
+export function buildFilterListPanel(
+  config: PromotionConfig,
+  page: number,
+  mode: "view" | "delete",
+  groupTitle?: string,
+): Panel {
+  const pageSize = 10;
+  const pageCount = Math.max(1, Math.ceil(config.dictionary.length / pageSize));
+  const currentPage = Math.min(Math.max(page, 0), pageCount - 1);
+  const start = currentPage * pageSize;
+  const visible = config.dictionary.slice(start, start + pageSize);
+  const keyboard = new InlineKeyboard();
+
+  if (mode === "delete") {
+    visible.forEach((term, offset) => {
+      keyboard
+        .text(`🗑️ ${term}`, FilterAction.delete(start + offset, currentPage))
+        .row();
+    });
+  }
+
+  if (currentPage > 0) {
+    keyboard.text(
+      "◀️ Anterior",
+      mode === "view"
+        ? FilterAction.viewPage(currentPage - 1)
+        : FilterAction.deletePage(currentPage - 1),
+    );
+  }
+  if (currentPage < pageCount - 1) {
+    keyboard.text(
+      "Siguiente ▶️",
+      mode === "view"
+        ? FilterAction.viewPage(currentPage + 1)
+        : FilterAction.deletePage(currentPage + 1),
+    );
+  }
+  if (pageCount > 1) {
+    keyboard.row();
+  }
+  keyboard.text("⬅️ Volver", MenuAction.sub("filtros"));
+
+  const list =
+    visible.length === 0
+      ? "No hay palabras configuradas."
+      : visible.map((term, offset) => `${start + offset + 1}. ${term}`).join("\n");
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      `${mode === "view" ? "📋 *PALABRAS CONFIGURADAS*" : "🗑️ *ELIMINAR FILTRO*"}\n\n` +
+      `Página ${currentPage + 1}/${pageCount}\n${list}`,
+    keyboard,
+  };
+}
+
+export function buildFilterConfirmPanel(
+  term: string,
+  groupTitle?: string,
+): Panel {
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🗑️ *¿Eliminar este filtro?*\n\n" +
+      `"${term}"`,
+    keyboard: new InlineKeyboard()
+      .text("✅ Sí, eliminar", FilterAction.confirm)
+      .text("❌ Cancelar", FilterAction.cancel),
+  };
+}
+
+export function buildIllegalPanel(
+  config: IllegalContentConfig,
+  groupTitle?: string,
+): Panel {
+  const keyboard = new InlineKeyboard()
+    .text(
+      config.enabled ? "🔴 Desactivar filtro ilegal" : "🟢 Activar filtro ilegal",
+      FilterAction.illegalToggle,
+    )
+    .row()
+    .text("🔒 Lista protegida del sistema", FilterAction.illegal)
+    .row()
+    .text("📝 Palabras personalizadas", FilterAction.illegalList(0))
+    .row()
+    .text("➕ Agregar palabra personalizada", FilterAction.illegalAdd)
+    .row()
+    .text("⚙️ Configuración", FilterAction.illegalConfig)
+    .row()
+    .text("📊 Eventos detectados", FilterAction.illegalEvents)
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🔴 *FILTRO DE CONTENIDO ILEGAL*\n\n" +
+      `Estado: ${config.enabled ? "🟢 ACTIVADO" : "🔴 DESACTIVADO"}\n` +
+      `🔒 Reglas protegidas: ${ILLEGAL_PROTECTED_CATEGORIES.length} categorías\n` +
+      `📝 Palabras personalizadas: ${config.customTerms.length}\n` +
+      `📊 Eventos detectados: ${config.events}`,
+    keyboard,
+  };
+}
+
+export function buildIllegalCategoriesPanel(groupTitle?: string): Panel {
+  const keyboard = new InlineKeyboard().text("⬅️ Volver", FilterAction.illegal);
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🔒 *LISTA PROTEGIDA DEL SISTEMA*\n\n" +
+      ILLEGAL_PROTECTED_CATEGORIES.map((category) => `• ${category}: protegida`).join("\n"),
+    keyboard,
+  };
+}
+
+export function buildIllegalTermsPanel(
+  terms: string[],
+  page: number,
+  groupTitle?: string,
+): Panel {
+  const pageSize = 8;
+  const pageCount = Math.max(1, Math.ceil(terms.length / pageSize));
+  const currentPage = Math.min(Math.max(page, 0), pageCount - 1);
+  const start = currentPage * pageSize;
+  const visible = terms.slice(start, start + pageSize);
+  const keyboard = new InlineKeyboard();
+  visible.forEach((term, offset) => {
+    keyboard
+      .text(`🗑️ ${term}`, FilterAction.illegalDelete(start + offset, currentPage))
+      .row();
+  });
+  if (currentPage > 0) {
+    keyboard.text("◀️ Anterior", FilterAction.illegalList(currentPage - 1));
+  }
+  if (currentPage < pageCount - 1) {
+    keyboard.text("Siguiente ▶️", FilterAction.illegalList(currentPage + 1));
+  }
+  if (pageCount > 1) {
+    keyboard.row();
+  }
+  keyboard.text("⬅️ Volver", FilterAction.illegal);
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "📝 *PALABRAS PERSONALIZADAS*\n\n" +
+      `Página ${currentPage + 1}/${pageCount}\n` +
+      (visible.length
+        ? visible.map((term, index) => `${start + index + 1}. ${term}`).join("\n")
+        : "No hay palabras personalizadas."),
+    keyboard,
+  };
+}
+
+export function buildIllegalConfirmPanel(
+  term: string,
+  groupTitle?: string,
+): Panel {
+  return {
+    text: `${formatGroupHeader(groupTitle)}\n\n🗑️ *¿Eliminar esta palabra personalizada?*\n\n"${term}"`,
+    keyboard: new InlineKeyboard()
+      .text("✅ Sí, eliminar", FilterAction.illegalConfirm)
+      .text("❌ Cancelar", FilterAction.illegalList(0)),
+  };
+}
+
+export function buildIllegalInfoPanel(
+  config: IllegalContentConfig,
+  kind: "config" | "events",
+  groupTitle?: string,
+): Panel {
+  const text =
+    kind === "config"
+      ? "⚙️ *CONFIGURACIÓN*\n\n🔴 Alta confianza: eliminar y ban automático\n🟠 Sospechoso: eliminar y registrar, sin ban"
+      : `📊 *EVENTOS DETECTADOS*\n\nEventos registrados: ${config.events}\n\nEl contenido original no se almacena.`;
+  return {
+    text: `${formatGroupHeader(groupTitle)}\n\n${text}`,
+    keyboard: new InlineKeyboard().text("⬅️ Volver", FilterAction.illegal),
+  };
 }
 
 /**

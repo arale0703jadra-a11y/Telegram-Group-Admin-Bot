@@ -22,6 +22,22 @@ export type PickAction = "search" | "warn" | "mute" | "unmute" | "ban";
 
 export type PendingAction =
   | { kind: "search"; groupId: number; messageId?: number }
+  | { kind: "filterAdd"; groupId: number; messageId?: number }
+  | { kind: "illegalAdd"; groupId: number; messageId?: number }
+  | {
+      kind: "illegalDelete";
+      groupId: number;
+      index: number;
+      page: number;
+      messageId?: number;
+    }
+  | {
+      kind: "filterDelete";
+      groupId: number;
+      index: number;
+      page: number;
+      messageId?: number;
+    }
   | { kind: "pick"; action: PickAction; groupId: number; messageId?: number }
   | { kind: "muteMinutes"; userId: number; groupId: number; messageId?: number }
   | {
