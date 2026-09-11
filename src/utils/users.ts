@@ -10,6 +10,8 @@ export interface ResolvedUser {
   name?: string;
   username?: string;
   lastSeen?: number;
+  joinedAt?: number;
+  lastActivityType?: "message" | "join" | "other";
 }
 
 export interface UserCardData {
@@ -25,6 +27,7 @@ export interface UserCardData {
   canMute: boolean;
   canBan: boolean;
   isProtected: boolean;
+  inactivityEligible?: boolean;
   lastSeen?: number;
 }
 
@@ -111,6 +114,8 @@ function toResolvedUser(user: {
   name?: string;
   username?: string;
   lastSeen?: number;
+  joinedAt?: number;
+  lastActivityType?: "message" | "join" | "other";
 }): ResolvedUser {
   return {
     id: user.id,
@@ -119,6 +124,8 @@ function toResolvedUser(user: {
     name: user.name,
     username: user.username,
     lastSeen: user.lastSeen,
+    joinedAt: user.joinedAt,
+    lastActivityType: user.lastActivityType,
   };
 }
 
@@ -127,7 +134,7 @@ function toResolvedUser(user: {
  * o un identificador de respaldo si no está indexado.
  */
 export function getTrackedUser(
-  data: { indexedUsers: Record<string, { id: number; firstName?: string; lastName?: string; name?: string; username?: string; lastSeen?: number }> },
+  data: { indexedUsers: Record<string, { id: number; firstName?: string; lastName?: string; name?: string; username?: string; lastSeen?: number; joinedAt?: number; lastActivityType?: "message" | "join" | "other" }> },
   userId: number,
 ): ResolvedUser {
   const tracked = data.indexedUsers[String(userId)];
@@ -187,6 +194,7 @@ export async function getUserCard(
     canBan: !banned && (!member || member.status === "member" || member.status === "restricted"),
     isProtected: member ? isProtectedMember(member) : false,
     lastSeen: user.lastSeen,
+    inactivityEligible: false,
   };
 }
 

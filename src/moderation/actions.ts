@@ -99,6 +99,14 @@ export function isProtectedMember(member: ChatMember): boolean {
   return member.status === "creator" || member.status === "administrator";
 }
 
+/**
+ * Solo estos estados confirman que el objetivo sigue siendo un miembro
+ * normal verificable del grupo.
+ */
+export function isVerifiableMember(member: ChatMember): boolean {
+  return member.status === "member" || member.status === "restricted";
+}
+
 function isEpochNowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -117,10 +125,16 @@ export async function warnUser(
 ): Promise<ActionResult> {
   const name = targetName ?? String(userId);
   const member = await getMemberSafely(ctx, chatId, userId);
-  if (OWNER_ID === userId || (member && isProtectedMember(member))) {
+  if (
+    !member ||
+    member.user.is_bot ||
+    !isVerifiableMember(member) ||
+    OWNER_ID === userId ||
+    isProtectedMember(member)
+  ) {
     return {
       ok: false,
-      error: "No se puede advertir al propietario o a un administrador.",
+      error: "No se puede advertir a un usuario no verificable o protegido.",
     };
   }
   try {
@@ -285,7 +299,12 @@ export async function muteUser(
   if (!member) {
     return { ok: false, error: "No encuentro al usuario en el grupo." };
   }
-  if (OWNER_ID === userId || isProtectedMember(member)) {
+  if (
+    member.user.is_bot ||
+    !isVerifiableMember(member) ||
+    OWNER_ID === userId ||
+    isProtectedMember(member)
+  ) {
     return { ok: false, error: "No se puede silenciar a un administrador o al propietario." };
   }
 
@@ -443,7 +462,18 @@ export async function banUser(
     });
     return { ok: false, error: "No se pudo verificar el estado del usuario." };
   }
-  if (OWNER_ID === userId || isProtectedMember(member)) {
+  if (
+    member.user.is_bot ||
+    !isVerifiableMember(member) ||
+    OWNER_ID === userId ||
+    isProtectedMember(member)
+  ) {
+    await logEvent(ctx, chatId, "BAN", {
+      targetId: userId,
+      targetName: name,
+      result: "error",
+      detail: "Autoban omitido: propietario o administrador protegido.",
+    });
     return { ok: false, error: "No se puede banear al propietario o a un administrador." };
   }
 

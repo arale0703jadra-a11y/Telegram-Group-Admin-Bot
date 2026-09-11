@@ -1,4 +1,4 @@
-import type { GroupData, IllegalContentConfig, PromotionConfig } from "./types.js";
+import type { AntiSpamConfig, GroupData, IllegalContentConfig, InactivityConfig, PromotionConfig } from "./types.js";
 
 export const PROMOTION_DICTIONARY = [
   "vendo", "venta", "vender", "vendo contenido", "contenido",
@@ -67,6 +67,21 @@ export function initialIllegalContentConfig(): IllegalContentConfig {
   };
 }
 
+export function initialAntiSpamConfig(): AntiSpamConfig {
+  return {
+    enabled: true,
+    maxMentionsPerMessage: 5,
+    blockLinks: true,
+    detectRepeatedMessages: true,
+    detectAutomatedBehavior: true,
+    infractions: {},
+  };
+}
+
+export function initialInactivityConfig(): InactivityConfig {
+  return { enabled: false, inactivityDays: 30 };
+}
+
 /**
  * Estado inicial de un grupo recién registrado.
  * Cada grupo (chat_id) parte de estos valores por defecto.
@@ -84,5 +99,7 @@ export function initialGroupData(): GroupData {
     welcome: { enabled: true, message: "" },
     promotion: initialPromotionConfig(),
     illegalContent: initialIllegalContentConfig(),
+    antiSpam: initialAntiSpamConfig(),
+    inactivity: initialInactivityConfig(),
   };
 }

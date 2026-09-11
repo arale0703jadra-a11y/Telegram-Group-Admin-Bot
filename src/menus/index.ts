@@ -6,6 +6,8 @@ import {
   buildGroupPickerPanel,
   buildMainPanel,
   buildSubmenuPanel,
+  buildAntiSpamPanel,
+  buildInactivityPanel,
   buildUsersPanel,
 } from "./panels.js";
 import { renderPanel } from "./render.js";
@@ -141,6 +143,16 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
       `[USERS PANEL] groupId=${selectedGroupId} observedUsers=${users.length}`,
     );
     panel = buildUsersPanel(users, 0, title);
+  } else if (action.kind === "sub" && action.section === "antispam") {
+    panel = buildAntiSpamPanel(
+      (await getGroupData(selectedGroupId)).antiSpam,
+      title,
+    );
+  } else if (action.kind === "sub" && action.section === "inactividad") {
+    panel = buildInactivityPanel(
+      (await getGroupData(selectedGroupId)).inactivity,
+      title,
+    );
   } else {
     panel =
       action.kind === "sub" && action.section

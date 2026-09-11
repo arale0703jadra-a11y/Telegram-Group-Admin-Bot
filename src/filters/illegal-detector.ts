@@ -14,7 +14,10 @@ export interface IllegalDetection {
   category?: IllegalCategory;
   confidence: IllegalConfidence;
   signals: string[];
+  critical: boolean;
 }
+
+const CRITICAL_TERMS = ["cp", "zoo", "zoofilia", "violacion", "infantil"];
 
 const CATEGORY_TERMS: Record<IllegalCategory, string[]> = {
   "minor-exploitation": [
@@ -131,10 +134,24 @@ function normalizeIllegalText(value: string): string {
     .trim();
 }
 
+function hasCriticalTerm(text: string, term: string): boolean {
+  const normalizedText = normalizeIllegalText(text);
+  const normalizedTerm = normalizeIllegalText(term);
+  const pattern = normalizedTerm
+    .split("")
+    .map((character) => character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("[^\\p{L}\\p{N}]*");
+  return new RegExp(
+    `(^|[^\\p{L}\\p{N}])${pattern}(?=$|[^\\p{L}\\p{N}])`,
+    "iu",
+  ).test(normalizedText);
+}
+
 export function detectIllegalContent(
   text: string,
   customTerms: string[],
 ): IllegalDetection {
+  const critical = CRITICAL_TERMS.some((term) => hasCriticalTerm(text, term));
   const category = (Object.keys(CATEGORY_TERMS) as IllegalCategory[]).find((key) =>
     CATEGORY_TERMS[key].some((term) => hasTerm(text, term)),
   );
@@ -151,7 +168,7 @@ export function detectIllegalContent(
   ];
 
   if (!category && !customMatch) {
-    return { confidence: "weak", signals };
+    return { confidence: "weak", signals, critical };
   }
   const categoryTerm = category
     ? CATEGORY_TERMS[category].find((term) => hasTerm(text, term))
@@ -173,7 +190,7 @@ export function detectIllegalContent(
       (categoryIsExplicit || independentSexualContext)) ||
     (customMatch && independentSexualContext && independentAge && hasAction)
   ) {
-    return { category, confidence: "high", signals };
+    return { category, confidence: "high", signals, critical };
   }
-  return { category, confidence: "suspicious", signals };
+  return { category, confidence: "suspicious", signals, critical };
 }

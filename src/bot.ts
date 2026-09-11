@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import { Bot, Context } from "grammy";
 import { validateConfig, BOT_NAME } from "./config.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import { registerCommands } from "./commands/index.js";
@@ -7,6 +7,8 @@ import { moderationActions } from "./menus/actions.js";
 import { isGroupChat, isUserAdmin } from "./utils/permissions.js";
 import { promotionModeration } from "./filters/moderation.js";
 import { illegalModeration } from "./filters/illegal-moderation.js";
+import { antiSpam } from "./filters/anti-spam.js";
+import { runInactivityScan } from "./services/inactivity.js";
 import { getGroupData, saveGroupData, store } from "./storage/index.js";
 import {
   markUserAsAdmin,
@@ -19,6 +21,11 @@ async function main(): Promise<void> {
   validateConfig();
 
   const bot = new Bot<MyContext>(process.env.BOT_TOKEN as string);
+  await bot.init();
+  const inactivityContext = Object.assign(
+    new Context({ update_id: 0 }, bot.api, bot.botInfo),
+    { session: { group: {}, user: {} } },
+  ) as MyContext;
 
   bot.use(sessionMiddleware);
 
@@ -94,6 +101,9 @@ async function main(): Promise<void> {
     try {
       const data = await getGroupData(chatId);
       const now = Math.floor(Date.now() / 1000);
+      const joinedMembers = "new_chat_members" in ctx.message
+        ? ctx.message.new_chat_members ?? []
+        : [];
 
       if (!ctx.from.is_bot) {
         const key = String(ctx.from.id);
@@ -103,12 +113,14 @@ async function main(): Promise<void> {
         const displayName = [firstName, lastName].filter(Boolean).join(" ");
         if (existing) {
           existing.groupId = chatId;
+          existing.firstSeen ??= now;
           existing.firstName = firstName;
           existing.lastName = lastName;
           existing.username = ctx.from.username ?? "";
           existing.name = displayName;
           existing.displayName = displayName;
           existing.lastSeen = now;
+          existing.lastActivityType = "message";
         } else {
           data.indexedUsers[key] = {
             id: ctx.from.id,
@@ -120,6 +132,38 @@ async function main(): Promise<void> {
             firstSeen: now,
             displayName,
             lastSeen: now,
+            lastActivityType: "message",
+          };
+        }
+      }
+
+      for (const member of joinedMembers) {
+        if (member.is_bot) continue;
+        const key = String(member.id);
+        const existing = data.indexedUsers[key];
+        const name = [member.first_name, member.last_name].filter(Boolean).join(" ");
+        if (existing) {
+          existing.groupId = chatId;
+          existing.firstSeen ??= now;
+          existing.joinedAt ??= now;
+          existing.lastActivityType = "join";
+          existing.firstName = member.first_name;
+          existing.lastName = member.last_name;
+          existing.name = name;
+          existing.displayName = name;
+          existing.username = member.username ?? "";
+        } else {
+          data.indexedUsers[key] = {
+            id: member.id,
+            groupId: chatId,
+            firstName: member.first_name,
+            lastName: member.last_name,
+            name,
+            displayName: name,
+            username: member.username ?? "",
+            firstSeen: now,
+            joinedAt: now,
+            lastActivityType: "join",
           };
         }
       }
@@ -139,12 +183,18 @@ async function main(): Promise<void> {
     await next();
   });
 
+  bot.use(antiSpam);
   bot.use(illegalModeration);
   bot.use(promotionModeration);
   registerCommands(bot);
 
   bot.use(menuNavigation);
   bot.use(moderationActions);
+
+  const inactivityTimer = setInterval(() => {
+    void runInactivityScan(inactivityContext);
+  }, 60 * 60 * 1000);
+  void runInactivityScan(inactivityContext);
 
   // Graceful shutdown: forzar flush de datos antes de cerrar
   const shutdown = async (signal: string): Promise<void> => {
@@ -158,6 +208,7 @@ async function main(): Promise<void> {
     }
     try {
       await bot.stop();
+      clearInterval(inactivityTimer);
       console.log("🤖 Bot detenido correctamente.");
     } catch (error) {
       console.error("❌ Error al detener bot:", error);

@@ -3,7 +3,7 @@ import { getGroupData, saveGroupData } from "../storage/index.js";
 import {
   deleteMessageById,
   getMemberSafely,
-  isProtectedMember,
+  isVerifiableMember,
   muteUser,
   warnUser,
 } from "../moderation/actions.js";
@@ -42,7 +42,18 @@ promotionModeration.on("message", async (ctx, next) => {
   }
 
   const member = await getMemberSafely(ctx, chatId, userId);
-  if (OWNER_ID === userId || (member && isProtectedMember(member))) {
+  if (
+    !member ||
+    member.user.is_bot ||
+    !isVerifiableMember(member) ||
+    OWNER_ID === userId
+  ) {
+    await logEvent(ctx, chatId, "DELETE", {
+      targetId: userId,
+      targetName: ctx.from.first_name,
+      result: "error",
+      detail: "Moderación automática omitida: miembro no verificable o protegido.",
+    });
     await next();
     return;
   }

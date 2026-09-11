@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 
 interface RegistryGroup {
@@ -51,17 +58,26 @@ function loadRegistry(): void {
 }
 
 function saveRegistry(): void {
+  const file = registryFilePath();
+  const temporaryFile = `${file}.tmp`;
   try {
-    const file = registryFilePath();
     mkdirSync(dirname(file), { recursive: true });
     const groups = [...registry.values()].map((group) => ({
       id: group.id,
       title: group.title,
       adminUserIds: [...group.adminUserIds],
     }));
-    writeFileSync(file, JSON.stringify({ groups }, null, 2), "utf8");
+    writeFileSync(temporaryFile, JSON.stringify({ groups }, null, 2), "utf8");
+    renameSync(temporaryFile, file);
   } catch (error) {
     console.error("[REGISTRO] No se pudo guardar el registro de grupos:", error);
+    try {
+      if (existsSync(temporaryFile)) {
+        rmSync(temporaryFile);
+      }
+    } catch (cleanupError) {
+      console.error("[REGISTRO] No se pudo limpiar el archivo temporal:", cleanupError);
+    }
   }
 }
 

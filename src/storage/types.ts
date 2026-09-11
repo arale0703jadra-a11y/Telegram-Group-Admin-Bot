@@ -18,7 +18,11 @@ export type ModerationType =
   | "UNBAN"
   | "DELETE"
   | "CLEAN"
-  | "ILLEGAL";
+  | "ILLEGAL"
+  | "ANTISPAM"
+  | "INACTIVITY_SCAN"
+  | "INACTIVITY_REMOVE"
+  | "INACTIVITY_REMOVE_ERROR";
 
 /**
  * Registro de una acción de moderación realizada por un administrador.
@@ -53,6 +57,8 @@ export interface IndexedUser {
   displayName?: string;
   /** Última vez (epoch segundos) que el bot vio un mensaje del usuario. */
   lastSeen?: number;
+  joinedAt?: number;
+  lastActivityType?: "message" | "join" | "other";
 }
 
 /**
@@ -138,6 +144,21 @@ export interface IllegalContentConfig {
   events: number;
 }
 
+export interface AntiSpamConfig {
+  enabled: boolean;
+  maxMentionsPerMessage: number;
+  blockLinks: boolean;
+  detectRepeatedMessages: boolean;
+  detectAutomatedBehavior: boolean;
+  infractions: Record<string, number>;
+}
+
+export interface InactivityConfig {
+  enabled: boolean;
+  inactivityDays: number;
+  customDays?: number;
+}
+
 /**
  * Datos persistidos de moderación de un grupo (key = chat_id).
  */
@@ -153,4 +174,6 @@ export interface GroupData {
   welcome: WelcomeConfig;
   promotion: PromotionConfig;
   illegalContent: IllegalContentConfig;
+  antiSpam: AntiSpamConfig;
+  inactivity: InactivityConfig;
 }

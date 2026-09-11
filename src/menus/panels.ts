@@ -5,6 +5,8 @@ import {
 } from "../storage/initial.js";
 import type {
   IllegalContentConfig,
+  AntiSpamConfig,
+  InactivityConfig,
   IndexedUser,
   PromotionConfig,
   WarningEntry,
@@ -91,6 +93,25 @@ export const FilterAction = {
   illegalConfirm: `${FILTER_PREFIX}:illegal_confirm`,
   illegalConfig: `${FILTER_PREFIX}:illegal_config`,
   illegalEvents: `${FILTER_PREFIX}:illegal_events`,
+};
+
+export const AntiSpamAction = {
+  toggle: "sa:toggle",
+  mentions: "sa:mentions",
+  links: "sa:links",
+  repeated: "sa:repeated",
+  automated: "sa:automated",
+};
+
+export const InactivityAction = {
+  toggle: "ia:toggle",
+  list: (page: number): string => `ia:list:${page}`,
+  config: "ia:config",
+  clean: "ia:clean",
+  confirm: "ia:confirm",
+  user: (id: number): string => `ia:user:${id}`,
+  remove: (id: number): string => `ia:remove:${id}`,
+  cancel: "ia:cancel",
 };
 
 const PANEL_TITLE = "🛡️ *PANEL DE ADMINISTRACIÓN*";
@@ -389,6 +410,110 @@ export function buildFiltersPanel(
   };
 }
 
+export function buildAntiSpamPanel(
+  config: AntiSpamConfig,
+  groupTitle?: string,
+): Panel {
+  const keyboard = new InlineKeyboard()
+    .text(config.enabled ? "🔴 Desactivar" : "🟢 Activar", AntiSpamAction.toggle)
+    .row()
+    .text("👥 Máx. menciones", AntiSpamAction.mentions)
+    .row()
+    .text(config.blockLinks ? "🔗 Bloquear enlaces" : "🔗 Permitir enlaces", AntiSpamAction.links)
+    .row()
+    .text(
+      config.detectRepeatedMessages ? "🔁 Repetidos 🟢" : "🔁 Repetidos 🔴",
+      AntiSpamAction.repeated,
+    )
+    .text(
+      config.detectAutomatedBehavior ? "🤖 Automático 🟢" : "🤖 Automático 🔴",
+      AntiSpamAction.automated,
+    )
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🛡️ *ANTI-SPAM*\n\n" +
+      `Estado: ${config.enabled ? "🟢 Activado" : "🔴 Desactivado"}\n\n` +
+      `🔁 Mensajes repetidos: ${config.detectRepeatedMessages ? "🟢 Activado" : "🔴 Desactivado"}\n` +
+      `🔗 Enlaces: ${config.blockLinks ? "🚫 Bloqueados" : "✅ Permitidos"}\n` +
+      `👥 Menciones masivas: ${config.maxMentionsPerMessage}\n` +
+      "🧹 Spam multimedia: 🟢 Activado\n" +
+      `🤖 Detección automática: ${config.detectAutomatedBehavior ? "🟢" : "🔴"}`,
+    keyboard,
+  };
+}
+
+export function buildInactivityPanel(config: InactivityConfig, groupTitle?: string): Panel {
+  const keyboard = new InlineKeyboard()
+    .text(config.enabled ? "🔴 Desactivar" : "🟢 Activar", InactivityAction.toggle)
+    .row()
+    .text("👤 Ver usuarios inactivos", InactivityAction.list(0))
+    .row()
+    .text("🧹 Limpieza de usuarios", InactivityAction.clean)
+    .text("⚙️ Configuración", InactivityAction.config)
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n⏰ *INACTIVIDAD*\n\n` +
+      `Estado: ${config.enabled ? "🟢 Activado" : "🔴 Desactivado"}\n` +
+      `Período: ${config.customDays ?? config.inactivityDays} días`,
+    keyboard,
+  };
+}
+
+export function buildInactiveUsersPanel(
+  users: Array<{ id: number; name?: string; username?: string; inactiveDays: number }>,
+  page: number,
+  groupTitle?: string,
+): Panel {
+  const pageSize = 8;
+  const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
+  const current = Math.min(Math.max(page, 0), pageCount - 1);
+  const visible = users.slice(current * pageSize, (current + 1) * pageSize);
+  const keyboard = new InlineKeyboard();
+  for (const user of visible) {
+    keyboard
+      .text(`👤 ${user.name || user.username || `ID ${user.id}`} (${user.inactiveDays} d.)`, InactivityAction.user(user.id))
+      .row();
+  }
+  if (current > 0) keyboard.text("◀️ Anterior", InactivityAction.list(current - 1));
+  if (current < pageCount - 1) keyboard.text("Siguiente ▶️", InactivityAction.list(current + 1));
+  keyboard.row().text("⬅️ Volver", MenuAction.sub("inactividad"));
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n👤 *USUARIOS INACTIVOS*\n\n` +
+      `Página ${current + 1}/${pageCount}\n` +
+      (visible.length
+        ? visible.map((u) => `• ${u.name || "Sin nombre"} ${u.username ? `@${u.username}` : ""} — ${u.inactiveDays} días`).join("\n")
+        : "No hay usuarios inactivos."),
+    keyboard,
+  };
+}
+
+export function buildInactivityConfirmPanel(userId: number, groupTitle?: string): Panel {
+  return {
+    text: `${formatGroupHeader(groupTitle)}\n\n⚠️ *¿Confirmar expulsión del usuario?*\n\nID: ${userId}`,
+    keyboard: new InlineKeyboard()
+      .text("✅ Confirmar", InactivityAction.remove(userId))
+      .text("❌ Cancelar", InactivityAction.cancel),
+  };
+}
+
+export function buildInactivityCleanConfirmPanel(groupTitle?: string): Panel {
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n⚠️ *CONFIRMAR LIMPIEZA*\n\n` +
+      "Se eliminarán los usuarios que superen el período configurado.",
+    keyboard: new InlineKeyboard()
+      .text("✅ Confirmar", InactivityAction.confirm)
+      .text("❌ Cancelar", InactivityAction.cancel),
+  };
+}
+
 export function buildFilterListPanel(
   config: PromotionConfig,
   page: number,
@@ -583,6 +708,7 @@ export function buildUserCardPanel(data: UserCardData): Panel {
     canMute,
     canBan,
     groupTitle,
+    inactivityEligible,
   } = data;
   const who = formatUserName(user);
 
@@ -647,6 +773,12 @@ export function buildUserCardPanel(data: UserCardData): Panel {
       minute: "2-digit",
     });
   }
+  const joinedAt = user.joinedAt
+    ? new Date(user.joinedAt * 1000).toLocaleDateString("es-ES")
+    : "Desconocida";
+  const lastActivity = user.lastSeen
+    ? lastSeen
+    : "Nunca";
 
   const text =
     `👤 *INFORMACIÓN DEL USUARIO*\n\n` +
@@ -658,7 +790,8 @@ export function buildUserCardPanel(data: UserCardData): Panel {
     `🛡️ Administrador: ${isAdmin}\n` +
     `⚠️ Advertencias: ${warnings}/${warnLimit}\n` +
     `🔇 Silenciado: ${muteInfo}\n` +
-    `🕐 Última actividad: ${lastSeen}`;
+    `📅 Entrada al grupo: ${joinedAt}\n` +
+    `🕐 Última actividad observada por el bot: ${lastActivity}`;
 
   const keyboard = new InlineKeyboard()
     .text("⚠️ Advertir", ModAction.warn(user.id))
@@ -677,6 +810,11 @@ export function buildUserCardPanel(data: UserCardData): Panel {
     keyboard.text("♻️ Desbanear", ModAction.unban(user.id));
   } else if (canBan) {
     keyboard.text("🔨 Banear", ModAction.banConfirm(user.id));
+  }
+  if (inactivityEligible) {
+    keyboard
+      .row()
+      .text("🧹 Eliminar del grupo", InactivityAction.remove(user.id));
   }
   keyboard.row().add(...buildNavRow().inline_keyboard.flat());
 

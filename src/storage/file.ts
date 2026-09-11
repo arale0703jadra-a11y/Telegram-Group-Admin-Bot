@@ -1,5 +1,6 @@
 import {
   existsSync,
+  copyFileSync,
   mkdirSync,
   readFileSync,
   writeFileSync,
@@ -49,11 +50,20 @@ export class FileStore implements PersistenceStore {
     try {
       const file = this.filePath(chatId);
       if (existsSync(file)) {
-        const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<
-          string,
-          unknown
-        >;
-        data = normalizeGroupData(parsed);
+        try {
+          const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<
+            string,
+            unknown
+          >;
+          data = normalizeGroupData(parsed);
+        } catch (error) {
+          const backup = `${file}.corrupt-${Date.now()}.bak`;
+          console.error(
+            `[STORAGE] JSON corrupto en el grupo ${chatId}; se conserva el original y se crea ${backup}:`,
+            error,
+          );
+          copyFileSync(file, backup);
+        }
       }
     } catch (error) {
       console.error(`[STORAGE] No se pudo leer el grupo ${chatId}:`, error);
@@ -161,6 +171,58 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
       parsed.illegalContent,
       base.illegalContent,
     ),
+    antiSpam: normalizeAntiSpam(parsed.antiSpam, base.antiSpam),
+    inactivity: normalizeInactivity(parsed.inactivity, base.inactivity),
+  };
+}
+
+function normalizeInactivity(
+  raw: unknown,
+  fallback: GroupData["inactivity"],
+): GroupData["inactivity"] {
+  if (!isRecord(raw)) return fallback;
+  const days =
+    typeof raw.inactivityDays === "number" &&
+    Number.isFinite(raw.inactivityDays) &&
+    raw.inactivityDays > 0
+      ? Math.floor(raw.inactivityDays)
+      : fallback.inactivityDays;
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
+    inactivityDays: days,
+    customDays:
+      typeof raw.customDays === "number" && raw.customDays > 0
+        ? Math.floor(raw.customDays)
+        : undefined,
+  };
+}
+
+function normalizeAntiSpam(
+  raw: unknown,
+  fallback: GroupData["antiSpam"],
+): GroupData["antiSpam"] {
+  if (!isRecord(raw)) {
+    return fallback;
+  }
+  const positive = (value: unknown, defaultValue: number): number =>
+    typeof value === "number" && Number.isFinite(value) && value > 0
+      ? Math.floor(value)
+      : defaultValue;
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
+    maxMentionsPerMessage: positive(raw.maxMentionsPerMessage, fallback.maxMentionsPerMessage),
+    blockLinks: typeof raw.blockLinks === "boolean" ? raw.blockLinks : fallback.blockLinks,
+    detectRepeatedMessages:
+      typeof raw.detectRepeatedMessages === "boolean"
+        ? raw.detectRepeatedMessages
+        : fallback.detectRepeatedMessages,
+    detectAutomatedBehavior:
+      typeof raw.detectAutomatedBehavior === "boolean"
+        ? raw.detectAutomatedBehavior
+        : fallback.detectAutomatedBehavior,
+    infractions: isRecord(raw.infractions)
+      ? (raw.infractions as Record<string, number>)
+      : {},
   };
 }
 

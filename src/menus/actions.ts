@@ -26,6 +26,10 @@ import {
   buildIllegalInfoPanel,
   buildIllegalPanel,
   buildIllegalTermsPanel,
+  buildInactivityPanel,
+  buildInactiveUsersPanel,
+  buildInactivityCleanConfirmPanel,
+  buildAntiSpamPanel,
   buildMainPanel,
   buildMuteMenuPanel,
   buildPromptPanel,
@@ -40,6 +44,10 @@ import {
 } from "./panels.js";
 import { renderPanel } from "./render.js";
 import type { MyContext, PickAction } from "../types.js";
+import {
+  getInactiveUsers,
+  removeInactiveUser,
+} from "../services/inactivity.js";
 
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
@@ -53,7 +61,7 @@ export const moderationActions = new Composer<MyContext>();
 
 moderationActions.on("callback_query:data", async (ctx) => {
   const parts = ctx.callbackQuery.data.split(":");
-  if (parts[0] !== "ma" && parts[0] !== "fa") {
+  if (parts[0] !== "ma" && parts[0] !== "fa" && parts[0] !== "sa" && parts[0] !== "ia") {
     return; // Callback ajeno: lo gestiona otro controlador.
   }
 
@@ -73,7 +81,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
     return;
   }
 
-  if (parts[0] === "fa") {
+  if (parts[0] === "fa" || parts[0] === "sa" || parts[0] === "ia") {
     const title = ctx.session.user.selectedGroupTitle;
     if (kind === "add") {
       ctx.session.user.pendingAction = { kind: "filterAdd", groupId };
@@ -84,6 +92,117 @@ moderationActions.on("callback_query:data", async (ctx) => {
           "✏️ *AGREGAR FILTRO*\n\nEscribe la palabra o frase que quieres agregar.",
         ),
       );
+      return;
+    }
+
+    if (parts[0] === "ia") {
+      const title = ctx.session.user.selectedGroupTitle;
+      if (kind === "toggle") {
+        const data = await getGroupData(groupId);
+        data.inactivity.enabled = !data.inactivity.enabled;
+        await saveGroupData(groupId, data);
+        await ctx.answerCallbackQuery();
+        await renderPanel(ctx, buildInactivityPanel(data.inactivity, title));
+        return;
+      }
+      if (kind === "list") {
+        const page = Number(parts[2] ?? 0);
+        const users = await getInactiveUsers(ctx, groupId);
+        await ctx.answerCallbackQuery();
+        await renderPanel(ctx, buildInactiveUsersPanel(users, page, title));
+        return;
+      }
+      if (kind === "config") {
+        const data = await getGroupData(groupId);
+        const choices = [7, 15, 30, 60, 90];
+        const current = data.inactivity.customDays ?? data.inactivity.inactivityDays;
+        const next = choices[(choices.indexOf(current) + 1) % choices.length] ?? 30;
+        data.inactivity.customDays = undefined;
+        data.inactivity.inactivityDays = next;
+        await saveGroupData(groupId, data);
+        await ctx.answerCallbackQuery(`Período: ${next} días`);
+        await renderPanel(ctx, buildInactivityPanel(data.inactivity, title));
+        return;
+      }
+      if (kind === "clean") {
+        await ctx.answerCallbackQuery();
+        await renderPanel(ctx, buildInactivityCleanConfirmPanel(title));
+        return;
+      }
+      if (kind === "user") {
+        const userId = Number(parts[2]);
+        if (!Number.isInteger(userId)) {
+          await ctx.answerCallbackQuery("Usuario no válido.");
+          return;
+        }
+        await ctx.answerCallbackQuery();
+        const card = await getUserCard(ctx, groupId, userId, title);
+        card.inactivityEligible = true;
+        await renderPanel(ctx, buildUserCardPanel(card));
+        return;
+      }
+      if (kind === "remove") {
+        const userId = Number(parts[2]);
+        const result = await removeInactiveUser(ctx, groupId, userId);
+        await ctx.answerCallbackQuery(
+          result === "removed" ? "✅ Usuario expulsado." : "⛔ No se pudo expulsar.",
+        );
+        await renderPanel(ctx, buildInactivityPanel((await getGroupData(groupId)).inactivity, title));
+        return;
+      }
+      if (kind === "confirm") {
+        const users = await getInactiveUsers(ctx, groupId);
+        let removed = 0;
+        let skipped = 0;
+        let errors = 0;
+        for (const user of users) {
+          const result = await removeInactiveUser(ctx, groupId, user.id);
+          if (result === "removed") removed += 1;
+          else if (result === "skipped") skipped += 1;
+          else errors += 1;
+        }
+        await ctx.answerCallbackQuery("✅ Limpieza completada.");
+        await renderPanel(
+          ctx,
+          buildInactivityPanel((await getGroupData(groupId)).inactivity, title),
+        );
+        console.log(`[INACTIVITY] groupId=${groupId} removed=${removed} skipped=${skipped} errors=${errors}`);
+        return;
+      }
+      if (kind === "cancel") {
+        await ctx.answerCallbackQuery();
+        await renderPanel(ctx, buildInactivityPanel((await getGroupData(groupId)).inactivity, title));
+        return;
+      }
+    }
+
+    if (parts[0] === "sa") {
+      const data = await getGroupData(groupId);
+      switch (kind) {
+        case "toggle":
+          data.antiSpam.enabled = !data.antiSpam.enabled;
+          break;
+        case "links":
+          data.antiSpam.blockLinks = !data.antiSpam.blockLinks;
+          break;
+        case "repeated":
+          data.antiSpam.detectRepeatedMessages = !data.antiSpam.detectRepeatedMessages;
+          break;
+        case "automated":
+          data.antiSpam.detectAutomatedBehavior = !data.antiSpam.detectAutomatedBehavior;
+          break;
+        case "mentions": {
+          data.antiSpam.maxMentionsPerMessage =
+            data.antiSpam.maxMentionsPerMessage === 5 ? 10 : 5;
+          break;
+        }
+        default:
+          await ctx.answerCallbackQuery("Acción Anti-spam no reconocida.");
+          return;
+      }
+      await saveGroupData(groupId, data);
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildAntiSpamPanel(data.antiSpam, ctx.session.user.selectedGroupTitle));
       return;
     }
     if (kind === "illegal") {
