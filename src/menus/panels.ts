@@ -99,7 +99,6 @@ interface MenuItem {
  */
 const CATEGORIES: MenuItem[] = [
   { id: "usuarios", label: "👥 Usuarios" },
-  { id: "moderacion", label: "🗑️ Moderación" },
   { id: "filtros", label: "🚫 Filtros" },
   { id: "antispam", label: "🛡️ Anti-spam" },
   { id: "inactividad", label: "⏰ Inactividad" },
@@ -131,18 +130,6 @@ const SUBMENUS: Record<string, SubmenuDef> = {
       { id: "buscar", label: "🔎 Buscar usuario", cb: ModAction.search },
       { id: "lista", label: "👥 Usuarios detectados", cb: ModAction.users(0) },
       { id: "baneados", label: "🚫 Usuarios baneados", cb: ModAction.unbanList },
-    ],
-  },
-  moderacion: {
-    icon: "🗑️",
-    title: "Moderación",
-    description: "Borrar mensajes y aplicar sanciones.",
-    items: [
-      { id: "borrar", label: "🗑️ Borrar mensaje", cb: ModAction.deleteHelp },
-      { id: "silenciar", label: "🔇 Silenciar usuario", cb: ModAction.muteSel },
-      { id: "banear", label: "🔨 Banear usuario", cb: ModAction.banPrompt },
-      { id: "advertir", label: "⚠️ Advertir usuario", cb: ModAction.warnMenu },
-      { id: "limpiar", label: "🧹 Limpiar mensajes", cb: ModAction.clean },
     ],
   },
   filtros: {
