@@ -8,17 +8,44 @@ import {
 import { scheduleMessageDeletion } from "../utils/cleanup.js";
 import { openPrivatePanel } from "../utils/private-panel.js";
 import type { MyContext } from "../types.js";
+import { ensureCerberoBinding } from "../services/security-commands.js";
 
 export const menuCommand = new Composer<MyContext>();
 
-menuCommand.command("menu", async (ctx) => {
+export function isMenuTrigger(text: string, botUsername?: string): boolean {
+  const normalized = text.trim();
+  if (/^menu$/i.test(normalized)) {
+    return true;
+  }
+  const commandMatch = normalized.match(/^\/menu(?:@([A-Za-z0-9_]+))?$/i);
+  if (!commandMatch) {
+    return false;
+  }
+  return (
+    !commandMatch[1] ||
+    (botUsername !== undefined &&
+      commandMatch[1].toLowerCase() === botUsername.toLowerCase())
+  );
+}
+
+menuCommand.on("message:text", async (ctx, next) => {
+  if (!isMenuTrigger(ctx.message.text, ctx.me.username)) {
+    await next();
+    return;
+  }
+
   const from = ctx.from;
   const chat = ctx.chat;
   const username = ctx.me.username;
 
-  if (!isGroupChat(ctx)) {
-    // En privado, el panel se abre directamente (igual que /start).
+  if (ctx.chat?.type === "private") {
+    // La autorización privada se resuelve por ctx.from.id y los grupos registrados.
     await openPrivatePanel(ctx);
+    return;
+  }
+
+  if (!isGroupChat(ctx)) {
+    await ctx.reply("🔐 El panel administrativo solo está disponible en el chat privado del bot.");
     return;
   }
 
@@ -40,6 +67,7 @@ menuCommand.command("menu", async (ctx) => {
   const botLink = `https://t.me/${username}`;
 
   registerGroup(groupId, groupTitle);
+  await ensureCerberoBinding(groupId);
   markUserAsAdmin(groupId, from.id);
 
   // El administrador gestiona ahora este grupo en su chat privado.

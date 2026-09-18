@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type {
+  ActivityMessage,
   BanRecord,
   GroupData,
   IndexedUser,
@@ -161,10 +162,9 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
     events: Array.isArray(parsed.events)
       ? (parsed.events as ModerationEvent[])
       : [],
-    welcome: {
-      enabled: true,
-      message: "",
-      ...(isRecord(parsed.welcome) ? parsed.welcome : {}),
+    newUsers: {
+      enabled:
+        isRecord(parsed.newUsers) && parsed.newUsers.enabled === true,
     },
     promotion: normalizePromotion(parsed.promotion, base.promotion),
     illegalContent: normalizeIllegalContent(
@@ -173,6 +173,51 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
     ),
     antiSpam: normalizeAntiSpam(parsed.antiSpam, base.antiSpam),
     inactivity: normalizeInactivity(parsed.inactivity, base.inactivity),
+    verifiedTitles: Array.isArray(parsed.verifiedTitles)
+      ? parsed.verifiedTitles.filter(
+          (title): title is string =>
+            typeof title === "string" && title.trim().length > 0,
+        )
+      : base.verifiedTitles,
+    autoRemoveVerifiedWhenTitleRemoved:
+      typeof parsed.autoRemoveVerifiedWhenTitleRemoved === "boolean"
+        ? parsed.autoRemoveVerifiedWhenTitleRemoved
+        : base.autoRemoveVerifiedWhenTitleRemoved,
+    autoDetectVerifiedTitles:
+      typeof parsed.autoDetectVerifiedTitles === "boolean"
+        ? parsed.autoDetectVerifiedTitles
+        : base.autoDetectVerifiedTitles,
+    activityMessages: Array.isArray(parsed.activityMessages)
+      ? parsed.activityMessages.filter((item): item is ActivityMessage =>
+          isRecord(item) &&
+          typeof item.messageId === "number" &&
+          typeof item.groupId === "number" &&
+          typeof item.userId === "number" &&
+          typeof item.timestamp === "number")
+      : [],
+    automaticMessage: normalizeAutomaticMessage(parsed.automaticMessage),
+  };
+}
+
+function normalizeAutomaticMessage(
+  raw: unknown,
+): GroupData["automaticMessage"] {
+  if (!isRecord(raw) || typeof raw.message !== "string") {
+    return undefined;
+  }
+  return {
+    enabled: raw.enabled === true,
+    message: raw.message,
+    intervalMinutes:
+      typeof raw.intervalMinutes === "number" &&
+      Number.isFinite(raw.intervalMinutes) &&
+      raw.intervalMinutes > 0
+        ? raw.intervalMinutes
+        : undefined,
+    nextRunAt: typeof raw.nextRunAt === "string" ? raw.nextRunAt : undefined,
+    lastSentAt: typeof raw.lastSentAt === "string" ? raw.lastSentAt : undefined,
+    lastMessageId:
+      typeof raw.lastMessageId === "number" ? raw.lastMessageId : undefined,
   };
 }
 

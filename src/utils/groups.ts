@@ -18,15 +18,15 @@ export interface AdministrableGroup {
  */
 export async function getAdministrableGroups(
   ctx: MyContext,
+  knownGroups = getAllKnownGroups(),
 ): Promise<AdministrableGroup[]> {
   if (!ctx.from) {
     return [];
   }
 
-  const known = getAllKnownGroups();
   const result: AdministrableGroup[] = [];
 
-  for (const group of known) {
+  for (const group of knownGroups) {
     // Fuente real de autorización: getChatMember contra el chat_id.
     if (await isUserAdminOf(ctx, group.id)) {
       result.push({

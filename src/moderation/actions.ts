@@ -1,6 +1,5 @@
 import type { ChatMember, ChatPermissions } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
-import { OWNER_ID } from "../config.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
 import { logEvent } from "./events.js";
 
@@ -129,7 +128,6 @@ export async function warnUser(
     !member ||
     member.user.is_bot ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId ||
     isProtectedMember(member)
   ) {
     return {
@@ -302,7 +300,6 @@ export async function muteUser(
   if (
     member.user.is_bot ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId ||
     isProtectedMember(member)
   ) {
     return { ok: false, error: "No se puede silenciar a un administrador o al propietario." };
@@ -465,7 +462,6 @@ export async function banUser(
   if (
     member.user.is_bot ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId ||
     isProtectedMember(member)
   ) {
     await logEvent(ctx, chatId, "BAN", {

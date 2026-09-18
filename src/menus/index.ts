@@ -9,16 +9,27 @@ import {
   buildAntiSpamPanel,
   buildInactivityPanel,
   buildUsersPanel,
+  buildCerberoPanel,
+  buildActivityPanel,
+  buildPromptPanel,
+  buildHelpEmergenciesPanel,
+  buildHelpRecoveryPanel,
 } from "./panels.js";
 import { renderPanel } from "./render.js";
 import type { MyContext } from "../types.js";
+import {
+  getCerberoStatus,
+  getSecurityEvents,
+  getSecurityStats,
+} from "../services/security-commands.js";
+import { calculateActivity } from "../services/activity.js";
+import { recordObservedUser } from "../services/user-registry.js";
 
-const DEVELOPMENT_MESSAGE = "🚧 Esta función está en desarrollo.";
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
   "Primero selecciona el grupo que quieres administrar.";
 
-type MenuKind = "main" | "home" | "sub" | "action" | "groups" | "group";
+type MenuKind = "main" | "home" | "sub" | "action" | "groups" | "group" | "help";
 
 interface ParsedMenuAction {
   kind: MenuKind;
@@ -54,6 +65,9 @@ function parseMenuAction(data: string): ParsedMenuAction | undefined {
   if (kind === "action" && parts[2] && parts[3]) {
     return { kind, section: parts[2], item: parts[3] };
   }
+  if (kind === "help" && parts[2]) {
+    return { kind, item: parts[2] };
+  }
   return undefined;
 }
 
@@ -73,7 +87,7 @@ async function getGroupTitle(
  * Navegación del panel de administración (chat privado).
  *
  * - Autoriza SIEMPRE contra el chat_id del grupo seleccionado.
- * - Las acciones no implementadas muestran el aviso de desarrollo.
+ * - Los botones visibles siempre apuntan a acciones implementadas.
  * - La navegación edita el mismo mensaje para no generar spam.
  */
 export const menuNavigation = new Composer<MyContext>();
@@ -89,6 +103,28 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
     ctx.session.user.pendingAction = undefined;
     await ctx.answerCallbackQuery();
     await showGroupPicker(ctx);
+    return;
+  }
+
+  if (action.kind === "help") {
+    await ctx.answerCallbackQuery();
+    if (action.item === "emergencias") {
+      await renderPanel(ctx, buildHelpEmergenciesPanel());
+      return;
+    }
+    if (action.item === "recovery") {
+      await renderPanel(ctx, buildHelpRecoveryPanel());
+      return;
+    }
+    if (action.item === "recover") {
+      ctx.session.user.pendingAction = { kind: "recoveryKey" };
+      await renderPanel(
+        ctx,
+        buildPromptPanel("🔐 Envía tu clave de recuperación de un solo uso."),
+      );
+      return;
+    }
+    await renderPanel(ctx, buildMainPanel());
     return;
   }
 
@@ -121,16 +157,62 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
     await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
     return;
   }
+  if (ctx.from) {
+    await recordObservedUser(selectedGroupId, ctx.from, { activity: true });
+  }
 
+  const title = ctx.session.user.selectedGroupTitle;
   if (action.kind === "action") {
-    await ctx.answerCallbackQuery(DEVELOPMENT_MESSAGE);
+    if (action.section === "cerbero") {
+      try {
+        const [status, stats, events] = await Promise.all([
+          getCerberoStatus(),
+          getSecurityStats(selectedGroupId),
+          getSecurityEvents(selectedGroupId, 5),
+        ]);
+        await ctx.answerCallbackQuery();
+        await renderPanel(ctx, buildCerberoPanel(status, stats, events, title));
+      } catch (error) {
+        console.error("[CERBERO PANEL] No se pudo cargar el estado:", error);
+        await ctx.answerCallbackQuery("No se pudo consultar Cerbero.");
+      }
+      return;
+    }
+    if (action.section === "actividad") {
+      const stats = calculateActivity(
+        await getGroupData(selectedGroupId),
+        selectedGroupId,
+      );
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildActivityPanel(stats, title));
+      return;
+    }
+    const data = await getGroupData(selectedGroupId);
+    const summaries: Record<string, string> = {
+      reglas: "Las reglas se consultan desde la configuración local del grupo.",
+      config:
+        `Anti-spam: ${data.antiSpam.enabled ? "activo" : "inactivo"}\n` +
+        `Filtros: ${data.promotion.enabled ? "activos" : "inactivos"}\n` +
+        `Inactividad: ${data.inactivity.enabled ? "activa" : "inactiva"}`,
+      mensajes: "No hay mensajes automáticos configurados.",
+      ayuda: action.item === "comandos"
+        ? "Comandos disponibles: /menu, /admin y /start."
+        : "El panel exige permisos de administrador verificados por Telegram.",
+    };
+    await ctx.answerCallbackQuery();
+    await renderPanel(
+      ctx,
+      buildPromptPanel(
+        `📋 ${action.section ?? "Configuración"}\n\n` +
+          (summaries[action.section ?? ""] ?? "Configuración consultada correctamente."),
+      ),
+    );
     return;
   }
 
   // Navegar a otra sección cancela cualquier operación en espera.
   ctx.session.user.pendingAction = undefined;
 
-  const title = ctx.session.user.selectedGroupTitle;
   let panel;
   if (action.kind === "sub" && action.section === "usuarios") {
     const data = await getGroupData(selectedGroupId);

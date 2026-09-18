@@ -59,6 +59,34 @@ export interface IndexedUser {
   lastSeen?: number;
   joinedAt?: number;
   lastActivityType?: "message" | "join" | "other";
+  messageCount?: number;
+  status?: "creator" | "administrator" | "member" | "restricted" | "left" | "kicked" | "unknown";
+  zeusRole?: "owner" | "administrator" | "verified" | "user";
+  verified?: boolean;
+}
+
+export interface ActivityMessage {
+  messageId: number;
+  groupId: number;
+  userId: number;
+  name?: string;
+  firstName?: string;
+  lastName?: string;
+  username?: string;
+  timestamp: number;
+}
+
+export interface NewUsersConfig {
+  enabled: boolean;
+}
+
+export interface AutomaticMessageConfig {
+  enabled: boolean;
+  message: string;
+  intervalMinutes?: number;
+  nextRunAt?: string;
+  lastSentAt?: string;
+  lastMessageId?: number;
 }
 
 /**
@@ -104,16 +132,6 @@ export interface BanRecord extends IndexedUser {
  * llegará en una fase posterior.
  */
 export type WarnAction = "none" | "mute" | "ban";
-
-/**
- * Configuración de la bienvenida del grupo.
- * Por ahora se usa el texto predeterminado; desde la sección
- * "👋 Bienvenida" se podrá editar en una fase posterior.
- */
-export interface WelcomeConfig {
-  enabled: boolean;
-  message: string;
-}
 
 export interface PromotionMessages {
   promotionWarning: string;
@@ -171,9 +189,14 @@ export interface GroupData {
   recentMessages: number[];
   indexedUsers: Record<string, IndexedUser>;
   events: ModerationEvent[];
-  welcome: WelcomeConfig;
+  newUsers: NewUsersConfig;
   promotion: PromotionConfig;
   illegalContent: IllegalContentConfig;
   antiSpam: AntiSpamConfig;
   inactivity: InactivityConfig;
+  verifiedTitles: string[];
+  autoDetectVerifiedTitles: boolean;
+  autoRemoveVerifiedWhenTitleRemoved: boolean;
+  activityMessages: ActivityMessage[];
+  automaticMessage?: AutomaticMessageConfig;
 }

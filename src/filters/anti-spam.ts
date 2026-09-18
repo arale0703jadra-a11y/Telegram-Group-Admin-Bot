@@ -7,6 +7,11 @@ import {
   isVerifiableMember,
   muteUser,
 } from "../moderation/actions.js";
+import {
+  delegateSecurityCommand,
+  isCerberoExecutionEnabled,
+} from "../services/security-commands.js";
+import { getVerifiedUserPermissions } from "../services/verified-users.js";
 import { logEvent } from "../moderation/events.js";
 import { isGroupChat } from "../utils/permissions.js";
 import type { MyContext } from "../types.js";
@@ -123,6 +128,11 @@ antiSpam.on("message", async (ctx, next) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from.id;
   const data = await getGroupData(chatId);
+  const verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
+  if (verifiedPermissions?.bypass_antispam) {
+    await next();
+    return;
+  }
   if (!data.antiSpam.enabled) {
     await next();
     return;
@@ -167,21 +177,46 @@ antiSpam.on("message", async (ctx, next) => {
           : undefined;
 
   if (reason) {
-    const deleted = rights.canDelete
-      ? await ctx.api.deleteMessage(chatId, ctx.message.message_id).then(
-          () => ({ ok: true }),
-          () => ({ ok: false }),
-        )
-      : { ok: false };
     const key = String(userId);
     const infraction = (data.antiSpam.infractions[key] ?? 0) + 1;
     data.antiSpam.infractions[key] = infraction;
     await saveGroupData(chatId, data);
 
+    const minutes = [15, 60, 240, 1440][Math.min(infraction - 2, 3)] ?? 1440;
+    let deleted = { ok: false };
     let muted = false;
-    if (infraction >= 2 && rights.canRestrict) {
-      const minutes = [15, 60, 240, 1440][Math.min(infraction - 2, 3)] ?? 1440;
-      muted = (await muteUser(ctx, chatId, userId, minutes, ctx.from.first_name)).ok;
+    if (isCerberoExecutionEnabled()) {
+      const deleteOrder = rights.canDelete
+        ? await delegateSecurityCommand({
+            groupId: chatId,
+            action: "DELETE_MESSAGE",
+            targetMessageId: ctx.message.message_id,
+            payload: { reason: `ANTI_SPAM:${reason}` },
+          })
+        : { ok: false as const, error: "Sin permiso de borrado." };
+      deleted = { ok: deleteOrder.ok };
+      if (infraction >= 2 && rights.canRestrict) {
+        const muteOrder = await delegateSecurityCommand({
+          groupId: chatId,
+          action: "MUTE_USER",
+          targetUserId: userId,
+          payload: {
+            duration_minutes: minutes,
+            reason: `ANTI_SPAM:${reason}`,
+          },
+        });
+        muted = muteOrder.ok;
+      }
+    } else {
+      deleted = rights.canDelete
+        ? await ctx.api.deleteMessage(chatId, ctx.message.message_id).then(
+            () => ({ ok: true }),
+            () => ({ ok: false }),
+          )
+        : { ok: false };
+      if (infraction >= 2 && rights.canRestrict) {
+        muted = (await muteUser(ctx, chatId, userId, minutes, ctx.from.first_name)).ok;
+      }
     }
     try {
       const status = muted

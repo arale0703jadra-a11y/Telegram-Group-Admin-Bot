@@ -96,10 +96,15 @@ export function initialGroupData(): GroupData {
     recentMessages: [],
     indexedUsers: {},
     events: [],
-    welcome: { enabled: true, message: "" },
+    newUsers: { enabled: false },
     promotion: initialPromotionConfig(),
     illegalContent: initialIllegalContentConfig(),
     antiSpam: initialAntiSpamConfig(),
     inactivity: initialInactivityConfig(),
+    verifiedTitles: ["✅ Verificada", "Verificada"],
+    autoDetectVerifiedTitles: true,
+    autoRemoveVerifiedWhenTitleRemoved: true,
+    activityMessages: [],
+    automaticMessage: undefined,
   };
 }

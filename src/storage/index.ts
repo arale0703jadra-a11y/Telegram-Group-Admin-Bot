@@ -15,7 +15,6 @@ export type {
   PromotionMessages,
   WarnAction,
   WarningEntry,
-  WelcomeConfig,
 } from "./types.js";
 
 /**

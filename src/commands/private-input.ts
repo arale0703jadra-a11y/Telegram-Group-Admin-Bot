@@ -16,10 +16,22 @@ import {
   buildUserCardPanel,
   buildUserSearchResultsPanel,
   buildWarningsPanel,
+  buildSubmenuPanel,
   type Panel,
 } from "../menus/panels.js";
+import { renderPanel } from "../menus/render.js";
 import { muteUser, unmuteUser, warnUser } from "../moderation/actions.js";
+import {
+  delegateSecurityCommand,
+  isCerberoExecutionEnabled,
+} from "../services/security-commands.js";
 import type { MyContext, PickAction } from "../types.js";
+import { addVerifiedUser } from "../services/verified-users.js";
+import { markUserVerified, recordObservedUser } from "../services/user-registry.js";
+import { automaticMessageScheduler } from "../services/automatic-messages.js";
+import {
+  consumeRecoveryKey,
+} from "../services/system-owner.js";
 
 const MAX_MUTE_MINUTES = 527040;
 
@@ -45,6 +57,112 @@ privateInput.on("message:text", async (ctx) => {
   if (!pending) {
     return;
   }
+  if (
+    ctx.session.user.pendingSince &&
+    Date.now() - ctx.session.user.pendingSince > 10 * 60 * 1000
+  ) {
+    ctx.session.user.pendingAction = undefined;
+    ctx.session.user.pendingSince = undefined;
+    await ctx.reply("⌛ Esta operación expiró. Vuelve a pulsar el botón para intentarlo de nuevo.");
+    return;
+  }
+  if (pending.kind === "recoveryKey") {
+    ctx.session.user.pendingAction = undefined;
+    ctx.session.user.pendingSince = undefined;
+    const telegramUserId = ctx.from.id;
+    const telegramChatId = ctx.chat.id;
+    try {
+      const recovered = await consumeRecoveryKey(
+        text,
+        telegramUserId,
+        async () =>
+          ctx.chat?.type === "private" &&
+          ctx.chat.id === telegramChatId &&
+          ctx.from?.id === telegramUserId &&
+          await (async () => {
+            try {
+              const chat = await ctx.api.getChat(telegramUserId);
+              return chat.id === telegramUserId && chat.type === "private";
+            } catch {
+              return false;
+            }
+          })(),
+      );
+      await ctx.reply(
+        recovered
+          ? "✅ Propiedad de ZEUS recuperada. Esta clave ya no puede volver a usarse."
+          : "⛔ Clave de recuperación inválida, revocada o ya utilizada.",
+      );
+    } catch {
+      await ctx.reply("⛔ No se pudo procesar la recuperación.");
+    }
+    return;
+  }
+  if (
+    pending.kind === "automaticMessage" ||
+    pending.kind === "automaticFrequency" ||
+    pending.kind === "configMentions" ||
+    pending.kind === "verifiedTitles"
+  ) {
+    if (!(await isUserAdminOf(ctx, pending.groupId))) {
+      ctx.session.user.pendingAction = undefined;
+      await ctx.reply("⛔ Ya no eres administrador de ese grupo.");
+      return;
+    }
+    const data = await getGroupData(pending.groupId);
+    if (pending.kind === "automaticMessage") {
+      data.automaticMessage = {
+        enabled: data.automaticMessage?.enabled ?? false,
+        message: text,
+        intervalMinutes: data.automaticMessage?.intervalMinutes ?? 60,
+      };
+      await saveGroupData(pending.groupId, data);
+      await automaticMessageScheduler.refreshGroup(pending.groupId);
+      await ctx.reply("✅ Mensaje automático guardado.");
+    } else if (pending.kind === "automaticFrequency") {
+      const minutes = Number(text);
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 43_200) {
+        await ctx.reply("❌ La frecuencia debe ser un número entero entre 1 y 43200.");
+        return;
+      }
+      if (!data.automaticMessage) {
+        await ctx.reply("❌ Primero crea un mensaje automático.");
+        return;
+      }
+      data.automaticMessage.intervalMinutes = minutes;
+      data.automaticMessage.nextRunAt = data.automaticMessage.enabled
+        ? new Date(Date.now() + minutes * 60_000).toISOString()
+        : undefined;
+      await saveGroupData(pending.groupId, data);
+      await automaticMessageScheduler.refreshGroup(pending.groupId);
+      await ctx.reply("✅ Frecuencia guardada.");
+    } else if (pending.kind === "verifiedTitles") {
+      const titles = [...new Set(text.split(",").map((title) => title.trim()).filter(Boolean))];
+      if (titles.length === 0) {
+        await ctx.reply("❌ Debes indicar al menos un título.");
+        return;
+      }
+      data.verifiedTitles = titles;
+      await saveGroupData(pending.groupId, data);
+      await ctx.reply("✅ Títulos reconocidos guardados.");
+    } else {
+      const mentions = Number(text);
+      if (!Number.isInteger(mentions) || mentions < 0 || mentions > 50) {
+        await ctx.reply("❌ Escribe un número entero entre 0 y 50.");
+        return;
+      }
+      data.antiSpam.maxMentionsPerMessage = mentions;
+      await saveGroupData(pending.groupId, data);
+      await ctx.reply("✅ Límite de menciones guardado.");
+    }
+    ctx.session.user.pendingAction = undefined;
+    const section = pending.kind === "automaticMessage" || pending.kind === "automaticFrequency"
+        ? "mensajes"
+        : "config";
+    const panel = buildSubmenuPanel(section, ctx.session.user.selectedGroupTitle);
+    if (panel) await renderPanel(ctx, panel);
+    return;
+  }
   console.log(
     `[PRIVATE INPUT] received userId=${ctx.from.id} ` +
       `pendingKind=${pending.kind} text=${JSON.stringify(text.slice(0, 120))}`,
@@ -58,6 +176,46 @@ privateInput.on("message:text", async (ctx) => {
   }
 
   try {
+    if (pending.kind === "verifiedAdd") {
+      ctx.session.user.pendingAction = undefined;
+      ctx.session.user.pendingSince = undefined;
+      try {
+        let resolved = await resolveUserTrigger(ctx, pending.groupId, text);
+        if (!resolved && /^-?\d+$/.test(text)) {
+          const userId = Number(text);
+          if (Number.isSafeInteger(userId) && userId > 0) {
+            await recordObservedUser(pending.groupId, { id: userId });
+            resolved = { id: userId };
+          }
+        }
+        if (!resolved) {
+          await ctx.reply(
+            "❌ No encontré ese usuario. Usa un @username ya observado o introduce su telegram_id numérico.",
+          );
+          return;
+        }
+        await addVerifiedUser({
+          groupId: pending.groupId,
+          userId: resolved.id,
+          username: resolved.username,
+          displayName: resolved.name,
+          createdBy: ctx.from.id,
+          verificationMethod: "manual",
+        });
+        await markUserVerified(
+          pending.groupId,
+          resolved.id,
+          resolved.username,
+          resolved.name,
+        );
+        console.log(`[VERIFIED] Usuario verificado agregado groupId=${pending.groupId} userId=${resolved.id}`);
+        await ctx.reply(`✅ Usuario añadido correctamente: ${resolved.username ? `@${resolved.username}` : resolved.name || resolved.id}`);
+      } catch (error) {
+        console.error("[VERIFIED] No se pudo agregar el usuario:", error);
+        await ctx.reply("⛔ No se pudo guardar la verificación.");
+      }
+      return;
+    }
     if (pending.kind === "illegalAdd") {
       const term = text.replace(/\s+/g, " ").trim();
       const normalized = normalizeFilterTerm(term);
@@ -153,6 +311,26 @@ async function handleWarnReason(
 ): Promise<void> {
   const data = await getGroupData(groupId);
   const tracked = getTrackedUser(data, userId);
+  if (isCerberoExecutionEnabled()) {
+    const queued = await delegateSecurityCommand({
+      groupId,
+      action: "WARN_USER",
+      targetUserId: userId,
+      payload: {
+        requester_id: ctx.from?.id,
+        requester_name: ctx.from?.first_name,
+        reason: reason.trim(),
+        warn_limit: data.warnLimit,
+        warn_action: data.warnAction,
+      },
+    });
+    await ctx.reply(
+      queued.ok
+        ? `⏳ Advertencia enviada a Cerbero (${queued.commandId}).`
+        : `⛔ ${queued.error}`,
+    );
+    return;
+  }
   const result = await warnUser(
     ctx,
     groupId,
@@ -217,6 +395,17 @@ async function handlePick(
       return true;
     }
     case "unmute": {
+      if (isCerberoExecutionEnabled()) {
+        const queued = await delegateSecurityCommand({
+          groupId,
+          action: "UNMUTE_USER",
+          targetUserId: user.id,
+        });
+        await ctx.reply(
+          queued.ok ? "⏳ Desmute enviado a Cerbero." : `⛔ ${queued.error}`,
+        );
+        return true;
+      }
       const result = await unmuteUser(ctx, groupId, user.id, formatName(user));
       await ctx.reply(result.ok ? "🔊 Silencio eliminado." : `⛔ ${result.error}`);
       if (result.ok) {
@@ -278,6 +467,24 @@ async function handleMuteMinutes(
   const data = await getGroupData(groupId);
   const tracked = getTrackedUser(data, userId);
   const who = tracked.name || tracked.username;
+
+  if (isCerberoExecutionEnabled()) {
+    const queued = await delegateSecurityCommand({
+      groupId,
+      action: "MUTE_USER",
+      targetUserId: userId,
+      payload: {
+        duration_minutes: minutes,
+        reason: "Acción manual desde Zeus",
+      },
+    });
+    await ctx.reply(
+      queued.ok
+        ? `⏳ Silencio de ${minutes} min enviado a Cerbero.`
+        : `⛔ ${queued.error}`,
+    );
+    return true;
+  }
 
   const result = await muteUser(ctx, groupId, userId, minutes, who);
   await ctx.reply(

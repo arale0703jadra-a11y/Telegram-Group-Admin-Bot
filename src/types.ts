@@ -21,6 +21,10 @@ export interface GroupConfig {
 export type PickAction = "search" | "warn" | "mute" | "unmute" | "ban";
 
 export type PendingAction =
+  | { kind: "recoveryKey" }
+  | { kind: "automaticMessage"; groupId: number }
+  | { kind: "automaticFrequency"; groupId: number }
+  | { kind: "configMentions"; groupId: number }
   | { kind: "search"; groupId: number; messageId?: number }
   | { kind: "filterAdd"; groupId: number; messageId?: number }
   | { kind: "illegalAdd"; groupId: number; messageId?: number }
@@ -48,6 +52,8 @@ export type PendingAction =
       messageId?: number;
     }
   | { kind: "warnReason"; userId: number; groupId: number; messageId?: number }
+  | { kind: "verifiedAdd"; groupId: number; messageId?: number }
+  | { kind: "verifiedTitles"; groupId: number; messageId?: number }
   | { kind: "banReason"; userId: number; groupId: number; messageId?: number }
   | { kind: "unbanId"; groupId: number; messageId?: number };
 
@@ -60,6 +66,7 @@ export interface UserPanelState {
   selectedGroupId?: number;
   selectedGroupTitle?: string;
   pendingAction?: PendingAction;
+  pendingSince?: number;
 }
 
 /**

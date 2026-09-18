@@ -2,6 +2,10 @@ import type { ChatMember } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
 import { isProtectedMember, getMemberSafely } from "../moderation/actions.js";
+import {
+  getSecurityWarnings,
+  isCerberoExecutionEnabled,
+} from "../services/security-commands.js";
 
 export interface ResolvedUser {
   id: number;
@@ -158,6 +162,9 @@ export async function getUserCard(
   const member = await getMemberSafely(ctx, chatId, userId);
   const mute = data.mutedUsers[String(userId)];
   const bannedRecord = data.bannedUsers[String(userId)];
+  const sharedWarnings = isCerberoExecutionEnabled()
+    ? await getSecurityWarnings(chatId, userId)
+    : data.warnings[String(userId)] ?? [];
   if (member) {
     user.firstName = member.user.first_name;
     user.lastName = member.user.last_name;
@@ -180,7 +187,7 @@ export async function getUserCard(
     groupTitle,
     user,
     member,
-    warnings: (data.warnings[String(userId)] ?? []).length,
+    warnings: sharedWarnings.length,
     warnLimit: data.warnLimit,
     muted,
     mutedUntil:

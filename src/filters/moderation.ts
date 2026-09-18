@@ -8,11 +8,15 @@ import {
   warnUser,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
-import { OWNER_ID } from "../config.js";
 import { isGroupChat } from "../utils/permissions.js";
 import { buildPromotionMessage } from "./messages.js";
 import { detectPromotion } from "./detector.js";
 import type { MyContext } from "../types.js";
+import {
+  delegateSecurityCommand,
+  isCerberoExecutionEnabled,
+} from "../services/security-commands.js";
+import { getVerifiedUserPermissions } from "../services/verified-users.js";
 
 export const promotionModeration = new Composer<MyContext>();
 
@@ -36,7 +40,12 @@ promotionModeration.on("message", async (ctx, next) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from.id;
   const data = await getGroupData(chatId);
-  if (!data.promotion.enabled || data.promotion.verifiedUsers[String(userId)]) {
+  const verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
+  if (
+    !data.promotion.enabled ||
+    data.promotion.verifiedUsers[String(userId)] ||
+    verifiedPermissions?.bypass_promotion_filter
+  ) {
     await next();
     return;
   }
@@ -46,7 +55,7 @@ promotionModeration.on("message", async (ctx, next) => {
     !member ||
     member.user.is_bot ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId
+    false
   ) {
     await logEvent(ctx, chatId, "DELETE", {
       targetId: userId,
@@ -75,19 +84,51 @@ promotionModeration.on("message", async (ctx, next) => {
       Math.min(infraction - 2, data.promotion.recurrenceMuteMinutes.length - 1)
     ] ?? 0;
 
-  const warning = await warnUser(
-    ctx,
-    chatId,
-    userId,
-    ctx.from.first_name,
-    `Promoción detectada: ${detection.matches.join(", ") || "enlace"}`,
-  );
-  const deletion = shouldModerate
-    ? await deleteMessageById(ctx, chatId, ctx.message.message_id)
-    : { ok: false };
+  const reason = `Promoción detectada: ${detection.matches.join(", ") || "enlace"}`;
+  let warning = { ok: true };
+  let deletion = { ok: false };
+  if (isCerberoExecutionEnabled()) {
+    const warningOrder = await delegateSecurityCommand({
+      groupId: chatId,
+      action: "WARN_USER",
+      targetUserId: userId,
+      payload: { reason, warn_limit: data.warnLimit, warn_action: data.warnAction },
+    });
+    warning = { ok: warningOrder.ok };
+    if (shouldModerate) {
+      const deleteOrder = await delegateSecurityCommand({
+        groupId: chatId,
+        action: "DELETE_MESSAGE",
+        targetMessageId: ctx.message.message_id,
+        payload: { reason },
+      });
+      deletion = { ok: deleteOrder.ok };
+    }
+  } else {
+    warning = await warnUser(
+      ctx,
+      chatId,
+      userId,
+      ctx.from.first_name,
+      reason,
+    );
+    deletion = shouldModerate
+      ? await deleteMessageById(ctx, chatId, ctx.message.message_id)
+      : { ok: false };
+  }
   let muted = false;
   if (shouldModerate && infraction >= 2 && muteMinutes > 0) {
-    muted = (await muteUser(ctx, chatId, userId, muteMinutes, ctx.from.first_name)).ok;
+    if (isCerberoExecutionEnabled()) {
+      const muteOrder = await delegateSecurityCommand({
+        groupId: chatId,
+        action: "MUTE_USER",
+        targetUserId: userId,
+        payload: { duration_minutes: muteMinutes, reason },
+      });
+      muted = muteOrder.ok;
+    } else {
+      muted = (await muteUser(ctx, chatId, userId, muteMinutes, ctx.from.first_name)).ok;
+    }
   }
 
   await logEvent(ctx, chatId, "DELETE", {

@@ -14,14 +14,50 @@ import {
   markUserAsAdmin,
   registerGroup,
   unregisterGroup,
+  getAllKnownGroups,
 } from "./services/group-registry.js";
 import type { MyContext } from "./types.js";
+import {
+  ensureCerberoBinding,
+  initializeCerbero,
+} from "./services/security-commands.js";
+import { automaticMessageScheduler } from "./services/automatic-messages.js";
+import { cleanupRecoveryChallenges } from "./services/system-owner.js";
+import { recordObservedUser } from "./services/user-registry.js";
+import { syncVerifiedAdministrators } from "./services/verified-title-sync.js";
+
+const RECOVERY_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const VERIFIED_TITLE_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+let recoveryCleanupTimer: ReturnType<typeof setInterval> | undefined;
+
+function startRecoveryChallengeCleanup(): void {
+  if (recoveryCleanupTimer) return;
+  const runCleanup = async (): Promise<void> => {
+    try {
+      const deleted = await cleanupRecoveryChallenges();
+      if (deleted > 0) {
+        console.log(`[RECOVERY] Challenges limpiados: ${deleted}`);
+      }
+    } catch (error) {
+      console.error("[RECOVERY] No se pudieron limpiar los challenges:", error);
+    }
+  };
+  void runCleanup();
+  recoveryCleanupTimer = setInterval(() => void runCleanup(), RECOVERY_CLEANUP_INTERVAL_MS);
+}
+
+function stopRecoveryChallengeCleanup(): void {
+  if (!recoveryCleanupTimer) return;
+  clearInterval(recoveryCleanupTimer);
+  recoveryCleanupTimer = undefined;
+}
 
 async function main(): Promise<void> {
   validateConfig();
 
   const bot = new Bot<MyContext>(process.env.BOT_TOKEN as string);
   await bot.init();
+  await initializeCerbero();
   const inactivityContext = Object.assign(
     new Context({ update_id: 0 }, bot.api, bot.botInfo),
     { session: { group: {}, user: {} } },
@@ -55,6 +91,7 @@ async function main(): Promise<void> {
 
     if (next === "administrator") {
       registerGroup(ctx.chat.id, ctx.chat.title ?? "");
+      await ensureCerberoBinding(ctx.chat.id);
 
       // Registra a los administradores reales para poder ofrecer el
       // panel en privado sin depender solo de /menu.
@@ -66,6 +103,12 @@ async function main(): Promise<void> {
           }
           markUserAsAdmin(ctx.chat.id, admin.user.id);
         }
+        await syncVerifiedAdministrators(ctx.api, ctx.chat.id).catch((error) => {
+          console.error(
+            `[VERIFIED] No se pudo sincronizar custom_title groupId=${ctx.chat.id}:`,
+            error,
+          );
+        });
       } catch {
         // Sin permisos o fallo temporal: se ignora.
       }
@@ -100,80 +143,43 @@ async function main(): Promise<void> {
     );
     try {
       const data = await getGroupData(chatId);
-      const now = Math.floor(Date.now() / 1000);
       const joinedMembers = "new_chat_members" in ctx.message
         ? ctx.message.new_chat_members ?? []
         : [];
-
-      if (!ctx.from.is_bot) {
-        const key = String(ctx.from.id);
-        const existing = data.indexedUsers[key];
-        const firstName = ctx.from.first_name ?? "";
-        const lastName = ctx.from.last_name ?? "";
-        const displayName = [firstName, lastName].filter(Boolean).join(" ");
-        if (existing) {
-          existing.groupId = chatId;
-          existing.firstSeen ??= now;
-          existing.firstName = firstName;
-          existing.lastName = lastName;
-          existing.username = ctx.from.username ?? "";
-          existing.name = displayName;
-          existing.displayName = displayName;
-          existing.lastSeen = now;
-          existing.lastActivityType = "message";
-        } else {
-          data.indexedUsers[key] = {
-            id: ctx.from.id,
-            groupId: chatId,
-            firstName,
-            lastName,
-            name: displayName,
-            username: ctx.from.username ?? "",
-            firstSeen: now,
-            displayName,
-            lastSeen: now,
-            lastActivityType: "message",
-          };
-        }
-      }
-
-      for (const member of joinedMembers) {
-        if (member.is_bot) continue;
-        const key = String(member.id);
-        const existing = data.indexedUsers[key];
-        const name = [member.first_name, member.last_name].filter(Boolean).join(" ");
-        if (existing) {
-          existing.groupId = chatId;
-          existing.firstSeen ??= now;
-          existing.joinedAt ??= now;
-          existing.lastActivityType = "join";
-          existing.firstName = member.first_name;
-          existing.lastName = member.last_name;
-          existing.name = name;
-          existing.displayName = name;
-          existing.username = member.username ?? "";
-        } else {
-          data.indexedUsers[key] = {
-            id: member.id,
-            groupId: chatId,
-            firstName: member.first_name,
-            lastName: member.last_name,
-            name,
-            displayName: name,
-            username: member.username ?? "",
-            firstSeen: now,
-            joinedAt: now,
-            lastActivityType: "join",
-          };
-        }
-      }
 
       data.recentMessages.push(ctx.message.message_id);
       if (data.recentMessages.length > 250) {
         data.recentMessages.splice(0, data.recentMessages.length - 250);
       }
 
+      if (!ctx.from.is_bot) {
+        data.activityMessages.push({
+          messageId: ctx.message.message_id,
+          groupId: chatId,
+          userId: ctx.from.id,
+          name: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" "),
+          firstName: ctx.from.first_name,
+          lastName: ctx.from.last_name,
+          username: ctx.from.username,
+          timestamp: ctx.message.date,
+        });
+        if (data.activityMessages.length > 10_000) {
+          data.activityMessages.splice(0, data.activityMessages.length - 10_000);
+        }
+      }
+
       await saveGroupData(chatId, data);
+      if (!ctx.from.is_bot) {
+        await recordObservedUser(chatId, ctx.from, { message: true });
+      }
+      for (const member of joinedMembers) {
+        if (!member.is_bot) {
+          await recordObservedUser(chatId, member, {
+            status: "member",
+            joinedAt: Math.floor(Date.now() / 1000),
+          });
+        }
+      }
       console.log(
         `[USER OBSERVED] persisted groupId=${chatId} userId=${ctx.from.id}`,
       );
@@ -194,7 +200,18 @@ async function main(): Promise<void> {
   const inactivityTimer = setInterval(() => {
     void runInactivityScan(inactivityContext);
   }, 60 * 60 * 1000);
+  const verifiedTitleSyncTimer = setInterval(() => {
+    for (const group of getAllKnownGroups()) {
+      void syncVerifiedAdministrators(bot.api, group.id).catch((error) => {
+        console.error(
+          `[VERIFIED] No se pudo sincronizar custom_title groupId=${group.id}:`,
+          error,
+        );
+      });
+    }
+  }, VERIFIED_TITLE_SYNC_INTERVAL_MS);
   void runInactivityScan(inactivityContext);
+  startRecoveryChallengeCleanup();
 
   // Graceful shutdown: forzar flush de datos antes de cerrar
   const shutdown = async (signal: string): Promise<void> => {
@@ -208,7 +225,10 @@ async function main(): Promise<void> {
     }
     try {
       await bot.stop();
+      automaticMessageScheduler.stop();
       clearInterval(inactivityTimer);
+      clearInterval(verifiedTitleSyncTimer);
+      stopRecoveryChallengeCleanup();
       console.log("🤖 Bot detenido correctamente.");
     } catch (error) {
       console.error("❌ Error al detener bot:", error);
@@ -225,6 +245,7 @@ async function main(): Promise<void> {
     allowed_updates: ["message", "callback_query", "my_chat_member"],
     onStart: (botInfo) => {
       console.log(`🤖 ${BOT_NAME} iniciado correctamente como @${botInfo.username}`);
+      automaticMessageScheduler.start(bot.api);
     },
   });
 

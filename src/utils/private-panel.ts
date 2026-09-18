@@ -6,8 +6,8 @@ const NO_GROUPS_MESSAGE =
   "⛔ No tienes ningún grupo administrable con este bot.\n\n" +
   "Para empezar:\n" +
   "1️⃣ Añádeme a tu grupo y promuévelo a administrador.\n" +
-  "2️⃣ En el grupo, escribe /menu para activar el acceso.\n" +
-  "3️⃣ Vuelve aquí y pulsa /menu.";
+  "2️⃣ Vuelve a escribir /menu en el grupo.\n" +
+  "3️⃣ Abre el bot en privado y vuelve a pulsar /menu.";
 
 /**
  * Abre el panel de administración en el chat privado del bot:
@@ -17,7 +17,8 @@ const NO_GROUPS_MESSAGE =
  * - Varios grupos: muestra el selector de grupos.
  */
 export async function openPrivatePanel(ctx: MyContext): Promise<void> {
-  const groups = await getAdministrableGroups(ctx);
+  const candidateGroups = await getAdministrableGroups(ctx);
+  const groups = candidateGroups;
 
   if (groups.length === 0) {
     await ctx.reply(NO_GROUPS_MESSAGE);

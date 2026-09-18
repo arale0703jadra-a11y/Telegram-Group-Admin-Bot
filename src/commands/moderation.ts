@@ -9,6 +9,10 @@ import { scheduleMessageDeletion } from "../utils/cleanup.js";
 import { buildUserCardPanel } from "../menus/panels.js";
 import { getUserCard } from "../utils/users.js";
 import type { MyContext } from "../types.js";
+import {
+  delegateSecurityCommand,
+  isCerberoExecutionEnabled,
+} from "../services/security-commands.js";
 
 /**
  * Comandos de moderación ejecutados DENTRO del grupo.
@@ -37,6 +41,26 @@ moderationCommand.command("borrar", async (ctx) => {
   const target = command.reply_to_message;
   if (!target) {
     await sendEphemeral(ctx, "💬 Responde al mensaje que quieres borrar y vuelve a escribir /borrar.");
+    return;
+  }
+
+  if (isCerberoExecutionEnabled()) {
+    const queued = await delegateSecurityCommand({
+      groupId: chatId,
+      action: "DELETE_MESSAGE",
+      targetMessageId: target.message_id,
+      payload: {
+        requester_id: ctx.from?.id,
+        requester_name: ctx.from?.first_name,
+        reason: "Comando /borrar desde Zeus",
+      },
+    });
+    await sendEphemeral(
+      ctx,
+      queued.ok
+        ? `⏳ Borrado enviado a Cerbero (${queued.commandId}).`
+        : `⛔ ${queued.error}`,
+    );
     return;
   }
 

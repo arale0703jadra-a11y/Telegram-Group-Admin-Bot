@@ -7,9 +7,12 @@ import {
   isVerifiableMember,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
-import { OWNER_ID } from "../config.js";
 import type { MyContext } from "../types.js";
 import type { IndexedUser } from "../storage/types.js";
+import {
+  delegateSecurityCommand,
+  isCerberoExecutionEnabled,
+} from "./security-commands.js";
 
 export interface InactiveUser extends IndexedUser {
   inactiveDays: number;
@@ -46,7 +49,7 @@ export async function getInactiveUsers(
       member.status === "kicked" ||
       isProtectedMember(member) ||
       !isVerifiableMember(member) ||
-      OWNER_ID === user.id
+      false
     ) {
       continue;
     }
@@ -89,7 +92,7 @@ export async function removeInactiveUser(
     member.status === "kicked" ||
     isProtectedMember(member) ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId
+    false
   ) {
     await logEvent(ctx, chatId, "INACTIVITY_REMOVE_ERROR", {
       targetId: userId,
@@ -106,6 +109,22 @@ export async function removeInactiveUser(
       detail: "Sin permisos para expulsar.",
     });
     return "error";
+  }
+  if (isCerberoExecutionEnabled()) {
+    const queued = await delegateSecurityCommand({
+      groupId: chatId,
+      action: "KICK_USER",
+      targetUserId: userId,
+      payload: { reason: "INACTIVITY" },
+    });
+    await logEvent(ctx, chatId, "INACTIVITY_REMOVE", {
+      targetId: userId,
+      result: queued.ok ? "ok" : "error",
+      detail: queued.ok
+        ? `Orden KICK_USER enviada a Cerbero: ${queued.commandId}`
+        : queued.error,
+    });
+    return queued.ok ? "removed" : "error";
   }
   try {
     await ctx.api.banChatMember(chatId, userId);

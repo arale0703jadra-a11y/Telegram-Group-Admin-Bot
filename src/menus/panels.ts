@@ -10,10 +10,13 @@ import type {
   IndexedUser,
   PromotionConfig,
   WarningEntry,
+  AutomaticMessageConfig,
 } from "../storage/types.js";
+import type { ActivityStats } from "../services/activity.js";
 import type { ResolvedUser, UserCardData } from "../utils/users.js";
 import type { MyContext } from "../types.js";
 import { getGroupData } from "../storage/index.js";
+import type { VerifiedUser, VerifiedUserPermissions } from "../services/verified-users.js";
 
 export interface Panel {
   text: string;
@@ -24,7 +27,7 @@ export interface Panel {
  * Esquema de callback_data del panel.
  *   menu:main / menu:home        -> panel principal
  *   menu:sub:<seccion>           -> abre un submenú
- *   menu:action:<seccion>:<id>   -> acción aún en desarrollo
+ *   menu:action:<seccion>:<id>   -> acción de sección
  *   menu:groups                  -> selector de grupos
  *   menu:group:<chat_id>         -> selecciona un grupo
  *
@@ -40,6 +43,7 @@ export const MenuAction = {
     `${MENU_PREFIX}:action:${section}:${id}`,
   groups: `${MENU_PREFIX}:groups`,
   group: (chatId: number): string => `${MENU_PREFIX}:group:${chatId}`,
+  help: (section: string): string => `${MENU_PREFIX}:help:${section}`,
 };
 
 /**
@@ -114,6 +118,23 @@ export const InactivityAction = {
   cancel: "ia:cancel",
 };
 
+export const VerifiedAction = {
+  add: "vu:add",
+  revoke: (userId: number): string => `vu:revoke:${userId}`,
+  toggle: (userId: number, permission: keyof VerifiedUserPermissions): string =>
+    `vu:toggle:${userId}:${permission}`,
+};
+
+export const UserAction = {
+  all: "us:all",
+  new: "us:new",
+  active: "us:active",
+  inactive: "us:inactive",
+  admins: "us:admins",
+  verified: "us:verified",
+  scan: "us:scan",
+};
+
 const PANEL_TITLE = "🛡️ *PANEL DE ADMINISTRACIÓN*";
 
 /**
@@ -140,7 +161,7 @@ function formatUserName(user: ResolvedUser): string {
 interface MenuItem {
   id: string;
   label: string;
-  /** Callback_data alternativo. Si no existe, se muestra "en desarrollo". */
+  /** Callback_data de la acción implementada para este botón. */
   cb?: string;
 }
 
@@ -148,16 +169,17 @@ interface MenuItem {
  * Categorías del panel principal, en el orden solicitado.
  */
 const CATEGORIES: MenuItem[] = [
-  { id: "usuarios", label: "👥 Usuarios" },
-  { id: "filtros", label: "🚫 Filtros" },
-  { id: "antispam", label: "🛡️ Anti-spam" },
-  { id: "inactividad", label: "⏰ Inactividad" },
-  { id: "limpieza", label: "👻 Limpieza" },
-  { id: "actividad", label: "📊 Actividad" },
-  { id: "reglas", label: "📜 Reglas" },
-  { id: "bienvenida", label: "👋 Bienvenida" },
-  { id: "config", label: "⚙️ Configuración" },
-  { id: "ayuda", label: "❓ Ayuda" },
+{ id: "usuarios", label: "👥 Usuarios" },
+{ id: "filtros", label: "🚫 Filtros" },
+{ id: "antispam", label: "🛡️ Anti-spam" },
+{ id: "inactividad", label: "⏰ Inactividad" },
+{ id: "limpieza", label: "🧹 Limpieza" },
+{ id: "actividad", label: "📊 Actividad" },
+{ id: "config", label: "⚙️ Configuración" },
+{ id: "cerbero", label: "🛡️ Seguridad Cerbero" },
+{ id: "verificadas", label: "👑 Verificadas" },
+{ id: "mensajes", label: "📢 Mensajes automáticos" },
+{ id: "ayuda", label: "🆘 Ayuda" },
 ];
 
 interface SubmenuDef {
@@ -179,6 +201,13 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     items: [
       { id: "buscar", label: "🔎 Buscar usuario", cb: ModAction.search },
       { id: "lista", label: "👥 Usuarios detectados", cb: ModAction.users(0) },
+      { id: "todos", label: "📋 Todos", cb: UserAction.all },
+      { id: "nuevos", label: "🆕 Nuevos", cb: UserAction.new },
+      { id: "activos", label: "🟢 Activos", cb: UserAction.active },
+      { id: "inactivos", label: "⚪ Inactivos", cb: UserAction.inactive },
+      { id: "admins", label: "🛡️ Administradores", cb: UserAction.admins },
+      { id: "verificadas", label: "👑 Verificadas", cb: UserAction.verified },
+      { id: "escanear", label: "🔄 Escanear grupo", cb: UserAction.scan },
       { id: "baneados", label: "🚫 Usuarios baneados", cb: ModAction.unbanList },
     ],
   },
@@ -194,7 +223,6 @@ const SUBMENUS: Record<string, SubmenuDef> = {
         label: "🗑️ Eliminar palabra/frase",
         cb: FilterAction.deletePage(0),
       },
-      { id: "accion", label: "⚙️ Configurar acción" },
       { id: "activar", label: "🔔 Activar/desactivar filtros", cb: FilterAction.toggle },
       { id: "ilegal", label: "🔴 Filtro de contenido ilegal", cb: FilterAction.illegal },
     ],
@@ -204,11 +232,11 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Anti-spam",
     description: "Protección contra spam, enlaces y flujo de mensajes.",
     items: [
-      { id: "activar", label: "🛡️ Activar/desactivar" },
-      { id: "sensibilidad", label: "⚙️ Configurar sensibilidad" },
-      { id: "enlaces", label: "🔗 Control de enlaces" },
-      { id: "repetidos", label: "📩 Control de mensajes repetidos" },
-      { id: "flood", label: "⚡ Control de flood" },
+      { id: "activar", label: "🛡️ Activar/desactivar", cb: AntiSpamAction.toggle },
+      { id: "menciones", label: "👥 Máx. menciones", cb: AntiSpamAction.mentions },
+      { id: "enlaces", label: "🔗 Control de enlaces", cb: AntiSpamAction.links },
+      { id: "repetidos", label: "📩 Control de mensajes repetidos", cb: AntiSpamAction.repeated },
+      { id: "automatico", label: "🤖 Detección automática", cb: AntiSpamAction.automated },
     ],
   },
   inactividad: {
@@ -216,77 +244,158 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Inactividad",
     description: "Detecta y gestiona usuarios inactivos del grupo.",
     items: [
-      { id: "activar", label: "⏰ Activar/desactivar" },
-      { id: "periodo", label: "📅 Configurar período" },
-      { id: "inactivos", label: "👥 Ver usuarios inactivos" },
-      { id: "limpiar", label: "🧹 Limpiar inactivos" },
+      { id: "activar", label: "⏰ Activar/desactivar", cb: InactivityAction.toggle },
+      { id: "periodo", label: "📅 Configurar período", cb: InactivityAction.config },
+      { id: "inactivos", label: "👥 Ver usuarios inactivos", cb: InactivityAction.list(0) },
+      { id: "limpiar", label: "🧹 Limpiar inactivos", cb: InactivityAction.clean },
     ],
   },
   limpieza: {
-    icon: "👻",
+    icon: "🧹",
     title: "Limpieza",
-    description: "Detección y limpieza de cuentas eliminadas y sin actividad.",
+    description: "Elimina mensajes recientes que ZEUS puede localizar.",
     items: [
-      { id: "detectar", label: "👻 Detectar cuentas eliminadas" },
-      { id: "limpiar", label: "🧹 Limpiar cuentas eliminadas" },
-      { id: "auto", label: "⚙️ Configuración automática" },
+      { id: "limpiar", label: "🧹 Limpiar mensajes recientes", cb: ModAction.clean },
+      { id: "ayuda", label: "ℹ️ Límites de limpieza", cb: ModAction.deleteHelp },
     ],
   },
   actividad: {
     icon: "📊",
     title: "Actividad",
-    description: "Estadísticas y registro de eventos del grupo.",
+    description: "Consulta la actividad observada del grupo.",
     items: [
-      { id: "estadisticas", label: "📈 Estadísticas del grupo" },
-      { id: "activos", label: "👥 Usuarios más activos" },
-      { id: "mensajes", label: "📨 Mensajes registrados" },
-      { id: "moderacion", label: "🛡️ Acciones de moderación" },
-      { id: "eventos", label: "📋 Registro de eventos" },
-    ],
-  },
-  reglas: {
-    icon: "📜",
-    title: "Reglas",
-    description: "Gestiona las reglas publicadas del grupo.",
-    items: [
-      { id: "ver", label: "📜 Ver reglas" },
-      { id: "editar", label: "✏️ Editar reglas" },
-      { id: "publicar", label: "📌 Publicar reglas" },
-      { id: "eliminar", label: "🗑️ Eliminar reglas" },
-    ],
-  },
-  bienvenida: {
-    icon: "👋",
-    title: "Bienvenida",
-    description: "Configura el mensaje de bienvenida del grupo.",
-    items: [
-      { id: "activar", label: "👋 Activar/desactivar" },
-      { id: "editar", label: "✏️ Editar mensaje" },
-      { id: "probar", label: "🧪 Probar bienvenida" },
+      { id: "resumen", label: "📊 Resumen", cb: MenuAction.action("actividad", "resumen") },
+      { id: "actualizar", label: "🔄 Actualizar", cb: MenuAction.action("actividad", "actualizar") },
     ],
   },
   config: {
     icon: "⚙️",
     title: "Configuración",
-    description: "Ajustes generales y avanzados del bot en este grupo.",
+    description: "Consulta la configuración activa del grupo.",
     items: [
-      { id: "grupo", label: "🌐 Configuración del grupo" },
-      { id: "moderacion", label: "🛡️ Configuración de moderación" },
-      { id: "admins", label: "👥 Administradores" },
-      { id: "notificaciones", label: "🔔 Notificaciones" },
-      { id: "avanzado", label: "⚙️ Configuración avanzada" },
+      { id: "ver", label: "⚙️ Ver configuración", cb: "cfg:config_view" },
+      { id: "antispam", label: "🛡️ Alternar anti-spam", cb: "cfg:antispam_toggle" },
+      { id: "enlaces", label: "🔗 Alternar enlaces", cb: "cfg:links_toggle" },
+      { id: "multimedia", label: "🖼️ Alternar multimedia repetida", cb: "cfg:multimedia_toggle" },
+      { id: "nuevos", label: "👋 Alternar nuevos usuarios", cb: "cfg:new_users_toggle" },
+      { id: "recurrencia", label: "🔁 Cambiar recurrencia", cb: "cfg:recurrence_cycle" },
+      { id: "emergencia", label: "🚨 Alternar emergencia", cb: "cfg:emergency_toggle" },
+      { id: "menciones", label: "💬 Cambiar límite de menciones", cb: "cfg:mentions_edit" },
+      { id: "cerbero_estado", label: "🛡️ Alternar protección Cerbero", cb: "cfg:cerbero_toggle" },
+      { id: "cerbero_media", label: "🖼️ Alternar multimedia Cerbero", cb: "cfg:cerbero_media_toggle" },
+      { id: "cerbero", label: "🛡️ Sincronizar configuración Cerbero", cb: "cfg:cerbero_sync" },
+      { id: "verified", label: "👑 Configurar Verificadas", cb: "cfg:verified_view" },
+    ],
+  },
+  mensajes: {
+    icon: "📢",
+    title: "Mensajes automáticos",
+    description: "Consulta el estado de los mensajes automáticos del grupo.",
+    items: [
+      { id: "estado", label: "📢 Ver estado", cb: "cfg:auto_view" },
+      { id: "crear", label: "➕ Crear/editar mensaje", cb: "cfg:auto_edit" },
+      { id: "activar", label: "🟢 Activar/desactivar", cb: "cfg:auto_toggle" },
+      { id: "frecuencia", label: "⏱️ Cambiar frecuencia", cb: "cfg:auto_frequency" },
+      { id: "eliminar", label: "🗑️ Eliminar mensaje", cb: "cfg:auto_delete" },
+      { id: "ahora", label: "📨 Enviar ahora", cb: "cfg:auto_send" },
+    ],
+  },
+  verificadas: {
+    icon: "👑",
+    title: "Verificadas",
+    description: "Usuarios de confianza y excepciones internas por grupo.",
+    items: [
+      { id: "lista", label: "👑 Ver verificadas", cb: "vu:list" },
+      { id: "agregar", label: "➕ Agregar verificada", cb: VerifiedAction.add },
+    ],
+  },
+  cerbero: {
+    icon: "🛡️",
+    title: "Seguridad Cerbero",
+    description: "Estado, estadísticas y eventos del ejecutor de seguridad.",
+    items: [
+      { id: "estado", label: "📡 Estado del bot", cb: MenuAction.action("cerbero", "estado") },
+      { id: "estadisticas", label: "📊 Estadísticas últimas 24h", cb: MenuAction.action("cerbero", "estadisticas") },
+      { id: "eventos", label: "📋 Últimos eventos", cb: MenuAction.action("cerbero", "eventos") },
     ],
   },
   ayuda: {
-    icon: "❓",
+    icon: "🆘",
     title: "Ayuda",
-    description: "Información sobre el panel y los permisos del bot.",
+    description: "Accesos rápidos para emergencias y recuperación.",
     items: [
-      { id: "comandos", label: "📖 Ver comandos" },
-      { id: "permisos", label: "🛡️ Sobre permisos" },
+      { id: "emergencias", label: "🚨 Emergencias", cb: MenuAction.help("emergencias") },
+      { id: "recovery", label: "🔐 Recovery Key", cb: MenuAction.help("recovery") },
     ],
   },
 };
+
+export function buildHelpEmergenciesPanel(): Panel {
+  return {
+    text:
+      "🆘 *AYUDA*\n\n" +
+      "🚨 *Emergencias*\n\n" +
+      "/menu — Abrir el panel administrativo.\n" +
+      "/borrar — Eliminar un mensaje respondiendo a él.\n" +
+      "Los comandos /mute, /unmute, /ban, /unban y /kick no están implementados como comandos independientes; sus acciones están disponibles desde el panel.\n\n" +
+      "Los comandos de administración requieren permisos de administrador cuando corresponda.",
+    keyboard: new InlineKeyboard()
+      .text("⬅️ Volver", MenuAction.sub("ayuda")),
+  };
+}
+
+export function buildHelpRecoveryPanel(): Panel {
+  return {
+    text:
+      "🆘 *AYUDA*\n\n" +
+      "🔐 *Recovery Key*\n\n" +
+      "La Recovery Key sirve exclusivamente para recuperar el System Owner si pierdes el acceso a tu cuenta de Telegram.\n\n" +
+      "No sirve para administrar grupos ni concede permisos de Telegram. Es de un solo uso.\n\n" +
+      "Puedes crear o recuperar una cuenta nueva de Telegram, abrir Zeus desde esa cuenta y seleccionar “Recuperar System Owner”. Después introduce la Recovery Key para transferir el System Owner a la nueva cuenta. La clave utilizada queda consumida.",
+    keyboard: new InlineKeyboard()
+      .text("🔐 Recuperar System Owner", MenuAction.help("recover"))
+      .row()
+      .text("⬅️ Volver", MenuAction.sub("ayuda")),
+  };
+}
+
+export function buildAutomaticMessagePanel(
+  config: AutomaticMessageConfig | undefined,
+  groupTitle?: string,
+): Panel {
+  const keyboard = new InlineKeyboard()
+    .text("✏️ Crear/editar", "cfg:auto_edit").row()
+    .text("🟢 Activar/desactivar", "cfg:auto_toggle").row()
+    .text("⏱️ Cambiar frecuencia", "cfg:auto_frequency").row()
+    .text("📨 Enviar ahora", "cfg:auto_send").row()
+    .text("🗑️ Eliminar", "cfg:auto_delete").row()
+    .add(...buildNavRow().inline_keyboard.flat());
+  const body = config
+    ? `📢 ${config.message}\n\nEstado: ${config.enabled ? "activo" : "inactivo"}\nFrecuencia: ${config.intervalMinutes ?? "no definida"} min`
+    : "No hay mensaje automático configurado.";
+  return { text: `${formatGroupHeader(groupTitle)}\n\n${body}`, keyboard };
+}
+
+export function buildVerifiedTitleConfigPanel(
+  titles: string[],
+  autoDetect: boolean,
+  autoRemove: boolean,
+  groupTitle?: string,
+): Panel {
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n⚙️ *VERIFICADAS*\n\n` +
+      `Títulos reconocidos:\n${titles.map((title) => `• ${title}`).join("\n") || "• Ninguno"}\n\n` +
+      `Detectar automáticamente: ${autoDetect ? "✅ Sí" : "❌ No"}\n` +
+      `Quitar si pierde el título: ${autoRemove ? "✅ Sí (segunda comprobación/24 h)" : "❌ No"}`,
+    keyboard: new InlineKeyboard()
+      .text("✏️ Editar títulos", "cfg:verified_titles_edit").row()
+      .text(autoDetect ? "⛔ Desactivar detección" : "✅ Activar detección", "cfg:verified_detect_toggle").row()
+      .text(autoRemove ? "⛔ Desactivar retirada" : "✅ Activar retirada", "cfg:verified_remove_toggle").row()
+      .text("🔄 Sincronizar ahora", "cfg:verified_sync").row()
+      .add(...buildNavRow().inline_keyboard.flat()),
+  };
+}
 
 /**
  * Fila de navegación común: siempre permite salir del submenú.
@@ -308,6 +417,7 @@ export function buildMainPanel(groupTitle?: string): Panel {
     keyboard.text(category.label, MenuAction.sub(category.id));
     keyboard.row();
   }
+
   keyboard.text("🔄 Cambiar grupo", MenuAction.groups);
 
   return {
@@ -315,6 +425,46 @@ export function buildMainPanel(groupTitle?: string): Panel {
       `${formatGroupHeader(groupTitle)}\n\n` +
       "Selecciona una categoría para gestionar el grupo:\n\n" +
       "ℹ️ Solo los administradores del grupo pueden usar este panel.",
+    keyboard,
+  };
+}
+
+export function buildActivityPanel(
+  stats: ActivityStats,
+  groupTitle?: string,
+): Panel {
+  const topUsers = stats.topUsers.length
+    ? stats.topUsers
+        .map((user, index) => `${index + 1}. ${user.name}${user.username ? ` (@${user.username})` : ""}: ${user.count}`)
+        .join("\n")
+    : "Sin actividad registrada.";
+  const last7 = stats.byDay7.map((day) => `${day.label}: ${day.count}`).join("\n");
+  const last30 = stats.byDay30.map((day) => `${day.label}: ${day.count}`).join("\n");
+  const peak = [...stats.byHour].sort((a, b) => b.count - a.count)[0];
+  const previous = stats.messagesPrevious7Days;
+  const trend = stats.messagesLast7Days > previous
+    ? "📈 En aumento"
+    : stats.messagesLast7Days < previous
+      ? "📉 En descenso"
+      : "➡️ Estable";
+  const keyboard = new InlineKeyboard()
+    .text("🔄 Actualizar", MenuAction.action("actividad", "actualizar")).row()
+    .text("⬅️ Volver", MenuAction.sub("actividad"))
+    .text("🏠 Inicio", MenuAction.home);
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      `📊 *Actividad del grupo*\n\n` +
+      `Mensajes registrados: ${stats.totalMessages}\n` +
+      `Usuarios activos: ${stats.activeUsers}\n` +
+      `Hoy: ${stats.messagesToday}\n` +
+      `Últimos 7 días: ${stats.messagesLast7Days}\n` +
+      `Últimos 30 días: ${stats.messagesLast30Days}\n` +
+      `Tendencia semanal: ${trend}\n` +
+      `Hora pico: ${peak && peak.count > 0 ? `${String(peak.hour).padStart(2, "0")}:00 (${peak.count})` : "Sin datos"}\n\n` +
+      `👥 *Usuarios más activos*\n${topUsers}\n\n` +
+      `📅 *Últimos 7 días*\n${last7}\n\n` +
+      `🗓️ *Últimos 30 días*\n${last30}`,
     keyboard,
   };
 }
@@ -340,7 +490,11 @@ export function buildSubmenuPanel(
     );
     keyboard.row();
   }
-  keyboard.add(...buildNavRow().inline_keyboard.flat());
+  if (id === "ayuda") {
+    keyboard.text("⬅️ Volver", MenuAction.main);
+  } else {
+    keyboard.add(...buildNavRow().inline_keyboard.flat());
+  }
 
   return {
     text:
@@ -349,6 +503,56 @@ export function buildSubmenuPanel(
       `${def.description}\n\n` +
       "Selecciona una opción:",
     keyboard,
+  };
+}
+
+export function buildCerberoPanel(
+  status: {
+    status: string;
+    version?: string;
+    lastHeartbeatAt?: string;
+  } | undefined,
+  stats: {
+    deletedMessages: number;
+    mutedUsers: number;
+    bannedUsers: number;
+    kickedUsers: number;
+    alerts: number;
+  },
+  events: Array<{
+    eventType: string;
+    details: Record<string, unknown>;
+    createdAt: string;
+  }>,
+  groupTitle?: string,
+): Panel {
+  const online = status?.status === "online" &&
+    Boolean(status.lastHeartbeatAt) &&
+    Date.now() - Date.parse(status.lastHeartbeatAt as string) <= 120000;
+  const lastHeartbeat = status?.lastHeartbeatAt
+    ? new Date(status.lastHeartbeatAt).toLocaleString("es-ES")
+    : "Sin conexión registrada";
+  const eventText = events.length === 0
+    ? "Sin eventos recientes."
+    : events.map((event) =>
+        `• ${event.eventType} · ${new Date(event.createdAt).toLocaleString("es-ES")}`,
+      ).join("\n");
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🛡️ *SEGURIDAD CERBERO*\n\n" +
+      `Estado: ${online ? "🟢 Online" : "🔴 Offline"}\n` +
+      `Versión: ${status?.version ?? "desconocida"}\n` +
+      `Última conexión: ${lastHeartbeat}\n\n` +
+      "📊 *Últimas 24 horas*\n" +
+      `🗑 Mensajes eliminados: ${stats.deletedMessages}\n` +
+      `🔇 Usuarios muteados: ${stats.mutedUsers}\n` +
+      `🚫 Baneos: ${stats.bannedUsers}\n` +
+      `👢 Expulsiones: ${stats.kickedUsers}\n` +
+      `⚠️ Alertas: ${stats.alerts}\n\n` +
+      "📋 *Últimos eventos*\n" +
+      eventText,
+    keyboard: buildNavRow(),
   };
 }
 
@@ -370,6 +574,77 @@ export function buildGroupPickerPanel(groups: AdministrableGroup[]): Panel {
         "Selecciona el grupo donde quieres aplicar la configuración:";
 
   return { text, keyboard };
+}
+
+function permissionLabel(key: keyof VerifiedUserPermissions): string {
+  const labels: Record<keyof VerifiedUserPermissions, string> = {
+    can_post: "Publicaciones",
+    can_send_media: "Multimedia",
+    can_send_links: "Enlaces",
+    bypass_antispam: "Anti-spam exento",
+    bypass_promotion_filter: "Promoción exenta",
+    bypass_illegal_filter: "Contenido ilegal exento",
+    bypass_automatic_deletion: "Eliminación automática exenta",
+  };
+  return labels[key];
+}
+
+export function buildVerifiedUsersPanel(users: VerifiedUser[], groupTitle?: string): Panel {
+  const keyboard = new InlineKeyboard().text("➕ Agregar verificada", VerifiedAction.add).row();
+  for (const user of users) {
+    keyboard.text(
+      `👑 ${user.username ? `@${user.username}` : user.display_name || `ID ${user.user_id}`}`,
+      `vu:view:${user.user_id}`,
+    ).row();
+  }
+  keyboard.add(...buildNavRow().inline_keyboard.flat());
+  const list = users.length === 0
+    ? "No hay usuarios verificados en este grupo."
+    : users.map((user, index) => {
+        const name = user.username ? `@${user.username}` : user.display_name || `ID ${user.user_id}`;
+        return `${index + 1}. 👑 ${name}\n` +
+          `   ID: ${user.user_id}\n` +
+          "   Estado: ✅ Verificada\n" +
+          `   Método: ${user.verification_method === "detected_custom_title" ? "Título personalizado" : "Manual"}\n` +
+          `   Alta: ${formatVerifiedDate(user.detected_at ?? user.created_at)}`;
+      }).join("\n");
+  return {
+    text: `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n${list}`,
+    keyboard,
+  };
+}
+
+function formatVerifiedDate(value: string): string {
+  return new Intl.DateTimeFormat("es-ES", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+export function buildVerifiedUserPanel(user: VerifiedUser, groupTitle?: string): Panel {
+  const permissionKeys = Object.keys(user.permissions) as Array<keyof VerifiedUserPermissions>;
+  const keyboard = new InlineKeyboard();
+  for (const key of permissionKeys) {
+    keyboard.text(
+      `${user.permissions[key] ? "✅" : "❌"} ${permissionLabel(key)}`,
+      VerifiedAction.toggle(user.user_id, key),
+    ).row();
+  }
+  keyboard
+    .text("♻️ Revocar", VerifiedAction.revoke(user.user_id))
+    .row()
+    .text("⬅️ Volver", "vu:list");
+  const name = user.username ? `@${user.username}` : user.display_name || `ID ${user.user_id}`;
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADA*\n\n` +
+      `${name}\nID: ${user.user_id}\nEstado: ✅ Verificada\n` +
+      `Método: ${user.verification_method === "detected_custom_title" ? "Título personalizado" : "Manual"}\n` +
+      `Alta: ${formatVerifiedDate(user.detected_at ?? user.created_at)}\n\n` +
+      "Permisos:\n" +
+      permissionKeys.map((key) => `• ${permissionLabel(key)} ${user.permissions[key] ? "✅" : "❌"}`).join("\n"),
+    keyboard,
+  };
 }
 
 /**
@@ -825,6 +1100,7 @@ export function buildUsersPanel(
   users: IndexedUser[],
   page: number,
   groupTitle?: string,
+  verifiedUserIds?: ReadonlySet<number>,
 ): Panel {
   const pageSize = 8;
   const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
@@ -862,11 +1138,27 @@ export function buildUsersPanel(
       : visible
           .map((user) => `• ${user.name || user.username || `ID ${user.id}`}`)
           .join("\n");
+  const details = visible
+    .map((user) => {
+      const role = verifiedUserIds?.has(user.id) || user.zeusRole === "verified"
+        ? "verificada"
+        : user.zeusRole === "owner"
+        ? "owner"
+        : user.zeusRole === "administrator"
+          ? "administrador"
+          : "usuario";
+      return `${user.name || user.username || `ID ${user.id}`} — ID ${user.id} · ` +
+        `entrada ${user.joinedAt ? new Date(user.joinedAt * 1000).toLocaleDateString("es-ES") : "desconocida"} · ` +
+        `actividad ${user.lastSeen ? new Date(user.lastSeen * 1000).toLocaleDateString("es-ES") : "sin datos"} · ` +
+        `mensajes ${user.messageCount ?? 0} · rol ${role}`;
+    })
+    .join("\n");
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n` +
       `👥 *USUARIOS*\n\n` +
-      `Usuarios detectados (página ${currentPage + 1}/${pageCount}):\n${list}`,
+      `Usuarios detectados (página ${currentPage + 1}/${pageCount}):\n${list}\n\n` +
+      `Detalles:\n${details || "Sin datos."}`,
     keyboard,
   };
 }
