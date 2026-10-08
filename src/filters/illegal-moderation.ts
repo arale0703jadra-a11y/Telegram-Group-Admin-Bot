@@ -109,7 +109,9 @@ illegalModeration.on("message", async (ctx, next) => {
         `critical;delete=${deletion.ok};ban=${ban.ok};` +
         `banSkipped=${!member ? "unknown-member" : protectedUser ? "protected" : !rights.canRestrict ? "no-ban-permission" : "no-ban"}`,
     });
-    await next();
+    if (!deletion.ok) {
+      await next();
+    }
     return;
   }
   const shouldDelete =
@@ -153,5 +155,7 @@ illegalModeration.on("message", async (ctx, next) => {
     result: deletion.ok || ban.ok ? "ok" : "error",
     detail: `${detection.category ?? "custom"}:${detection.confidence};delete=${deletion.ok};ban=${ban.ok};protected=${Boolean(protectedUser)}`,
   });
-  await next();
+  if (!deletion.ok) {
+    await next();
+  }
 });

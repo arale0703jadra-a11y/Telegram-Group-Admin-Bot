@@ -1,7 +1,11 @@
 import { Composer } from "grammy";
 import { isUserAdminOf } from "../utils/permissions.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
-import { normalizeFilterTerm } from "../filters/detector.js";
+import {
+  confidenceLabel,
+  detectPromotion,
+  normalizeFilterTerm,
+} from "../filters/detector.js";
 import {
   getTrackedUser,
   getUserCard,
@@ -13,6 +17,7 @@ import {
   buildFiltersPanel,
   buildIllegalPanel,
   buildMuteMenuPanel,
+  buildVerifiedAddConfirmPanel,
   buildUserCardPanel,
   buildUserSearchResultsPanel,
   buildWarningsPanel,
@@ -20,13 +25,12 @@ import {
   type Panel,
 } from "../menus/panels.js";
 import { renderPanel } from "../menus/render.js";
-import { muteUser, unmuteUser, warnUser } from "../moderation/actions.js";
+import { getMemberSafely, muteUser, unmuteUser, warnUser } from "../moderation/actions.js";
 import {
   delegateSecurityCommand,
   isCerberoExecutionEnabled,
 } from "../services/security-commands.js";
 import type { MyContext, PickAction } from "../types.js";
-import { addVerifiedUser } from "../services/verified-users.js";
 import { markUserVerified, recordObservedUser } from "../services/user-registry.js";
 import { automaticMessageScheduler } from "../services/automatic-messages.js";
 import {
@@ -96,6 +100,10 @@ privateInput.on("message:text", async (ctx) => {
     } catch {
       await ctx.reply("⛔ No se pudo procesar la recuperación.");
     }
+    return;
+  }
+  if (pending.kind === "verifiedAddConfirm") {
+    await ctx.reply("Pulsa Confirmar o Cancelar en el panel para continuar.");
     return;
   }
   if (
@@ -176,43 +184,91 @@ privateInput.on("message:text", async (ctx) => {
   }
 
   try {
+    if (pending.kind === "promotionTest") {
+      const data = await getGroupData(pending.groupId);
+      const result = detectPromotion(text, data.promotion.dictionary);
+      ctx.session.user.pendingAction = undefined;
+      ctx.session.user.pendingSince = undefined;
+      const details = [
+        result.buyingSignals.length
+          ? `Señales de compra:\n${result.buyingSignals.map((signal) => `• ${signal}`).join("\n")}`
+          : "",
+        result.sellingSignals.length
+          ? `Señales de venta:\n${result.sellingSignals.map((signal) => `• ${signal}`).join("\n")}`
+          : "",
+        result.contactSignals.length
+          ? `Señales de contacto:\n${result.contactSignals.map((signal) => `• ${signal}`).join("\n")}`
+          : "",
+        result.commercialSignals.length
+          ? `Señales comerciales:\n${result.commercialSignals.map((signal) => `• ${signal}`).join("\n")}`
+          : "",
+        result.hasLink ? "Enlace: detectado (señal adicional)" : "",
+      ].filter(Boolean).join("\n\n");
+      await ctx.reply(
+        `Mensaje:\n"${text}"\n\n` +
+          `Intención: ${result.intent}\n` +
+          `Confianza: ${confidenceLabel(result.confidence)} (${Math.round(result.confidence * 100)}%)\n\n` +
+          `${details || "Sin señales coincidentes."}\n\n` +
+          `Acción: ${result.shouldModerate ? "🚫 Requiere verificación" : "✅ Permitir"}\n` +
+          `Motivo: ${result.reason}`,
+      );
+      const refreshed = await getGroupData(pending.groupId);
+      await sendPanel(
+        ctx,
+        buildFiltersPanel(refreshed.promotion, ctx.session.user.selectedGroupTitle),
+      );
+      return;
+    }
     if (pending.kind === "verifiedAdd") {
       ctx.session.user.pendingAction = undefined;
       ctx.session.user.pendingSince = undefined;
       try {
-        let resolved = await resolveUserTrigger(ctx, pending.groupId, text);
-        if (!resolved && /^-?\d+$/.test(text)) {
-          const userId = Number(text);
-          if (Number.isSafeInteger(userId) && userId > 0) {
-            await recordObservedUser(pending.groupId, { id: userId });
-            resolved = { id: userId };
-          }
+        if (/^\d+$/.test(text) && (!Number.isSafeInteger(Number(text)) || Number(text) <= 0)) {
+          await ctx.reply("❌ El Telegram user ID debe ser un número positivo válido.");
+          return;
         }
+        const resolved = await resolveUserTrigger(ctx, pending.groupId, text);
         if (!resolved) {
           await ctx.reply(
             "❌ No encontré ese usuario. Usa un @username ya observado o introduce su telegram_id numérico.",
           );
           return;
         }
-        await addVerifiedUser({
+        const member = await getMemberSafely(ctx, pending.groupId, resolved.id);
+        if (!member || member.status === "left" || member.status === "kicked") {
+          await ctx.reply("❌ La persona no pertenece actualmente a este grupo.");
+          return;
+        }
+        const displayName = [member.user.first_name, member.user.last_name]
+          .filter(Boolean)
+          .join(" ");
+        await recordObservedUser(
+          pending.groupId,
+          member.user,
+          { status: member.status },
+        );
+        ctx.session.user.pendingAction = {
+          kind: "verifiedAddConfirm",
           groupId: pending.groupId,
           userId: resolved.id,
-          username: resolved.username,
-          displayName: resolved.name,
-          createdBy: ctx.from.id,
-          verificationMethod: "manual",
-        });
-        await markUserVerified(
-          pending.groupId,
-          resolved.id,
-          resolved.username,
-          resolved.name,
+          username: member.user.username,
+          displayName: displayName || resolved.name,
+        };
+        ctx.session.user.pendingSince = Date.now();
+        await renderPanel(
+          ctx,
+          buildVerifiedAddConfirmPanel(
+            {
+              id: resolved.id,
+              username: member.user.username,
+              name: displayName || resolved.name,
+            },
+            ctx.session.user.selectedGroupTitle,
+          ),
         );
-        console.log(`[VERIFIED] Usuario verificado agregado groupId=${pending.groupId} userId=${resolved.id}`);
-        await ctx.reply(`✅ Usuario añadido correctamente: ${resolved.username ? `@${resolved.username}` : resolved.name || resolved.id}`);
       } catch (error) {
         console.error("[VERIFIED] No se pudo agregar el usuario:", error);
-        await ctx.reply("⛔ No se pudo guardar la verificación.");
+        await ctx.reply("⛔ No se pudo localizar al usuario en Telegram.");
       }
       return;
     }

@@ -26,6 +26,7 @@ export type PendingAction =
   | { kind: "automaticFrequency"; groupId: number }
   | { kind: "configMentions"; groupId: number }
   | { kind: "search"; groupId: number; messageId?: number }
+  | { kind: "promotionTest"; groupId: number }
   | { kind: "filterAdd"; groupId: number; messageId?: number }
   | { kind: "illegalAdd"; groupId: number; messageId?: number }
   | {
@@ -53,6 +54,14 @@ export type PendingAction =
     }
   | { kind: "warnReason"; userId: number; groupId: number; messageId?: number }
   | { kind: "verifiedAdd"; groupId: number; messageId?: number }
+  | {
+      kind: "verifiedAddConfirm";
+      groupId: number;
+      userId: number;
+      username?: string;
+      displayName?: string;
+      messageId?: number;
+    }
   | { kind: "verifiedTitles"; groupId: number; messageId?: number }
   | { kind: "banReason"; userId: number; groupId: number; messageId?: number }
   | { kind: "unbanId"; groupId: number; messageId?: number };

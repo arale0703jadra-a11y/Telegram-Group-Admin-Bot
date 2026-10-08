@@ -18,6 +18,13 @@ test("group configuration persists independently across groups", async () => {
     dataA.antiSpam.detectAutomatedBehavior = false;
     dataA.newUsers.enabled = true;
     dataA.promotion.recurrenceMuteMinutes = [60, 240];
+    dataA.promotion.statistics.analyzed = 17;
+    dataA.promotion.statistics.buying = 4;
+    dataA.promotion.statistics.selling = 3;
+    dataA.promotion.statistics.neutral = 6;
+    dataA.promotion.statistics.ambiguous = 4;
+    dataA.promotion.statistics.blocked = 2;
+    dataA.promotion.statistics.allowedVerified = 1;
     dataA.illegalContent.enabled = false;
     dataA.antiSpam.maxMentionsPerMessage = 12;
     await saveGroupData(groupA, dataA);
@@ -31,6 +38,15 @@ test("group configuration persists independently across groups", async () => {
     assert.equal(restoredA.antiSpam.detectAutomatedBehavior, false);
     assert.equal(restoredA.newUsers.enabled, true);
     assert.deepEqual(restoredA.promotion.recurrenceMuteMinutes, [60, 240]);
+    assert.deepEqual(restoredA.promotion.statistics, {
+      analyzed: 17,
+      buying: 4,
+      selling: 3,
+      neutral: 6,
+      ambiguous: 4,
+      blocked: 2,
+      allowedVerified: 1,
+    });
     assert.equal(restoredA.illegalContent.enabled, false);
     assert.equal(restoredA.antiSpam.maxMentionsPerMessage, 12);
     assert.equal(restoredB.antiSpam.enabled, true);

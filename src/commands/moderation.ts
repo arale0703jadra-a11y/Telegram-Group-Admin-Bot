@@ -55,12 +55,9 @@ moderationCommand.command("borrar", async (ctx) => {
         reason: "Comando /borrar desde Zeus",
       },
     });
-    await sendEphemeral(
-      ctx,
-      queued.ok
-        ? `⏳ Borrado enviado a Cerbero (${queued.commandId}).`
-        : `⛔ ${queued.error}`,
-    );
+    if (!queued.ok) {
+      await sendEphemeral(ctx, `⛔ ${queued.error}`);
+    }
     return;
   }
 
@@ -82,9 +79,7 @@ moderationCommand.command("borrar", async (ctx) => {
     detail: result.ok ? `Mensaje ${target.message_id}` : result.error,
   });
 
-  if (result.ok) {
-    await sendEphemeral(ctx, "🗑️ Mensaje borrado.");
-  } else {
+  if (!result.ok) {
     await sendEphemeral(ctx, `⚠️ ${result.error ?? "No se pudo borrar el mensaje."}`);
   }
 });

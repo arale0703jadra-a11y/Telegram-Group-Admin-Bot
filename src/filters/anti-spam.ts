@@ -218,20 +218,6 @@ antiSpam.on("message", async (ctx, next) => {
         muted = (await muteUser(ctx, chatId, userId, minutes, ctx.from.first_name)).ok;
       }
     }
-    try {
-      const status = muted
-        ? deleted.ok
-          ? "⚠️ Spam detectado. Tu mensaje fue eliminado y has sido silenciado temporalmente."
-          : "⚠️ Spam detectado. No se pudo eliminar tu mensaje, pero has sido silenciado temporalmente."
-        : deleted.ok
-          ? "⚠️ Spam detectado. Tu mensaje fue eliminado."
-          : "⚠️ Spam detectado. No se pudo eliminar tu mensaje.";
-      await ctx.reply(
-        status,
-      );
-    } catch (error) {
-      console.error("[ANTI-SPAM] No se pudo enviar la notificación:", error);
-    }
     await logEvent(ctx, chatId, "ANTISPAM", {
       targetId: userId,
       targetName: ctx.from.username ?? ctx.from.first_name,

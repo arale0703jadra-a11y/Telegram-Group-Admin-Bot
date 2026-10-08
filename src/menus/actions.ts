@@ -21,6 +21,8 @@ import {
   buildFilterConfirmPanel,
   buildFilterListPanel,
   buildFiltersPanel,
+  buildPromotionInfoPanel,
+  buildPromotionSettingsPanel,
   buildIllegalCategoriesPanel,
   buildIllegalConfirmPanel,
   buildIllegalInfoPanel,
@@ -60,6 +62,7 @@ import {
   isCerberoExecutionEnabled,
   ensureCerberoBinding,
   getSecurityConfig,
+  isSecurityProtectedUser,
   updateSecurityConfig,
 } from "../services/security-commands.js";
 import {
@@ -69,8 +72,16 @@ import {
   revokeVerifiedUser,
   type VerifiedUserPermissions,
 } from "../services/verified-users.js";
-import { recordObservedUser, unmarkUserVerified } from "../services/user-registry.js";
+import {
+  markUserVerified,
+  recordObservedUser,
+  syncVerifiedUserStates,
+  unmarkUserVerified,
+} from "../services/user-registry.js";
 import { syncVerifiedAdministrators } from "../services/verified-title-sync.js";
+import { addVerifiedUser } from "../services/verified-users.js";
+import { isSystemOwner } from "../services/system-owner.js";
+import { canRevokeVerifiedAdministrator } from "../services/verified-user-policy.js";
 
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
@@ -123,17 +134,11 @@ moderationActions.on("callback_query:data", async (ctx) => {
   if (parts[0] === "us") {
     await ctx.answerCallbackQuery();
     if (kind === "scan") {
-      const admins = await ctx.api.getChatAdministrators(groupId);
-      for (const admin of admins) {
-        if (!admin.user.is_bot) {
-          await recordObservedUser(groupId, admin.user, { status: admin.status });
-        }
-      }
       try {
-        await syncVerifiedAdministrators(ctx.api, groupId, ctx.from?.id ?? 0);
+        await syncVerifiedAdministrators(ctx.api, groupId);
       } catch (error) {
         console.error(
-          `[VERIFIED] No se pudo sincronizar custom_title groupId=${groupId}:`,
+          `[USERS] No se pudieron sincronizar los estados groupId=${groupId}:`,
           error,
         );
       }
@@ -141,8 +146,20 @@ moderationActions.on("callback_query:data", async (ctx) => {
       await renderPanel(ctx, buildPromptPanel(`✅ Escaneo completado:\nUsuarios encontrados: ${count}`));
       return;
     }
+    try {
+      const admins = await ctx.api.getChatAdministrators(groupId);
+      for (const admin of admins) {
+        if (!admin.user.is_bot) {
+          await recordObservedUser(groupId, admin.user, { status: admin.status });
+        }
+      }
+    } catch (error) {
+      console.error(`[USERS] No se pudieron actualizar administradores groupId=${groupId}:`, error);
+    }
+    const verifiedUsers = await getVerifiedUsers(groupId);
+    await syncVerifiedUserStates(groupId, verifiedUsers);
     const data = await getGroupData(groupId);
-    const verifiedIds = new Set((await getVerifiedUsers(groupId)).map((user) => user.user_id));
+    const verifiedIds = new Set(verifiedUsers.map((user) => user.user_id));
     const now = Math.floor(Date.now() / 1000);
     const users = Object.values(data.indexedUsers).filter((user) => {
       if (kind === "new") return Boolean(user.joinedAt && now - user.joinedAt <= 7 * 86400);
@@ -204,8 +221,10 @@ moderationActions.on("callback_query:data", async (ctx) => {
         break;
       case "verified_sync":
         try {
-          const sync = await syncVerifiedAdministrators(ctx.api, groupId, ctx.from?.id ?? 0);
-          await ctx.answerCallbackQuery(`✅ ${sync.matched} detectadas; ${sync.removed} retiradas.`);
+          const sync = await syncVerifiedAdministrators(ctx.api, groupId);
+          await ctx.answerCallbackQuery(
+            `✅ Sincronizadas ${sync.administratorsSynchronized} administradoras y ${sync.verifiedUsersSynchronized} verificaciones activas.`,
+          );
         } catch (error) {
           console.error(`[VERIFIED_SYNC] Error en sincronización manual groupId=${groupId}:`, error);
           await ctx.answerCallbackQuery("⛔ No se pudo sincronizar.");
@@ -350,7 +369,104 @@ moderationActions.on("callback_query:data", async (ctx) => {
     }
     if (kind === "list") {
       await ctx.answerCallbackQuery();
+      const users = await getVerifiedUsers(groupId);
+      await syncVerifiedUserStates(groupId, users);
+      await renderPanel(ctx, buildVerifiedUsersPanel(users, groupTitle));
+      return;
+    }
+    if (kind === "cancel") {
+      const pending = ctx.session.user.pendingAction;
+      if (pending?.kind === "verifiedAddConfirm" && pending.groupId === groupId) {
+        ctx.session.user.pendingAction = undefined;
+        ctx.session.user.pendingSince = undefined;
+      }
+      await ctx.answerCallbackQuery("Operación cancelada.");
       await renderPanel(ctx, buildVerifiedUsersPanel(await getVerifiedUsers(groupId), groupTitle));
+      return;
+    }
+    if (kind === "confirm") {
+      const userId = Number(parts[2]);
+      const pending = ctx.session.user.pendingAction;
+      if (
+        !Number.isSafeInteger(userId) ||
+        userId <= 0 ||
+        pending?.kind !== "verifiedAddConfirm" ||
+        pending.groupId !== groupId ||
+        pending.userId !== userId
+      ) {
+        await ctx.answerCallbackQuery({
+          text: "La confirmación expiró. Vuelve a iniciar el alta.",
+          show_alert: true,
+        });
+        return;
+      }
+      try {
+        const member = await ctx.api.getChatMember(groupId, userId);
+        if (member.status === "left" || member.status === "kicked") {
+          ctx.session.user.pendingAction = undefined;
+          ctx.session.user.pendingSince = undefined;
+          await ctx.answerCallbackQuery({
+            text: "La persona ya no pertenece al grupo.",
+            show_alert: true,
+          });
+          await renderPanel(ctx, buildVerifiedUsersPanel(await getVerifiedUsers(groupId), groupTitle));
+          return;
+        }
+
+        const existing = await getVerifiedUser(groupId, userId);
+        if (existing) {
+          const synchronizedUser = await updateVerifiedUser(groupId, userId, {
+            username: member.user.username,
+            displayName: [member.user.first_name, member.user.last_name]
+              .filter(Boolean)
+              .join(" "),
+          });
+          await markUserVerified(
+            groupId,
+            userId,
+            member.user.username,
+            [member.user.first_name, member.user.last_name].filter(Boolean).join(" "),
+          );
+          ctx.session.user.pendingAction = undefined;
+          ctx.session.user.pendingSince = undefined;
+          await ctx.answerCallbackQuery({
+            text: "Esta persona ya estaba verificada.",
+            show_alert: true,
+          });
+          await renderPanel(
+            ctx,
+            buildVerifiedUserPanel(synchronizedUser, groupTitle, member.status),
+          );
+          return;
+        }
+
+        const user = await addVerifiedUser({
+          groupId,
+          userId,
+          username: member.user.username ?? pending.username,
+          displayName:
+            [member.user.first_name, member.user.last_name].filter(Boolean).join(" ") ||
+            pending.displayName,
+          createdBy: ctx.from?.id ?? 0,
+        });
+        await markUserVerified(
+          groupId,
+          userId,
+          member.user.username ?? pending.username,
+          [member.user.first_name, member.user.last_name].filter(Boolean).join(" ") ||
+            pending.displayName,
+        );
+        ctx.session.user.pendingAction = undefined;
+        ctx.session.user.pendingSince = undefined;
+        await ctx.answerCallbackQuery("Usuaria añadida como verificada.");
+        await renderPanel(ctx, buildVerifiedUserPanel(user, groupTitle, member.status));
+      } catch (error) {
+        console.error("[VERIFIED] No se pudo confirmar el alta:", error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudo guardar la verificación. Puedes volver a intentarlo.",
+          show_alert: true,
+        });
+      }
       return;
     }
     if (kind === "view") {
@@ -359,8 +475,128 @@ moderationActions.on("callback_query:data", async (ctx) => {
         await ctx.answerCallbackQuery("Verificada no encontrada.");
         return;
       }
+      let telegramStatus:
+        | "creator"
+        | "administrator"
+        | "member"
+        | "restricted"
+        | "left"
+        | "kicked"
+        | undefined;
+      try {
+        telegramStatus = (await ctx.api.getChatMember(groupId, user.user_id)).status;
+      } catch (error) {
+        console.error(`[VERIFIED] No se pudo consultar estado Telegram userId=${user.user_id}:`, error);
+      }
       await ctx.answerCallbackQuery();
-      await renderPanel(ctx, buildVerifiedUserPanel(user, groupTitle));
+      await renderPanel(ctx, buildVerifiedUserPanel(user, groupTitle, telegramStatus));
+      return;
+    }
+    if (kind === "revoke-permissions") {
+      const userId = Number(parts[2]);
+      try {
+        if (!Number.isSafeInteger(userId) || userId <= 0) {
+          await ctx.answerCallbackQuery({ text: "Usuario no válido.", show_alert: true });
+          return;
+        }
+        const verified = await getVerifiedUser(groupId, userId);
+        if (!verified) {
+          await ctx.answerCallbackQuery({
+            text: "La usuaria ya no está verificada.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        const member = await ctx.api.getChatMember(groupId, userId);
+        if (member.status === "creator") {
+          await ctx.answerCallbackQuery({
+            text: "No se pueden revocar permisos al propietario del grupo.",
+            show_alert: true,
+          });
+          return;
+        }
+        if (member.user.is_bot || member.user.id === ctx.me.id) {
+          await ctx.answerCallbackQuery({
+            text: "No se pueden modificar permisos de bots.",
+            show_alert: true,
+          });
+          return;
+        }
+        if (member.status !== "administrator") {
+          await ctx.answerCallbackQuery({
+            text: "La usuaria ya no es administradora. Su verificación se conserva.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        const protectedUser =
+          (await isSystemOwner(userId)) ||
+          (await isSecurityProtectedUser(groupId, userId));
+        const botMember = await ctx.api.getChatMember(groupId, ctx.me.id);
+        const botCanPromote =
+          botMember.status === "administrator" &&
+          "can_promote_members" in botMember &&
+          botMember.can_promote_members;
+        if (
+          !canRevokeVerifiedAdministrator({
+            status: member.status,
+            isBot: member.user.is_bot,
+            isVerified: true,
+            isProtected: protectedUser,
+            botCanPromote,
+          })
+        ) {
+          await ctx.answerCallbackQuery({
+            text: protectedUser
+              ? "La usuaria está protegida y no se modificarán sus permisos."
+              : "ZEUS no tiene permisos suficientes para retirar permisos administrativos.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        await ctx.api.promoteChatMember(groupId, userId, {
+          is_anonymous: false,
+          can_manage_chat: false,
+          can_delete_messages: false,
+          can_manage_video_chats: false,
+          can_restrict_members: false,
+          can_promote_members: false,
+          can_change_info: false,
+          can_invite_users: false,
+          can_post_stories: false,
+          can_edit_stories: false,
+          can_delete_stories: false,
+          can_post_messages: false,
+          can_edit_messages: false,
+          can_pin_messages: false,
+          can_manage_topics: false,
+        });
+        const updatedMember = await ctx.api.getChatMember(groupId, userId);
+        if (updatedMember.status === "administrator" || updatedMember.status === "creator") {
+          throw new Error("Telegram mantuvo el estado administrativo del usuario.");
+        }
+        await recordObservedUser(groupId, updatedMember.user, {
+          status: updatedMember.status,
+        });
+        await syncVerifiedUserStates(groupId, await getVerifiedUsers(groupId));
+        await ctx.answerCallbackQuery({
+          text: "Permisos administrativos retirados. La usuaria sigue verificada.",
+          show_alert: true,
+        });
+        await renderPanel(
+          ctx,
+          buildVerifiedUserPanel(verified, groupTitle, updatedMember.status),
+        );
+      } catch (error) {
+        console.error(`[VERIFIED] No se pudieron revocar permisos userId=${userId}:`, error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudieron retirar los permisos; la verificación no fue modificada.",
+          show_alert: true,
+        });
+      }
       return;
     }
     if (kind === "toggle") {
@@ -398,6 +634,48 @@ moderationActions.on("callback_query:data", async (ctx) => {
 
   if (parts[0] === "fa" || parts[0] === "sa" || parts[0] === "ia") {
     const title = ctx.session.user.selectedGroupTitle;
+    if (parts[0] === "fa" && kind === "home") {
+      const data = await getGroupData(groupId);
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildFiltersPanel(data.promotion, title));
+      return;
+    }
+    if (parts[0] === "fa" && kind === "test") {
+      ctx.session.user.pendingAction = { kind: "promotionTest", groupId };
+      ctx.session.user.pendingSince = Date.now();
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildPromptPanel(
+          "🧪 *PROBAR MENSAJE*\n\nEnvía el texto que quieres analizar. No se publicará en el grupo ni se aplicará moderación.",
+        ),
+      );
+      return;
+    }
+    if (
+      parts[0] === "fa" &&
+      (kind === "stats" ||
+        kind === "buying" ||
+        kind === "selling" ||
+        kind === "links" ||
+        kind === "verified")
+    ) {
+      const data = await getGroupData(groupId);
+      const verifiedCount =
+        kind === "verified" ? (await getVerifiedUsers(groupId)).length : 0;
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildPromotionInfoPanel(kind, data.promotion, verifiedCount, title),
+      );
+      return;
+    }
+    if (parts[0] === "fa" && kind === "settings") {
+      const data = await getGroupData(groupId);
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildPromotionSettingsPanel(data.promotion, title));
+      return;
+    }
     if (kind === "add") {
       ctx.session.user.pendingAction = { kind: "filterAdd", groupId };
       await ctx.answerCallbackQuery();
@@ -761,6 +1039,18 @@ moderationActions.on("callback_query:data", async (ctx) => {
         await ctx.answerCallbackQuery("Página no válida.");
         return;
       }
+      try {
+        const admins = await ctx.api.getChatAdministrators(groupId);
+        for (const admin of admins) {
+          if (!admin.user.is_bot) {
+            await recordObservedUser(groupId, admin.user, { status: admin.status });
+          }
+        }
+      } catch (error) {
+        console.error(`[USERS PANEL] No se pudieron actualizar administradores groupId=${groupId}:`, error);
+      }
+      const verifiedUsers = await getVerifiedUsers(groupId);
+      await syncVerifiedUserStates(groupId, verifiedUsers);
       const data = await getGroupData(groupId);
       const users = Object.values(data.indexedUsers).sort((a, b) =>
         (a.name || a.username || String(a.id)).localeCompare(
@@ -771,7 +1061,15 @@ moderationActions.on("callback_query:data", async (ctx) => {
         `[USERS PANEL] groupId=${groupId} observedUsers=${users.length}`,
       );
       await ctx.answerCallbackQuery();
-      await renderPanel(ctx, buildUsersPanel(users, page, groupTitle));
+      await renderPanel(
+        ctx,
+        buildUsersPanel(
+          users,
+          page,
+          groupTitle,
+          new Set(verifiedUsers.map((user) => user.user_id)),
+        ),
+      );
       return;
     }
     case "search": {

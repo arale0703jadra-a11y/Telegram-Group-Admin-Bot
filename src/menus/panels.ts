@@ -16,7 +16,12 @@ import type { ActivityStats } from "../services/activity.js";
 import type { ResolvedUser, UserCardData } from "../utils/users.js";
 import type { MyContext } from "../types.js";
 import { getGroupData } from "../storage/index.js";
+import {
+  BUYING_SIGNAL_EXAMPLES,
+  SELLING_SIGNAL_EXAMPLES,
+} from "../filters/detector.js";
 import type { VerifiedUser, VerifiedUserPermissions } from "../services/verified-users.js";
+import { buildUserStatusBadges } from "../services/verified-user-policy.js";
 
 export interface Panel {
   text: string;
@@ -80,8 +85,16 @@ export const ModAction = {
 
 const FILTER_PREFIX = "fa";
 export const FilterAction = {
+  home: `${FILTER_PREFIX}:home`,
   add: `${FILTER_PREFIX}:add`,
   cancel: `${FILTER_PREFIX}:cancel`,
+  stats: `${FILTER_PREFIX}:stats`,
+  test: `${FILTER_PREFIX}:test`,
+  buying: `${FILTER_PREFIX}:buying`,
+  selling: `${FILTER_PREFIX}:selling`,
+  links: `${FILTER_PREFIX}:links`,
+  verified: `${FILTER_PREFIX}:verified`,
+  settings: `${FILTER_PREFIX}:settings`,
   deletePage: (page: number): string => `${FILTER_PREFIX}:deletepage:${page}`,
   delete: (index: number, page: number): string =>
     `${FILTER_PREFIX}:delete:${index}:${page}`,
@@ -120,7 +133,10 @@ export const InactivityAction = {
 
 export const VerifiedAction = {
   add: "vu:add",
+  confirmAdd: (userId: number): string => `vu:confirm:${userId}`,
+  cancelAdd: "vu:cancel",
   revoke: (userId: number): string => `vu:revoke:${userId}`,
+  revokePermissions: (userId: number): string => `vu:revoke-permissions:${userId}`,
   toggle: (userId: number, permission: keyof VerifiedUserPermissions): string =>
     `vu:toggle:${userId}:${permission}`,
 };
@@ -216,6 +232,7 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Filtros",
     description: "Control de palabras y frases prohibidas.",
     items: [
+      { id: "promociones", label: "🛡️ Detección de promociones", cb: FilterAction.home },
       { id: "ver", label: "📋 Ver filtros", cb: FilterAction.viewPage(0) },
       { id: "agregar", label: "➕ Agregar palabra/frase", cb: FilterAction.add },
       {
@@ -377,21 +394,18 @@ export function buildAutomaticMessagePanel(
 }
 
 export function buildVerifiedTitleConfigPanel(
-  titles: string[],
-  autoDetect: boolean,
-  autoRemove: boolean,
+  _titles: string[],
+  _autoDetect: boolean,
+  _autoRemove: boolean,
   groupTitle?: string,
 ): Panel {
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n⚙️ *VERIFICADAS*\n\n` +
-      `Títulos reconocidos:\n${titles.map((title) => `• ${title}`).join("\n") || "• Ninguno"}\n\n` +
-      `Detectar automáticamente: ${autoDetect ? "✅ Sí" : "❌ No"}\n` +
-      `Quitar si pierde el título: ${autoRemove ? "✅ Sí (segunda comprobación/24 h)" : "❌ No"}`,
+      "La verificación se reconoce únicamente desde el registro activo de ZEUS.\n" +
+      "Los títulos administrativos de Telegram no añaden ni revocan verificaciones.\n\n" +
+      "La sincronización actualiza los estados de administrador observados.",
     keyboard: new InlineKeyboard()
-      .text("✏️ Editar títulos", "cfg:verified_titles_edit").row()
-      .text(autoDetect ? "⛔ Desactivar detección" : "✅ Activar detección", "cfg:verified_detect_toggle").row()
-      .text(autoRemove ? "⛔ Desactivar retirada" : "✅ Activar retirada", "cfg:verified_remove_toggle").row()
       .text("🔄 Sincronizar ahora", "cfg:verified_sync").row()
       .add(...buildNavRow().inline_keyboard.flat()),
   };
@@ -605,8 +619,7 @@ export function buildVerifiedUsersPanel(users: VerifiedUser[], groupTitle?: stri
         return `${index + 1}. 👑 ${name}\n` +
           `   ID: ${user.user_id}\n` +
           "   Estado: ✅ Verificada\n" +
-          `   Método: ${user.verification_method === "detected_custom_title" ? "Título personalizado" : "Manual"}\n` +
-          `   Alta: ${formatVerifiedDate(user.detected_at ?? user.created_at)}`;
+          `   Registro ZEUS: ${formatVerifiedDate(user.created_at)}`;
       }).join("\n");
   return {
     text: `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n${list}`,
@@ -621,7 +634,30 @@ function formatVerifiedDate(value: string): string {
   }).format(new Date(value));
 }
 
-export function buildVerifiedUserPanel(user: VerifiedUser, groupTitle?: string): Panel {
+export function buildVerifiedAddConfirmPanel(
+  user: { id: number; username?: string; name?: string },
+  groupTitle?: string,
+): Panel {
+  const name = user.username
+    ? `@${user.username}`
+    : user.name || `ID ${user.id}`;
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "👑 *CONFIRMAR VERIFICACIÓN*\n\n" +
+      `Usuario: ${name}\nID: ${user.id}\n\n` +
+      "Confirma que esta es la persona correcta.",
+    keyboard: new InlineKeyboard()
+      .text("✅ Confirmar", VerifiedAction.confirmAdd(user.id))
+      .text("❌ Cancelar", VerifiedAction.cancelAdd),
+  };
+}
+
+export function buildVerifiedUserPanel(
+  user: VerifiedUser,
+  groupTitle?: string,
+  telegramStatus?: "creator" | "administrator" | "member" | "restricted" | "left" | "kicked",
+): Panel {
   const permissionKeys = Object.keys(user.permissions) as Array<keyof VerifiedUserPermissions>;
   const keyboard = new InlineKeyboard();
   for (const key of permissionKeys) {
@@ -631,16 +667,25 @@ export function buildVerifiedUserPanel(user: VerifiedUser, groupTitle?: string):
     ).row();
   }
   keyboard
-    .text("♻️ Revocar", VerifiedAction.revoke(user.user_id))
-    .row()
-    .text("⬅️ Volver", "vu:list");
+    .text("♻️ Revocar verificación", VerifiedAction.revoke(user.user_id))
+    .row();
+  if (telegramStatus === "administrator") {
+    keyboard.text("🛡️ Revocar permisos admin", VerifiedAction.revokePermissions(user.user_id)).row();
+  }
+  keyboard.text("⬅️ Volver", "vu:list");
   const name = user.username ? `@${user.username}` : user.display_name || `ID ${user.user_id}`;
+  const adminStatus = telegramStatus === "creator"
+    ? "👑 Owner"
+    : telegramStatus === "administrator"
+      ? "🛡️ Administradora"
+      : telegramStatus === "member" || telegramStatus === "restricted"
+        ? "👤 Miembro"
+        : "❔ No se pudo consultar";
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADA*\n\n` +
-      `${name}\nID: ${user.user_id}\nEstado: ✅ Verificada\n` +
-      `Método: ${user.verification_method === "detected_custom_title" ? "Título personalizado" : "Manual"}\n` +
-      `Alta: ${formatVerifiedDate(user.detected_at ?? user.created_at)}\n\n` +
+      `${name}\nID: ${user.user_id}\nEstado ZEUS: ✅ Verificada\nEstado Telegram: ${adminStatus}\n` +
+      `Registro ZEUS: ${formatVerifiedDate(user.created_at)}\n\n` +
       "Permisos:\n" +
       permissionKeys.map((key) => `• ${permissionLabel(key)} ${user.permissions[key] ? "✅" : "❌"}`).join("\n"),
     keyboard,
@@ -662,6 +707,40 @@ export function buildFiltersPanel(
 ): Panel {
   const enabled = config.enabled;
   const keyboard = new InlineKeyboard()
+    .text(
+      enabled ? "🧠 Detección inteligente 🟢" : "🧠 Detección inteligente 🔴",
+      FilterAction.toggle,
+    )
+    .row()
+    .text("📊 Estadísticas", FilterAction.stats)
+    .text("🧪 Probar mensaje", FilterAction.test)
+    .row()
+    .text("🛒 Señales de compra", FilterAction.buying)
+    .text("💰 Señales de venta", FilterAction.selling)
+    .row()
+    .text("🔗 Enlaces", FilterAction.links)
+    .text("👑 Verificadas", FilterAction.verified)
+    .row()
+    .text("⚙️ Configuración", FilterAction.settings)
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🛡️ *DETECCIÓN DE PROMOCIONES*\n\n" +
+      `Estado: ${enabled ? "🟢 Activo" : "🔴 Inactivo"}\n` +
+      "Separa intención de compra y venta. Solo modera SELLING no verificado.",
+    keyboard,
+  };
+}
+
+export function buildPromotionSettingsPanel(
+  config: PromotionConfig,
+  groupTitle?: string,
+): Panel {
+  const enabled = config.enabled;
+  const keyboard = new InlineKeyboard()
     .text("➕ Agregar palabra/frase", FilterAction.add)
     .row()
     .text("🗑️ Eliminar palabra/frase", FilterAction.deletePage(0))
@@ -673,15 +752,75 @@ export function buildFiltersPanel(
       FilterAction.toggle,
     )
     .row()
+    .text("⬅️ Volver a detección de promociones", FilterAction.home)
+    .row()
     .add(...buildNavRow().inline_keyboard.flat());
 
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n` +
-      "🚫 *FILTROS*\n\n" +
-      `Estado: ${enabled ? "🟢 ACTIVADOS" : "🔴 DESACTIVADOS"}\n` +
-      `Palabras configuradas: ${config.dictionary.length}`,
+      "⚙️ *CONFIGURACIÓN DE PROMOCIONES*\n\n" +
+      "El diccionario aporta señales contextuales, no determina una venta por sí solo.\n" +
+      `Términos contextuales configurados: ${config.dictionary.length}\n` +
+      `Estado: ${enabled ? "🟢 Activo" : "🔴 Inactivo"}`,
     keyboard,
+  };
+}
+
+export function buildPromotionInfoPanel(
+  section: "stats" | "buying" | "selling" | "links" | "verified",
+  config: PromotionConfig,
+  verifiedCount: number,
+  groupTitle?: string,
+): Panel {
+  const headings: Record<typeof section, string> = {
+    stats: "📊 *ESTADÍSTICAS DE PROMOCIONES*",
+    buying: "🛒 *SEÑALES DE COMPRA*",
+    selling: "💰 *SEÑALES DE VENTA*",
+    links: "🔗 *ENLACES*",
+    verified: "👑 *VERIFICADAS*",
+  };
+  let body: string;
+  switch (section) {
+    case "stats": {
+      const stats = config.statistics;
+      body =
+        `Mensajes analizados: ${stats.analyzed}\n` +
+        `BUYING: ${stats.buying}\nSELLING: ${stats.selling}\n` +
+        `NEUTRAL: ${stats.neutral}\nAMBIGUOUS: ${stats.ambiguous}\n\n` +
+        `Promociones eliminadas: ${stats.blocked}\n` +
+        `SELLING permitido a verificadas: ${stats.allowedVerified}\n\n` +
+        "No existe actualmente un mecanismo para reportar falsos positivos.";
+      break;
+    }
+    case "buying":
+      body =
+        "La búsqueda o intención de compra se permite:\n\n" +
+        BUYING_SIGNAL_EXAMPLES.map((signal) => `• ${signal}`).join("\n");
+      break;
+    case "selling":
+      body =
+        "Se exige una acción de oferta propia vinculada a producto/servicio o producto propio con llamada a la acción:\n\n" +
+        SELLING_SIGNAL_EXAMPLES.map((signal) => `• ${signal}`).join("\n");
+      break;
+    case "links":
+      body =
+        "Un enlace es una señal adicional; no se considera SELLING por sí solo.\n\n" +
+        "Patrones promocionales: http://, https://, www., t.me/ y telegram.me/.\n" +
+        "Los controles independientes Anti-spam y contenido ilegal mantienen su comportamiento actual.";
+      break;
+    case "verified":
+      body =
+        `Verificadas activas en verified_users: ${verifiedCount}.\n\n` +
+        "La moderación consulta el registro persistente mediante isVerifiedUser().";
+      break;
+  }
+  return {
+    text: `${formatGroupHeader(groupTitle)}\n\n${headings[section]}\n\n${body}`,
+    keyboard: new InlineKeyboard()
+      .text("⬅️ Volver", FilterAction.home)
+      .row()
+      .add(...buildNavRow().inline_keyboard.flat()),
   };
 }
 
@@ -1140,17 +1279,12 @@ export function buildUsersPanel(
           .join("\n");
   const details = visible
     .map((user) => {
-      const role = verifiedUserIds?.has(user.id) || user.zeusRole === "verified"
-        ? "verificada"
-        : user.zeusRole === "owner"
-        ? "owner"
-        : user.zeusRole === "administrator"
-          ? "administrador"
-          : "usuario";
+      const verified = verifiedUserIds?.has(user.id) ?? Boolean(user.verified);
+      const role = buildUserStatusBadges(user.status ?? "unknown", verified).join(" · ");
       return `${user.name || user.username || `ID ${user.id}`} — ID ${user.id} · ` +
         `entrada ${user.joinedAt ? new Date(user.joinedAt * 1000).toLocaleDateString("es-ES") : "desconocida"} · ` +
         `actividad ${user.lastSeen ? new Date(user.lastSeen * 1000).toLocaleDateString("es-ES") : "sin datos"} · ` +
-        `mensajes ${user.messageCount ?? 0} · rol ${role}`;
+        `mensajes ${user.messageCount ?? 0} · ${role}`;
     })
     .join("\n");
   return {

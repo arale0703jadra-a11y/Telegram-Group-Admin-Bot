@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { isActiveVerifiedRecord } from "./verified-user-policy.js";
 
 export interface VerifiedUserPermissions {
   can_post: boolean;
@@ -22,10 +23,6 @@ export interface VerifiedUser {
   updated_at: string;
   created_by: number | null;
   revoked_at: string | null;
-  verification_method?: "manual" | "detected_custom_title";
-  detected_at?: string | null;
-  custom_title_detected?: string | null;
-  title_lost_at?: string | null;
 }
 
 export const DEFAULT_VERIFIED_PERMISSIONS: VerifiedUserPermissions = {
@@ -64,9 +61,6 @@ export async function addVerifiedUser(input: {
   displayName?: string;
   createdBy: number;
   permissions?: Partial<VerifiedUserPermissions>;
-  verificationMethod?: "manual" | "detected_custom_title";
-  detectedAt?: string;
-  customTitleDetected?: string;
 }): Promise<VerifiedUser> {
   const existing = await getStoredVerifiedUser(input.groupId, input.userId);
   const values = {
@@ -81,10 +75,6 @@ export async function addVerifiedUser(input: {
       created_by: input.createdBy,
       revoked_at: null,
       updated_at: new Date().toISOString(),
-      verification_method: input.verificationMethod ?? "manual",
-      detected_at: input.detectedAt ?? null,
-      custom_title_detected: input.customTitleDetected ?? null,
-      title_lost_at: null,
   };
   const query = existing
     ? getClient().from("verified_users").update(values)
@@ -188,37 +178,8 @@ export async function revokeVerifiedUser(groupId: number, userId: number): Promi
   if (error) throw error;
 }
 
-export async function markVerifiedTitleLoss(
-  groupId: number,
-  userId: number,
-  lostAt: string,
-): Promise<void> {
-  const { error } = await getClient()
-    .from("verified_users")
-    .update({ title_lost_at: lostAt, updated_at: new Date().toISOString() })
-    .eq("group_id", groupId)
-    .eq("user_id", userId)
-    .eq("verified", true)
-    .is("revoked_at", null);
-  if (error) throw error;
-}
-
-export async function clearVerifiedTitleLoss(
-  groupId: number,
-  userId: number,
-): Promise<void> {
-  const { error } = await getClient()
-    .from("verified_users")
-    .update({ title_lost_at: null, updated_at: new Date().toISOString() })
-    .eq("group_id", groupId)
-    .eq("user_id", userId)
-    .eq("verified", true)
-    .is("revoked_at", null);
-  if (error) throw error;
-}
-
 export async function isVerifiedUser(groupId: number, userId: number): Promise<boolean> {
-  return Boolean(await getVerifiedUser(groupId, userId));
+  return isActiveVerifiedRecord(await getVerifiedUser(groupId, userId));
 }
 
 export async function getVerifiedUserPermissions(

@@ -82,9 +82,15 @@ export async function markUserVerified(
     name: displayName ?? current?.name,
     displayName: displayName ?? current?.displayName,
     firstSeen: current?.firstSeen ?? Math.floor(Date.now() / 1000),
-    zeusRole: "verified",
+    zeusRole:
+      current?.status === "creator"
+        ? "owner"
+        : current?.status === "administrator"
+          ? "administrator"
+          : "verified",
     verified: true,
   };
+  data.promotion.verifiedUsers[String(userId)] = true;
   await saveGroupData(groupId, data);
 }
 
@@ -94,7 +100,11 @@ export async function unmarkUserVerified(
 ): Promise<void> {
   const data = await getGroupData(groupId);
   const current = data.indexedUsers[String(userId)];
-  if (!current) return;
+  data.promotion.verifiedUsers[String(userId)] = false;
+  if (!current) {
+    await saveGroupData(groupId, data);
+    return;
+  }
   data.indexedUsers[String(userId)] = {
     ...current,
     verified: false,
@@ -107,5 +117,52 @@ export async function unmarkUserVerified(
             ? current.zeusRole
             : "user",
   };
+  await saveGroupData(groupId, data);
+}
+
+export async function syncVerifiedUserStates(
+  groupId: number,
+  verifiedUsers: Array<{
+    user_id: number;
+    username: string | null;
+    display_name: string | null;
+  }>,
+): Promise<void> {
+  const data = await getGroupData(groupId);
+  const verifiedById = new Map(verifiedUsers.map((user) => [user.user_id, user]));
+  const userIds = new Set([
+    ...Object.keys(data.indexedUsers),
+    ...Object.keys(data.promotion.verifiedUsers),
+    ...Array.from(verifiedById.keys(), String),
+  ]);
+
+  for (const key of userIds) {
+    const verified = verifiedById.get(Number(key));
+    const current = data.indexedUsers[key];
+    data.promotion.verifiedUsers[key] = Boolean(verified);
+    if (!verified && !current) continue;
+
+    const status = current?.status ?? "unknown";
+    data.indexedUsers[key] = {
+      ...current,
+      id: Number(key),
+      groupId,
+      username: verified?.username ?? current?.username ?? "",
+      name: verified?.display_name ?? current?.name,
+      displayName: verified?.display_name ?? current?.displayName,
+      verified: Boolean(verified),
+      zeusRole: verified
+        ? status === "creator"
+          ? "owner"
+          : status === "administrator"
+            ? "administrator"
+            : "verified"
+        : status === "creator"
+          ? "owner"
+          : status === "administrator"
+            ? "administrator"
+            : "user",
+    };
+  }
   await saveGroupData(groupId, data);
 }

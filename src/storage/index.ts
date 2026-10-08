@@ -12,7 +12,6 @@ export type {
   ModerationType,
   MuteRecord,
   PromotionConfig,
-  PromotionMessages,
   WarnAction,
   WarningEntry,
 } from "./types.js";

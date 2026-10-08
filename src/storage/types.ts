@@ -133,12 +133,14 @@ export interface BanRecord extends IndexedUser {
  */
 export type WarnAction = "none" | "mute" | "ban";
 
-export interface PromotionMessages {
-  promotionWarning: string;
-  promotionRemoved: string;
-  promotionMuted: string;
-  linkWarning: string;
-  verificationRequired: string;
+export interface PromotionStatistics {
+  analyzed: number;
+  buying: number;
+  selling: number;
+  neutral: number;
+  ambiguous: number;
+  blocked: number;
+  allowedVerified: number;
 }
 
 export interface PromotionConfig {
@@ -147,8 +149,8 @@ export interface PromotionConfig {
   verificationContacts: string[];
   verifiedUsers: Record<string, boolean>;
   recurrenceMuteMinutes: number[];
-  messages: PromotionMessages;
   infractions: Record<string, number>;
+  statistics: PromotionStatistics;
 }
 
 export type IllegalConfidence = "weak" | "suspicious" | "high";

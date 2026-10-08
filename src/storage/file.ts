@@ -16,7 +16,7 @@ import type {
   WarningEntry,
 } from "./types.js";
 import type { PersistenceStore } from "./interface.js";
-import { initialGroupData } from "./initial.js";
+import { DEFAULT_PROMOTION_STATISTICS, initialGroupData } from "./initial.js";
 import type { IllegalContentConfig, PromotionConfig } from "./types.js";
 
 /**
@@ -309,7 +309,13 @@ function normalizePromotion(
   if (!isRecord(raw)) {
     return fallback;
   }
-  const messages = isRecord(raw.messages) ? raw.messages : {};
+  const rawStatistics = isRecord(raw.statistics) ? raw.statistics : {};
+  const statistic = (key: keyof typeof DEFAULT_PROMOTION_STATISTICS): number =>
+    typeof rawStatistics[key] === "number" &&
+    Number.isFinite(rawStatistics[key]) &&
+    rawStatistics[key] >= 0
+      ? rawStatistics[key]
+      : DEFAULT_PROMOTION_STATISTICS[key];
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
     dictionary: Array.isArray(raw.dictionary)
@@ -328,32 +334,18 @@ function normalizePromotion(
           (item): item is number => typeof item === "number" && item >= 0,
         )
       : fallback.recurrenceMuteMinutes,
-    messages: {
-      ...fallback.messages,
-      promotionWarning:
-        typeof messages.promotionWarning === "string"
-          ? messages.promotionWarning
-          : fallback.messages.promotionWarning,
-      promotionRemoved:
-        typeof messages.promotionRemoved === "string"
-          ? messages.promotionRemoved
-          : fallback.messages.promotionRemoved,
-      promotionMuted:
-        typeof messages.promotionMuted === "string"
-          ? messages.promotionMuted
-          : fallback.messages.promotionMuted,
-      linkWarning:
-        typeof messages.linkWarning === "string"
-          ? messages.linkWarning
-          : fallback.messages.linkWarning,
-      verificationRequired:
-        typeof messages.verificationRequired === "string"
-          ? messages.verificationRequired
-          : fallback.messages.verificationRequired,
-    },
     infractions: isRecord(raw.infractions)
       ? (raw.infractions as Record<string, number>)
       : {},
+    statistics: {
+      analyzed: statistic("analyzed"),
+      buying: statistic("buying"),
+      selling: statistic("selling"),
+      neutral: statistic("neutral"),
+      ambiguous: statistic("ambiguous"),
+      blocked: statistic("blocked"),
+      allowedVerified: statistic("allowedVerified"),
+    },
   };
 }
 

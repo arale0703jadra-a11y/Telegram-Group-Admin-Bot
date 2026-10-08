@@ -461,6 +461,20 @@ export async function updateProtectedUser(
   });
 }
 
+export async function isSecurityProtectedUser(
+  groupId: number,
+  userId: number,
+): Promise<boolean> {
+  const { data, error } = await getClient()
+    .from("security_protected_users")
+    .select("user_id")
+    .eq("group_id", groupId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
+}
+
 export async function getSecurityUserProfile(
   groupId: number,
   userId: number,
