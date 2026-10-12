@@ -13,6 +13,10 @@ import {
   searchObservedUsers,
 } from "../utils/users.js";
 import {
+  resolveVerifiedUserInput,
+  VerifiedUserRegistrationError,
+} from "../services/verified-user-registration.js";
+import {
   buildBanConfirmPanel,
   buildFiltersPanel,
   buildIllegalPanel,
@@ -220,25 +224,14 @@ privateInput.on("message:text", async (ctx) => {
       return;
     }
     if (pending.kind === "verifiedAdd") {
-      ctx.session.user.pendingAction = undefined;
-      ctx.session.user.pendingSince = undefined;
       try {
-        if (/^\d+$/.test(text) && (!Number.isSafeInteger(Number(text)) || Number(text) <= 0)) {
-          await ctx.reply("❌ El Telegram user ID debe ser un número positivo válido.");
-          return;
-        }
-        const resolved = await resolveUserTrigger(ctx, pending.groupId, text);
-        if (!resolved) {
-          await ctx.reply(
-            "❌ No encontré ese usuario. Usa un @username ya observado o introduce su telegram_id numérico.",
-          );
-          return;
-        }
-        const member = await getMemberSafely(ctx, pending.groupId, resolved.id);
-        if (!member || member.status === "left" || member.status === "kicked") {
-          await ctx.reply("❌ La persona no pertenece actualmente a este grupo.");
-          return;
-        }
+        const data = await getGroupData(pending.groupId);
+        const member = await resolveVerifiedUserInput(
+          ctx.api,
+          pending.groupId,
+          text,
+          Object.values(data.indexedUsers),
+        );
         const displayName = [member.user.first_name, member.user.last_name]
           .filter(Boolean)
           .join(" ");
@@ -250,25 +243,32 @@ privateInput.on("message:text", async (ctx) => {
         ctx.session.user.pendingAction = {
           kind: "verifiedAddConfirm",
           groupId: pending.groupId,
-          userId: resolved.id,
+          userId: member.user.id,
           username: member.user.username,
-          displayName: displayName || resolved.name,
+          displayName,
         };
         ctx.session.user.pendingSince = Date.now();
         await renderPanel(
           ctx,
           buildVerifiedAddConfirmPanel(
             {
-              id: resolved.id,
+              id: member.user.id,
               username: member.user.username,
-              name: displayName || resolved.name,
+              name: displayName,
             },
             ctx.session.user.selectedGroupTitle,
           ),
         );
       } catch (error) {
-        console.error("[VERIFIED] No se pudo agregar el usuario:", error);
-        await ctx.reply("⛔ No se pudo localizar al usuario en Telegram.");
+        if (error instanceof VerifiedUserRegistrationError) {
+          if (error.code === "TELEGRAM_ERROR") {
+            console.error("[VERIFIED] Telegram no pudo validar la pertenencia:", error.cause);
+          }
+          await ctx.reply(`❌ ${error.message}`);
+        } else {
+          console.error("[VERIFIED] No se pudo resolver el alta:", error);
+          await ctx.reply("⛔ No se pudo preparar el alta. Inténtalo de nuevo.");
+        }
       }
       return;
     }

@@ -79,7 +79,14 @@ import {
   unmarkUserVerified,
 } from "../services/user-registry.js";
 import { syncVerifiedAdministrators } from "../services/verified-title-sync.js";
-import { addVerifiedUser } from "../services/verified-users.js";
+import {
+  addVerifiedUser,
+  type VerifiedUser,
+} from "../services/verified-users.js";
+import {
+  getVerifiedGroupMember,
+  VerifiedUserRegistrationError,
+} from "../services/verified-user-registration.js";
 import { isSystemOwner } from "../services/system-owner.js";
 import { canRevokeVerifiedAdministrator } from "../services/verified-user-policy.js";
 
@@ -364,7 +371,12 @@ moderationActions.on("callback_query:data", async (ctx) => {
     if (kind === "add") {
       ctx.session.user.pendingAction = { kind: "verifiedAdd", groupId };
       ctx.session.user.pendingSince = Date.now();
-      await renderPanel(ctx, buildPromptPanel("👑 Escribe el @username o user_id de la persona que quieres verificar."));
+      await renderPanel(
+        ctx,
+        buildPromptPanel(
+          "👑 Escribe el @username exacto si ZEUS ya observó a esa persona en este grupo, o su Telegram user ID. No uses el nombre visible.",
+        ),
+      );
       return;
     }
     if (kind === "list") {
@@ -400,72 +412,96 @@ moderationActions.on("callback_query:data", async (ctx) => {
         });
         return;
       }
+      let member;
       try {
-        const member = await ctx.api.getChatMember(groupId, userId);
-        if (member.status === "left" || member.status === "kicked") {
-          ctx.session.user.pendingAction = undefined;
-          ctx.session.user.pendingSince = undefined;
+        member = await getVerifiedGroupMember(ctx.api, groupId, userId);
+      } catch (error) {
+        if (error instanceof VerifiedUserRegistrationError) {
+          if (error.code === "TELEGRAM_ERROR") {
+            console.error(
+              `[VERIFIED] Telegram no pudo validar userId=${userId}:`,
+              error.cause,
+            );
+          }
           await ctx.answerCallbackQuery({
-            text: "La persona ya no pertenece al grupo.",
+            text: error.message,
             show_alert: true,
           });
-          await renderPanel(ctx, buildVerifiedUsersPanel(await getVerifiedUsers(groupId), groupTitle));
           return;
         }
-
-        const existing = await getVerifiedUser(groupId, userId);
-        if (existing) {
-          const synchronizedUser = await updateVerifiedUser(groupId, userId, {
-            username: member.user.username,
-            displayName: [member.user.first_name, member.user.last_name]
-              .filter(Boolean)
-              .join(" "),
-          });
-          await markUserVerified(
-            groupId,
-            userId,
-            member.user.username,
-            [member.user.first_name, member.user.last_name].filter(Boolean).join(" "),
-          );
-          ctx.session.user.pendingAction = undefined;
-          ctx.session.user.pendingSince = undefined;
-          await ctx.answerCallbackQuery({
-            text: "Esta persona ya estaba verificada.",
-            show_alert: true,
-          });
-          await renderPanel(
-            ctx,
-            buildVerifiedUserPanel(synchronizedUser, groupTitle, member.status),
-          );
-          return;
-        }
-
-        const user = await addVerifiedUser({
-          groupId,
-          userId,
-          username: member.user.username ?? pending.username,
-          displayName:
-            [member.user.first_name, member.user.last_name].filter(Boolean).join(" ") ||
-            pending.displayName,
-          createdBy: ctx.from?.id ?? 0,
+        console.error(`[VERIFIED] Error inesperado validando userId=${userId}:`, error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudo validar la identidad en Telegram. No se guardó el alta.",
+          show_alert: true,
         });
+        return;
+      }
+
+      const displayName = [member.user.first_name, member.user.last_name]
+        .filter(Boolean)
+        .join(" ");
+      let synchronizedUser: VerifiedUser;
+      let wasAlreadyVerified = false;
+      try {
+        const existing = await getVerifiedUser(groupId, userId);
+        wasAlreadyVerified = Boolean(existing);
+        synchronizedUser = existing
+          ? await updateVerifiedUser(groupId, userId, {
+              username: member.user.username,
+              displayName,
+            })
+          : await addVerifiedUser({
+              groupId,
+              userId,
+              username: member.user.username ?? pending.username,
+              displayName: displayName || pending.displayName,
+              createdBy: ctx.from?.id ?? 0,
+            });
+      } catch (error) {
+        console.error(`[VERIFIED] No se pudo guardar en Supabase userId=${userId}:`, error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudo guardar la verificación en Supabase. No se confirmó el alta; puedes volver a intentarlo.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      try {
         await markUserVerified(
           groupId,
           userId,
           member.user.username ?? pending.username,
-          [member.user.first_name, member.user.last_name].filter(Boolean).join(" ") ||
-            pending.displayName,
+          displayName || pending.displayName,
         );
-        ctx.session.user.pendingAction = undefined;
-        ctx.session.user.pendingSince = undefined;
-        await ctx.answerCallbackQuery("Usuaria añadida como verificada.");
-        await renderPanel(ctx, buildVerifiedUserPanel(user, groupTitle, member.status));
       } catch (error) {
-        console.error("[VERIFIED] No se pudo confirmar el alta:", error);
+        console.error(
+          `[VERIFIED] Guardado en Supabase, pero falló la sincronización local userId=${userId}:`,
+          error,
+        );
         await ctx.answerCallbackQuery({
-          text: "No se pudo guardar la verificación. Puedes volver a intentarlo.",
+          text: "Se guardó en Supabase, pero falló la sincronización local. Vuelve a confirmar para reintentar.",
           show_alert: true,
         });
+        return;
+      }
+
+      ctx.session.user.pendingAction = undefined;
+      ctx.session.user.pendingSince = undefined;
+      await ctx.answerCallbackQuery(
+        wasAlreadyVerified
+          ? "La verificación quedó guardada y sincronizada."
+          : "Usuaria añadida como verificada.",
+      );
+      try {
+        await renderPanel(
+          ctx,
+          buildVerifiedUserPanel(synchronizedUser, groupTitle, member.status),
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED] El alta quedó guardada, pero no se pudo actualizar el panel userId=${userId}:`,
+          error,
+        );
       }
       return;
     }

@@ -30,9 +30,11 @@ type MockVerifiedRow = {
 
 const mockRows: MockVerifiedRow[] = [];
 const realFetch = globalThis.fetch;
+let fetchFailure: Response | undefined;
 process.env.SUPABASE_URL = "https://verified-users.test.invalid";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
 globalThis.fetch = async (input, init) => {
+  if (fetchFailure) return fetchFailure.clone();
   const url = new URL(input instanceof Request ? input.url : String(input));
   const method = init?.method ?? (input instanceof Request ? input.method : "GET");
   const matches = (row: MockVerifiedRow): boolean =>
@@ -259,4 +261,33 @@ test("reactivating a revoked verification restores the existing row and preserve
   assert.equal(reactivated.permissions.can_post, true);
   assert.equal(mockRows.length, 1);
   assert.equal(await isVerifiedUser(existing.group_id, existing.user_id), true);
+});
+
+test("Supabase errors reject the add instead of returning success-shaped data", async () => {
+  fetchFailure = new Response(
+    JSON.stringify({ code: "PGRST000", message: "database unavailable" }),
+    { status: 400, headers: { "content-type": "application/json" } },
+  );
+  try {
+    await assert.rejects(
+      addVerifiedUser({
+        groupId: -10001,
+        userId: 999,
+        createdBy: 700,
+      }),
+    );
+  } finally {
+    fetchFailure = undefined;
+  }
+});
+
+test("verification remains readable from persistent storage after a simulated service restart", async () => {
+  const storedUser = mockRows[0];
+  const moduleUrl = new URL("../src/services/verified-users.js", import.meta.url);
+  moduleUrl.searchParams.set("simulated-restart", String(Date.now()));
+  const restartedService = await import(moduleUrl.href) as typeof import("../src/services/verified-users.js");
+  assert.equal(
+    await restartedService.isVerifiedUser(storedUser.group_id, storedUser.user_id),
+    true,
+  );
 });
