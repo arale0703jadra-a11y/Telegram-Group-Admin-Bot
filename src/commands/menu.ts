@@ -9,6 +9,10 @@ import { scheduleMessageDeletion } from "../utils/cleanup.js";
 import { openPrivatePanel } from "../utils/private-panel.js";
 import type { MyContext } from "../types.js";
 import { ensureCerberoBinding } from "../services/security-commands.js";
+import {
+  GroupRegistrationError,
+  verifyZeusCanAdministerGroup,
+} from "../services/group-registration.js";
 
 export const menuCommand = new Composer<MyContext>();
 
@@ -66,7 +70,26 @@ menuCommand.on("message:text", async (ctx, next) => {
   const groupTitle = chat.title ?? "";
   const botLink = `https://t.me/${username}`;
 
-  registerGroup(groupId, groupTitle);
+  try {
+    await verifyZeusCanAdministerGroup(ctx.api, groupId, ctx.me.id);
+    registerGroup(groupId, groupTitle);
+  } catch (error) {
+    if (error instanceof GroupRegistrationError) {
+      if (error.code === "TELEGRAM_ERROR") {
+        console.error(
+          `[REGISTRO] Telegram no pudo validar ZEUS en groupId=${groupId}:`,
+          error.cause,
+        );
+      }
+      await ctx.reply(`⛔ ${error.message}`);
+      return;
+    }
+    console.error(`[REGISTRO] No se pudo registrar groupId=${groupId}:`, error);
+    await ctx.reply(
+      "⛔ No se pudo guardar el registro de este grupo. No se abrió el panel; inténtalo de nuevo.",
+    );
+    return;
+  }
   await ensureCerberoBinding(groupId);
   markUserAsAdmin(groupId, from.id);
 

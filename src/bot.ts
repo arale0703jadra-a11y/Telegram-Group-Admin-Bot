@@ -25,6 +25,7 @@ import { automaticMessageScheduler } from "./services/automatic-messages.js";
 import { cleanupRecoveryChallenges } from "./services/system-owner.js";
 import { recordObservedUser } from "./services/user-registry.js";
 import { syncVerifiedAdministrators } from "./services/verified-title-sync.js";
+import { verifyZeusCanAdministerGroup } from "./services/group-registration.js";
 
 const RECOVERY_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const VERIFIED_TITLE_SYNC_INTERVAL_MS = 15 * 60 * 1000;
@@ -90,7 +91,16 @@ async function main(): Promise<void> {
     }
 
     if (next === "administrator") {
-      registerGroup(ctx.chat.id, ctx.chat.title ?? "");
+      try {
+        await verifyZeusCanAdministerGroup(ctx.api, ctx.chat.id, ctx.me.id);
+        registerGroup(ctx.chat.id, ctx.chat.title ?? "");
+      } catch (error) {
+        console.error(
+          `[REGISTRO] No se pudo validar o guardar groupId=${ctx.chat.id}:`,
+          error,
+        );
+        return;
+      }
       await ensureCerberoBinding(ctx.chat.id);
 
       // Registra a los administradores reales para poder ofrecer el
