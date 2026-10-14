@@ -278,7 +278,7 @@ export async function muteUser(
   ctx: MyContext,
   chatId: number,
   userId: number,
-  minutes: number,
+  minutes: number | undefined,
   targetName?: string,
 ): Promise<ActionResult> {
   const name = targetName ?? String(userId);
@@ -305,10 +305,10 @@ export async function muteUser(
     return { ok: false, error: "No se puede silenciar a un administrador o al propietario." };
   }
 
-  const until = isEpochNowSeconds() + minutes * 60;
+  const until = minutes === undefined ? undefined : isEpochNowSeconds() + minutes * 60;
   try {
     await ctx.api.restrictChatMember(chatId, userId, MUTE_PERMISSIONS, {
-      until_date: until,
+      ...(until === undefined ? {} : { until_date: until }),
     });
   } catch {
     await logEvent(ctx, chatId, "MUTE", {
@@ -322,7 +322,7 @@ export async function muteUser(
   try {
     const data = await getGroupData(chatId);
     data.mutedUsers[String(userId)] = {
-      until,
+      until: until ?? 0,
       adminId: ctx.from?.id,
       adminName: ctx.from?.first_name,
       at: new Date().toISOString(),
@@ -357,7 +357,7 @@ export async function muteUser(
     targetId: userId,
     targetName: name,
     result: "ok",
-    detail: `${minutes} min`,
+    detail: minutes === undefined ? "Indefinido" : `${minutes} min`,
   });
   return { ok: true };
 }

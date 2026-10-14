@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { WarningEntry } from "../storage/types.js";
 
@@ -38,7 +39,16 @@ export interface SecurityCommandInput {
   targetUserId?: number;
   targetMessageId?: number;
   payload?: SecurityCommandPayload;
+  idempotencyKey?: string;
 }
+
+export type SecurityCommandResultState =
+  | "queued"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "unknown";
 
 export interface SecurityCommandRow {
   id: string;
@@ -58,6 +68,76 @@ export interface SecurityCommandRow {
   last_error: string | null;
   responsible_bot: string | null;
   cancelled_at: string | null;
+  operation_key: string | null;
+  result_state: SecurityCommandResultState | null;
+}
+
+interface EnqueuedSecurityCommand extends SecurityCommandRow {
+  deduplicated: boolean;
+}
+
+function canonicalizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeValue(item));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((accumulator, key) => {
+        accumulator[key] = canonicalizeValue(
+          (value as Record<string, unknown>)[key],
+        );
+        return accumulator;
+      }, {});
+  }
+  return value;
+}
+
+export function buildSecurityCommandOperationKey(
+  input: Pick<
+    SecurityCommandInput,
+    | "groupId"
+    | "action"
+    | "targetUserId"
+    | "targetMessageId"
+    | "payload"
+    | "idempotencyKey"
+  >,
+): string | undefined {
+  if (!input.idempotencyKey) return undefined;
+  const payload = normalizeSecurityPayload(input.payload);
+  if (input.payload?.until_date === undefined) {
+    delete payload.until_date;
+  }
+  const normalized = canonicalizeValue({
+    idempotencyKey: input.idempotencyKey,
+    groupId: input.groupId,
+    action: input.action,
+    targetUserId: input.targetUserId ?? null,
+    targetMessageId: input.targetMessageId ?? null,
+    payload,
+  });
+  return createHash("sha256")
+    .update(JSON.stringify(normalized))
+    .digest("hex");
+}
+
+export function getSecurityCommandResultState(
+  row: Partial<SecurityCommandRow> | undefined,
+): SecurityCommandResultState {
+  const state = row?.result_state ?? row?.status ?? "unknown";
+  if (state === "pending" || state === "queued") return "queued";
+  if (state === "unknown") return "unknown";
+  if (state === "processing") {
+    if (row?.lease_expires_at && new Date(row.lease_expires_at).getTime() < Date.now()) {
+      return "unknown";
+    }
+    return "processing";
+  }
+  if (state === "completed" || state === "failed" || state === "cancelled") {
+    return state;
+  }
+  return "unknown";
 }
 
 let client: SupabaseClient | undefined;
@@ -138,10 +218,27 @@ export async function ensureCerberoBinding(groupId: number): Promise<void> {
 
 export async function enqueueSecurityCommand(
   input: SecurityCommandInput,
-): Promise<SecurityCommandRow> {
+): Promise<EnqueuedSecurityCommand> {
   await ensureCerberoBinding(input.groupId);
   const payload = normalizeSecurityPayload(input.payload);
-  const { data, error } = await getClient()
+  const operationKey = buildSecurityCommandOperationKey(input);
+  const client = getClient();
+
+  if (operationKey) {
+    const { data: existing, error: existingError } = await client
+      .from("security_commands")
+      .select("*")
+      .eq("group_id", input.groupId)
+      .eq("action", input.action)
+      .eq("operation_key", operationKey)
+      .maybeSingle();
+    if (existingError) throw existingError;
+    if (existing) {
+      return { ...(existing as SecurityCommandRow), deduplicated: true };
+    }
+  }
+
+  const { data, error } = await client
     .from("security_commands")
     .insert({
       group_id: input.groupId,
@@ -150,11 +247,28 @@ export async function enqueueSecurityCommand(
       target_message_id: input.targetMessageId ?? null,
       payload,
       status: "pending",
+      operation_key: operationKey ?? null,
+      result_state: "queued",
     })
     .select("*")
     .single();
-  if (error) throw error;
-  return data as SecurityCommandRow;
+  if (error) {
+    if (operationKey && error.code === "23505") {
+      const { data: existing, error: lookupError } = await client
+        .from("security_commands")
+        .select("*")
+        .eq("group_id", input.groupId)
+        .eq("action", input.action)
+        .eq("operation_key", operationKey)
+        .maybeSingle();
+      if (lookupError) throw lookupError;
+      if (existing) {
+        return { ...(existing as SecurityCommandRow), deduplicated: true };
+      }
+    }
+    throw error;
+  }
+  return { ...(data as SecurityCommandRow), deduplicated: false };
 }
 
 export function isCerberoExecutionEnabled(): boolean {
@@ -164,12 +278,17 @@ export function isCerberoExecutionEnabled(): boolean {
 export async function delegateSecurityCommand(
   input: SecurityCommandInput,
 ): Promise<
-  | { ok: true; queued: true; commandId: string }
+  | { ok: true; queued: true; commandId: string; duplicate: boolean }
   | { ok: false; error: string }
 > {
   try {
     const command = await enqueueSecurityCommand(input);
-    return { ok: true, queued: true, commandId: command.id };
+    return {
+      ok: true,
+      queued: true,
+      commandId: command.id,
+      duplicate: command.deduplicated,
+    };
   } catch (error) {
     console.error("[ZEUS] No se pudo enviar la orden a Cerbero:", error);
     return {
@@ -205,7 +324,7 @@ export async function getSecurityCommand(
   const { data, error } = await getClient()
     .from("security_commands")
     .select(
-      "id,group_id,action,target_user_id,target_message_id,payload,status,created_at,executed_at,processing_instance_id,processing_token,lease_expires_at,processing_at,attempts,last_error,responsible_bot,cancelled_at",
+      "id,group_id,action,target_user_id,target_message_id,payload,status,created_at,executed_at,processing_instance_id,processing_token,lease_expires_at,processing_at,attempts,last_error,responsible_bot,cancelled_at,operation_key,result_state",
     )
     .eq("id", commandId)
     .maybeSingle();
@@ -276,6 +395,66 @@ export interface SecurityEventSummary {
     details: Record<string, unknown>;
     createdAt: string;
   }
+
+export interface SecurityCommandHistoryItem {
+  id: string;
+  action: SecurityAction;
+  status: SecurityCommandRow["status"];
+  created_at: string;
+  executed_at: string | null;
+  lease_expires_at: string | null;
+  attempts: number;
+  last_error: string | null;
+  resultState: SecurityCommandResultState;
+}
+
+export async function getSecurityEventsForUser(
+  groupId: number,
+  userId: number,
+  limit = 10,
+): Promise<SecurityEventSummary[]> {
+  const { data, error } = await getClient()
+    .from("security_events")
+    .select("id,event_type,user_id,details,created_at")
+    .eq("group_id", groupId)
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []).map((event) => ({
+    id: event.id,
+    eventType: event.event_type,
+    userId: event.user_id ?? undefined,
+    details: event.details ?? {},
+    createdAt: event.created_at,
+  }));
+}
+
+export async function getSecurityCommandHistoryForUser(
+  groupId: number,
+  userId: number,
+  limit = 10,
+): Promise<SecurityCommandHistoryItem[]> {
+  const { data, error } = await getClient()
+    .from("security_commands")
+    .select("id,action,status,result_state,created_at,executed_at,lease_expires_at,attempts,last_error")
+    .eq("group_id", groupId)
+    .eq("target_user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    action: row.action as SecurityAction,
+    status: row.status as SecurityCommandRow["status"],
+    created_at: row.created_at,
+    executed_at: row.executed_at,
+    lease_expires_at: row.lease_expires_at,
+    attempts: row.attempts ?? 0,
+    last_error: row.last_error,
+    resultState: getSecurityCommandResultState(row as Partial<SecurityCommandRow>),
+  }));
+}
 
   export interface SecurityStats {
     deletedMessages: number;
@@ -439,10 +618,12 @@ export async function getSecurityConfig(groupId: number): Promise<SecurityGroupC
 export async function updateSecurityConfig(
   groupId: number,
   changes: Partial<Omit<SecurityGroupConfig, "group_id">>,
+  idempotencyKey?: string,
 ): Promise<void> {
   await enqueueSecurityCommand({
     groupId,
     action: "UPDATE_SECURITY_CONFIG",
+    idempotencyKey,
     payload: changes,
   });
 }
@@ -496,24 +677,6 @@ export async function getSecurityUserProfile(
     protectionType: protectedUser?.protection_type ?? undefined,
     events,
   };
-}
-
-async function getSecurityEventsForUser(groupId: number, userId: number): Promise<SecurityEventSummary[]> {
-  const { data, error } = await getClient()
-    .from("security_events")
-    .select("id,event_type,user_id,details,created_at")
-    .eq("group_id", groupId)
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false })
-    .limit(50);
-  if (error) throw error;
-  return (data ?? []).map((event) => ({
-    id: event.id,
-    eventType: event.event_type,
-    userId: event.user_id ?? undefined,
-    details: event.details ?? {},
-    createdAt: event.created_at,
-  }));
 }
 
 export async function clearSecurityWarnings(groupId: number, userId: number): Promise<void> {

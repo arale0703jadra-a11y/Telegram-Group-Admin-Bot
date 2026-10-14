@@ -127,6 +127,7 @@ promotionModeration.on("message", async (ctx, next) => {
       groupId: chatId,
       action: "WARN_USER",
       targetUserId: userId,
+      idempotencyKey: String(ctx.update.update_id),
       payload: { reason, warn_limit: data.warnLimit, warn_action: data.warnAction },
     });
     warning = { ok: warningOrder.ok };
@@ -134,6 +135,7 @@ promotionModeration.on("message", async (ctx, next) => {
       groupId: chatId,
       action: "DELETE_MESSAGE",
       targetMessageId: ctx.message.message_id,
+      idempotencyKey: String(ctx.update.update_id),
       payload: { reason },
     });
     deletion = { ok: deleteOrder.ok };
@@ -153,6 +155,7 @@ promotionModeration.on("message", async (ctx, next) => {
         groupId: chatId,
         action: "MUTE_USER",
         targetUserId: userId,
+        idempotencyKey: String(ctx.update.update_id),
         payload: { duration_minutes: muteMinutes, reason },
       });
     } else {
@@ -163,11 +166,15 @@ promotionModeration.on("message", async (ctx, next) => {
   await logEvent(ctx, chatId, "DELETE", {
     targetId: userId,
     targetName: ctx.from.first_name,
-    result: deletion.ok ? "ok" : "error",
+    result: deletion.ok
+      ? isCerberoExecutionEnabled()
+        ? "queued"
+        : "ok"
+      : "error",
     detail: `Promoción SELLING detectada (${detection.sellingSignals.join(", ") || detection.reason})`,
   });
 
-  if (deletion.ok) {
+  if (deletion.ok && !isCerberoExecutionEnabled()) {
     try {
       const latestData = await getGroupData(chatId);
       latestData.promotion.statistics.blocked += 1;

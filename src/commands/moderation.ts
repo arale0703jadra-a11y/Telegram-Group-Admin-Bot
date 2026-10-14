@@ -49,6 +49,7 @@ moderationCommand.command("borrar", async (ctx) => {
       groupId: chatId,
       action: "DELETE_MESSAGE",
       targetMessageId: target.message_id,
+      idempotencyKey: String(ctx.update.update_id),
       payload: {
         requester_id: ctx.from?.id,
         requester_name: ctx.from?.first_name,

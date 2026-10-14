@@ -25,7 +25,7 @@ export type ModerationType =
   | "INACTIVITY_REMOVE_ERROR";
 
 /**
- * Registro de una acción de moderación realizada por un administrador.
+ * Registro del resultado observado de una acción de moderación.
  */
 export interface ModerationEvent {
   id: string;
@@ -36,7 +36,7 @@ export interface ModerationEvent {
   targetId?: number;
   targetName?: string;
   date: string;
-  result: "ok" | "error";
+  result: "ok" | "error" | "queued";
   detail?: string;
 }
 
@@ -199,6 +199,8 @@ export interface GroupData {
   verifiedTitles: string[];
   autoDetectVerifiedTitles: boolean;
   autoRemoveVerifiedWhenTitleRemoved: boolean;
+  verifiedMemberTags: string[];
+  verifiedTagSyncEnabled: boolean;
   activityMessages: ActivityMessage[];
   automaticMessage?: AutomaticMessageConfig;
 }

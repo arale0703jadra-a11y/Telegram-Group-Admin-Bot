@@ -20,6 +20,37 @@ export function shouldSkipPromotionFilter(
   return !filterEnabled || bypassPromotionFilter;
 }
 
+export function shouldSkipIllegalFilter(
+  bypassIllegalFilter: boolean,
+  critical: boolean,
+): boolean {
+  return bypassIllegalFilter && !critical;
+}
+
+export function shouldSkipAutomaticDeletion(
+  bypassAutomaticDeletion: boolean,
+  critical: boolean,
+): boolean {
+  return bypassAutomaticDeletion && !critical;
+}
+
+export function getVerifiedMessageRestriction(
+  permissions: { can_post: boolean; can_send_media: boolean },
+  hasMedia: boolean,
+): "posting_disabled" | "media_disabled" | undefined {
+  if (!permissions.can_post) return "posting_disabled";
+  if (hasMedia && !permissions.can_send_media) return "media_disabled";
+  return undefined;
+}
+
+export function shouldSkipOrdinarySpamViolation(
+  bypassAntispam: boolean,
+  violationType: string,
+): boolean {
+  if (!bypassAntispam) return false;
+  return violationType !== "prohibited_word" && violationType !== "repeat_offender";
+}
+
 export function canRevokeVerifiedAdministrator(input: {
   status: TelegramUserStatus;
   isBot: boolean;

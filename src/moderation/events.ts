@@ -5,7 +5,7 @@ import type { ModerationType } from "../storage/types.js";
 export interface EventLogInfo {
   targetId?: number;
   targetName?: string;
-  result: "ok" | "error";
+  result: "ok" | "error" | "queued";
   detail?: string;
 }
 

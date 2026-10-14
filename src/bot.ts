@@ -8,6 +8,7 @@ import { isGroupChat, isUserAdmin } from "./utils/permissions.js";
 import { promotionModeration } from "./filters/moderation.js";
 import { illegalModeration } from "./filters/illegal-moderation.js";
 import { antiSpam } from "./filters/anti-spam.js";
+import { verifiedPermissions } from "./filters/verified-permissions.js";
 import { runInactivityScan } from "./services/inactivity.js";
 import { getGroupData, saveGroupData, store } from "./storage/index.js";
 import {
@@ -26,6 +27,7 @@ import { cleanupRecoveryChallenges } from "./services/system-owner.js";
 import { recordObservedUser } from "./services/user-registry.js";
 import { syncVerifiedAdministrators } from "./services/verified-title-sync.js";
 import { verifyZeusCanAdministerGroup } from "./services/group-registration.js";
+import { observeVerifiedMemberTag } from "./services/verified-tag-sync.js";
 
 const RECOVERY_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const VERIFIED_TITLE_SYNC_INTERVAL_MS = 15 * 60 * 1000;
@@ -129,6 +131,33 @@ async function main(): Promise<void> {
     }
   });
 
+  bot.on("chat_member", async (ctx) => {
+    if (!isGroupChat(ctx)) return;
+    const groupId = ctx.chat.id;
+    const member = ctx.chatMember.new_chat_member;
+    try {
+      const data = await getGroupData(groupId);
+      if (!data.verifiedTagSyncEnabled) return;
+      const result = await observeVerifiedMemberTag({
+        groupId,
+        member,
+        recognizedTags: data.verifiedMemberTags,
+      });
+      if (result.classification !== "ignored") {
+        console.log(
+          `[VERIFIED_TAG] groupId=${groupId} userId=${member.user.id} ` +
+            `result=${result.classification}`,
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[VERIFIED_TAG] No se pudo procesar chat_member groupId=${groupId} ` +
+          `userId=${member.user.id}; resultado incierto:`,
+        error,
+      );
+    }
+  });
+
   bot.command("admin", async (ctx) => {
     const esAdmin = await isUserAdmin(ctx);
     await ctx.reply(
@@ -199,6 +228,7 @@ async function main(): Promise<void> {
     await next();
   });
 
+  bot.use(verifiedPermissions);
   bot.use(antiSpam);
   bot.use(illegalModeration);
   bot.use(promotionModeration);
@@ -252,7 +282,7 @@ async function main(): Promise<void> {
   await bot.start({
     // Fijar la lista evita conservar una configuración previa que excluya
     // mensajes normales de grupo del polling.
-    allowed_updates: ["message", "callback_query", "my_chat_member"],
+    allowed_updates: ["message", "callback_query", "my_chat_member", "chat_member"],
     onStart: (botInfo) => {
       console.log(`🤖 ${BOT_NAME} iniciado correctamente como @${botInfo.username}`);
       automaticMessageScheduler.start(bot.api);

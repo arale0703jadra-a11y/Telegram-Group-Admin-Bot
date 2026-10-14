@@ -67,7 +67,8 @@ export async function removeInactiveUser(
   ctx: MyContext,
   chatId: number,
   userId: number,
-): Promise<"removed" | "skipped" | "error"> {
+  idempotencyKey?: string,
+): Promise<"removed" | "queued" | "skipped" | "error"> {
   const data = await getGroupData(chatId);
   if (!data.inactivity.enabled) {
     return "skipped";
@@ -115,16 +116,17 @@ export async function removeInactiveUser(
       groupId: chatId,
       action: "KICK_USER",
       targetUserId: userId,
+      idempotencyKey: idempotencyKey ?? String(ctx.update.update_id),
       payload: { reason: "INACTIVITY" },
     });
     await logEvent(ctx, chatId, "INACTIVITY_REMOVE", {
       targetId: userId,
-      result: queued.ok ? "ok" : "error",
+      result: queued.ok ? "queued" : "error",
       detail: queued.ok
         ? `Orden KICK_USER enviada a Cerbero: ${queued.commandId}`
         : queued.error,
     });
-    return queued.ok ? "removed" : "error";
+    return queued.ok ? "queued" : "error";
   }
   try {
     await ctx.api.banChatMember(chatId, userId);
@@ -160,12 +162,20 @@ export async function runInactivityScan(ctx: MyContext): Promise<void> {
         continue;
       }
       const candidates = await getInactiveUsers(ctx, group.id);
+      let queuedCount = 0;
+      const scanKey = `inactivity-scan:${Math.floor(Date.now() / 3_600_000)}`;
       for (const candidate of candidates) {
-        await removeInactiveUser(ctx, group.id, candidate.id);
+        const result = await removeInactiveUser(
+          ctx,
+          group.id,
+          candidate.id,
+          scanKey,
+        );
+        if (result === "queued") queuedCount += 1;
       }
       await logEvent(ctx, group.id, "INACTIVITY_SCAN", {
-        result: "ok",
-        detail: `Candidatos revisados: ${candidates.length}`,
+        result: queuedCount > 0 ? "queued" : "ok",
+        detail: `Candidatos revisados: ${candidates.length}; órdenes pendientes: ${queuedCount}`,
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message.slice(0, 240) : "Error desconocido";

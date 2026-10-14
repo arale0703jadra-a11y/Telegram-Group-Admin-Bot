@@ -46,7 +46,14 @@ import {
   buildWarningsPanel,
   buildVerifiedUserPanel,
   buildVerifiedUsersPanel,
+  buildVerifiedActionConfirmPanel,
+  buildVerifiedPermissionConfirmPanel,
+  buildRevokedVerifiedUsersPanel,
+  verifiedPermissionsSnapshot,
+  type VerifiedUserProfileDetails,
   buildVerifiedTitleConfigPanel,
+  buildVerifiedTagCandidatesPanel,
+  buildVerifiedTagReviewConfirmPanel,
   ModAction,
 } from "./panels.js";
 import { renderPanel } from "./render.js";
@@ -59,6 +66,8 @@ import {
 import {
   delegateSecurityCommand,
   getSecurityWarningHistory,
+  getSecurityEventsForUser,
+  getSecurityCommandHistoryForUser,
   isCerberoExecutionEnabled,
   ensureCerberoBinding,
   getSecurityConfig,
@@ -67,7 +76,9 @@ import {
 } from "../services/security-commands.js";
 import {
   getVerifiedUser,
+  getVerifiedUserRecord,
   getVerifiedUsers,
+  getRevokedVerifiedUsers,
   updateVerifiedUser,
   revokeVerifiedUser,
   type VerifiedUserPermissions,
@@ -84,6 +95,18 @@ import {
   type VerifiedUser,
 } from "../services/verified-users.js";
 import {
+  decideVerifiedTagReview,
+  getVerifiedTagReview,
+  listVerifiedTagReviews,
+  withVerifiedTagReviewLock,
+  type VerifiedTagReview,
+} from "../services/verified-tag-reviews.js";
+import {
+  approveVerifiedTagCandidate,
+  type VerifiedTagApprovalResult,
+  VerifiedTagApprovalError,
+} from "../services/verified-tag-approval.js";
+import {
   getVerifiedGroupMember,
   VerifiedUserRegistrationError,
 } from "../services/verified-user-registration.js";
@@ -96,6 +119,111 @@ const NO_GROUP_SELECTED_MESSAGE =
 
 function configSectionFor(kind: string): string {
   return kind.startsWith("auto_") ? "mensajes" : "config";
+}
+
+async function loadVerifiedProfileDetails(
+  ctx: MyContext,
+  groupId: number,
+  user: VerifiedUser,
+): Promise<{
+  status: "creator" | "administrator" | "member" | "restricted" | "left" | "kicked" | undefined;
+  details: VerifiedUserProfileDetails;
+}> {
+  const details: VerifiedUserProfileDetails = { groupId, historyUnavailable: [] };
+  let status:
+    | "creator"
+    | "administrator"
+    | "member"
+    | "restricted"
+    | "left"
+    | "kicked"
+    | undefined;
+  try {
+    const member = await ctx.api.getChatMember(groupId, user.user_id);
+    status = member.status;
+    details.currentUsername = member.user.username;
+  } catch (error) {
+    console.error(
+      `[VERIFIED] No se pudo cargar membresía userId=${user.user_id} groupId=${groupId}:`,
+      error,
+    );
+    details.historyUnavailable?.push("membresía de Telegram");
+  }
+
+  try {
+    const group = await getGroupData(groupId);
+    const mute = group.mutedUsers[String(user.user_id)];
+    details.muteState = mute
+      ? mute.until === 0
+        ? "Silencio indefinido registrado"
+        : mute.until > Math.floor(Date.now() / 1000)
+          ? `Silenciada hasta ${new Date(mute.until * 1000).toLocaleString()}`
+          : "El registro de silencio está vencido"
+      : status === "restricted"
+        ? "Restringida en Telegram; sin registro local"
+        : "Sin silencio local registrado";
+    details.banState = status === undefined
+      ? "No confirmado"
+      : status === "kicked"
+        ? "Baneada en Telegram"
+        : status === "left"
+          ? "Fuera del grupo (ban no confirmado)"
+          : "No baneada según Telegram";
+    if (!isCerberoExecutionEnabled()) {
+      details.warnings = (group.warnings[String(user.user_id)] ?? []).map((warning) => ({
+        date: warning.date,
+        reason: warning.reason,
+        revokedAt: null,
+      }));
+    }
+  } catch (error) {
+    console.error(
+      `[VERIFIED] No se pudo cargar estado local userId=${user.user_id} groupId=${groupId}:`,
+      error,
+    );
+    details.historyUnavailable?.push("estado o advertencias locales");
+  }
+
+  if (isCerberoExecutionEnabled()) {
+    const results = await Promise.allSettled([
+      getSecurityWarningHistory(groupId, user.user_id),
+      getSecurityEventsForUser(groupId, user.user_id, 5),
+      getSecurityCommandHistoryForUser(groupId, user.user_id, 5),
+    ]);
+    if (results[0].status === "fulfilled") {
+      details.warnings = results[0].value.map((warning) => ({
+        date: warning.date,
+        reason: warning.reason,
+        revokedAt: warning.revokedAt,
+      }));
+    } else {
+      console.error("[VERIFIED] No se pudo cargar el historial de advertencias:", results[0].reason);
+      details.historyUnavailable?.push("advertencias de CERBERO");
+    }
+    if (results[1].status === "fulfilled") {
+      details.events = results[1].value;
+    } else {
+      console.error("[VERIFIED] No se pudieron cargar los eventos de seguridad:", results[1].reason);
+      details.historyUnavailable?.push("eventos de CERBERO");
+    }
+    if (results[2].status === "fulfilled") {
+      details.commands = results[2].value.map((command) => ({
+        action: command.action,
+        created_at: command.created_at,
+        resultState: command.resultState,
+        last_error: command.last_error,
+      }));
+    } else {
+      console.error("[VERIFIED] No se pudieron cargar las órdenes de CERBERO:", results[2].reason);
+      details.historyUnavailable?.push("órdenes de CERBERO");
+    }
+  } else {
+    details.historyUnavailable?.push("historial centralizado de eventos y órdenes (CERBERO inactivo)");
+  }
+  if (details.historyUnavailable?.length === 0) {
+    delete details.historyUnavailable;
+  }
+  return { status, details };
 }
 
 /**
@@ -203,12 +331,89 @@ moderationActions.on("callback_query:data", async (ctx) => {
         ));
         return;
       case "verified_view":
+        let tagReviews: VerifiedTagReview[];
+        try {
+          tagReviews = await listVerifiedTagReviews(groupId);
+        } catch (error) {
+          console.error(`[VERIFIED_TAG] No se pudo cargar configuración groupId=${groupId}:`, error);
+          await ctx.answerCallbackQuery({
+            text: "No se pudieron cargar las revisiones de etiquetas. Comprueba que la migración 011 esté aplicada.",
+            show_alert: true,
+          });
+          return;
+        }
         await ctx.answerCallbackQuery();
         await renderPanel(ctx, buildVerifiedTitleConfigPanel(
           data.verifiedTitles,
           data.autoDetectVerifiedTitles,
           data.autoRemoveVerifiedWhenTitleRemoved,
           ctx.session.user.selectedGroupTitle,
+          data.verifiedMemberTags,
+          data.verifiedTagSyncEnabled,
+          tagReviews.filter((review) => review.status === "pending").length,
+        ));
+        return;
+      case "verified_tags_edit":
+        ctx.session.user.pendingAction = { kind: "verifiedMemberTags", groupId };
+        ctx.session.user.pendingSince = Date.now();
+        await ctx.answerCallbackQuery();
+        await renderPanel(ctx, buildPromptPanel(
+          "🏷️ Escribe las etiquetas de miembro reconocidas separadas por comas (ejemplo: Verificada). No se aceptan emojis; la detección seguirá apagada hasta que la actives.",
+        ));
+        return;
+      case "verified_tags_toggle":
+        if (!data.verifiedTagSyncEnabled && data.verifiedMemberTags.length === 0) {
+          await ctx.answerCallbackQuery({
+            text: "Configura al menos una etiqueta antes de activar la detección.",
+            show_alert: true,
+          });
+          return;
+        }
+        if (!data.verifiedTagSyncEnabled) {
+          try {
+            const botMember = await ctx.api.getChatMember(groupId, ctx.me.id);
+            if (botMember.status !== "administrator") {
+              await ctx.answerCallbackQuery({
+                text: "ZEUS debe ser administrador del grupo para recibir actualizaciones chat_member.",
+                show_alert: true,
+              });
+              return;
+            }
+          } catch (error) {
+            console.error(`[VERIFIED_TAG] No se pudo verificar el estado del bot groupId=${groupId}:`, error);
+            await ctx.answerCallbackQuery({
+              text: "No se pudo confirmar que ZEUS sea administrador. La detección no se activó.",
+              show_alert: true,
+            });
+            return;
+          }
+        }
+        let currentTagReviews: VerifiedTagReview[];
+        try {
+          currentTagReviews = await listVerifiedTagReviews(groupId);
+        } catch (error) {
+          console.error(`[VERIFIED_TAG] No se pudieron cargar revisiones groupId=${groupId}:`, error);
+          await ctx.answerCallbackQuery({
+            text: "No se pudieron cargar las revisiones. Comprueba que la migración 011 esté aplicada.",
+            show_alert: true,
+          });
+          return;
+        }
+        data.verifiedTagSyncEnabled = !data.verifiedTagSyncEnabled;
+        await saveGroupData(groupId, data);
+        await ctx.answerCallbackQuery(
+          data.verifiedTagSyncEnabled
+            ? "Detección de etiquetas activada para este grupo."
+            : "Detección de etiquetas desactivada para este grupo.",
+        );
+        await renderPanel(ctx, buildVerifiedTitleConfigPanel(
+          data.verifiedTitles,
+          data.autoDetectVerifiedTitles,
+          data.autoRemoveVerifiedWhenTitleRemoved,
+          ctx.session.user.selectedGroupTitle,
+          data.verifiedMemberTags,
+          data.verifiedTagSyncEnabled,
+          currentTagReviews.filter((review) => review.status === "pending").length,
         ));
         return;
       case "verified_titles_edit":
@@ -295,8 +500,10 @@ moderationActions.on("callback_query:data", async (ctx) => {
           const field = kind === "cerbero_toggle" ? "enabled" : "media_protection";
           await updateSecurityConfig(groupId, {
             [field]: !securityConfig[field],
-          });
-          await ctx.answerCallbackQuery("✅ Configuración Cerbero actualizada.");
+          }, String(ctx.update.update_id));
+          await ctx.answerCallbackQuery(
+            "⏳ Configuración enviada a Cerbero; pendiente de ejecución.",
+          );
         } catch {
           await ctx.answerCallbackQuery("⛔ No se pudo actualizar la configuración Cerbero.");
         }
@@ -368,6 +575,211 @@ moderationActions.on("callback_query:data", async (ctx) => {
 
   if (parts[0] === "vu") {
     const groupTitle = ctx.session.user.selectedGroupTitle;
+    if (kind === "candidates") {
+      const page = Number(parts[2] ?? 0);
+      if (!Number.isInteger(page) || page < 0) {
+        await ctx.answerCallbackQuery("Página no válida.");
+        return;
+      }
+      let reviews: VerifiedTagReview[];
+      try {
+        reviews = await listVerifiedTagReviews(groupId);
+      } catch (error) {
+        console.error(`[VERIFIED_TAG] No se pudieron cargar candidatas groupId=${groupId}:`, error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudieron cargar las candidatas. Comprueba que la migración 011 esté aplicada.",
+          show_alert: true,
+        });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildVerifiedTagCandidatesPanel(reviews, page, groupTitle),
+      );
+      return;
+    }
+    if (kind === "review") {
+      const decision = parts[2];
+      const userId = Number(parts[3]);
+      if (
+        (decision !== "approve" && decision !== "reject") ||
+        !Number.isSafeInteger(userId) ||
+        userId <= 0
+      ) {
+        await ctx.answerCallbackQuery("Acción o usuario no válido.");
+        return;
+      }
+      let review: VerifiedTagReview | undefined;
+      try {
+        review = await getVerifiedTagReview(groupId, userId);
+      } catch (error) {
+        console.error(`[VERIFIED_TAG] No se pudo preparar revisión groupId=${groupId} userId=${userId}:`, error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudo cargar la revisión.",
+          show_alert: true,
+        });
+        return;
+      }
+      const reviewable =
+        review?.status === "pending" ||
+        (decision === "approve" &&
+          (review?.status === "revoked_tag" ||
+            review?.status === "approving"));
+      if (!review || !reviewable) {
+        await ctx.answerCallbackQuery({
+          text: "La candidata ya no está pendiente de revisión.",
+          show_alert: true,
+        });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildVerifiedTagReviewConfirmPanel(review, decision, groupTitle),
+      );
+      return;
+    }
+    if (kind === "review-confirm") {
+      const decision = parts[2];
+      const userId = Number(parts[3]);
+      if (
+        (decision !== "approve" && decision !== "reject") ||
+        !Number.isSafeInteger(userId) ||
+        userId <= 0 ||
+        !ctx.from
+      ) {
+        await ctx.answerCallbackQuery({
+          text: "Acción, usuario o administrador no válido.",
+          show_alert: true,
+        });
+        return;
+      }
+      const actorUserId = ctx.from.id;
+
+      if (decision === "reject") {
+        try {
+          const rejected = await withVerifiedTagReviewLock(
+            groupId,
+            userId,
+            async () => {
+              if (!(await isUserAdminOf(ctx, groupId))) {
+                throw new Error("UNAUTHORIZED");
+              }
+              const current = await getVerifiedTagReview(groupId, userId);
+              if (!current || current.status !== "pending") return undefined;
+              return decideVerifiedTagReview({
+                groupId,
+                userId,
+                decision: "rejected",
+                actorUserId,
+              });
+            },
+          );
+          if (!rejected) {
+            await ctx.answerCallbackQuery({
+              text: "La candidata ya fue procesada.",
+              show_alert: true,
+            });
+            return;
+          }
+          await ctx.answerCallbackQuery(
+            "Candidata rechazada; no se modificó la verificación.",
+          );
+          try {
+            const reviews = await listVerifiedTagReviews(groupId);
+            await renderPanel(
+              ctx,
+              buildVerifiedTagCandidatesPanel(reviews, 0, groupTitle),
+            );
+          } catch (error) {
+            console.error(`[VERIFIED_TAG] No se pudo actualizar el panel groupId=${groupId}:`, error);
+            await ctx.reply("La decisión se guardó, pero no se pudo actualizar el panel.");
+          }
+        } catch (error) {
+          const unauthorized =
+            error instanceof Error && error.message === "UNAUTHORIZED";
+          console.error(`[VERIFIED_TAG] No se pudo rechazar candidata groupId=${groupId} userId=${userId}:`, error);
+          await ctx.answerCallbackQuery({
+            text: unauthorized
+              ? NO_ADMIN_MESSAGE
+              : "No se pudo guardar el rechazo. Comprueba el estado antes de reintentar.",
+            show_alert: true,
+          });
+        }
+        return;
+      }
+
+      let result: VerifiedTagApprovalResult;
+      try {
+        const groupData = await getGroupData(groupId);
+        result = await approveVerifiedTagCandidate({
+          api: ctx.api,
+          groupId,
+          userId,
+          actorUserId,
+          recognizedTags: groupData.verifiedMemberTags,
+          authorize: () => isUserAdminOf(ctx, groupId),
+        });
+      } catch (error) {
+        console.error(`[VERIFIED_TAG] Falló aprobación groupId=${groupId} userId=${userId}:`, error);
+        await ctx.answerCallbackQuery({
+          text:
+            error instanceof VerifiedTagApprovalError
+              ? error.message
+              : "No se pudo completar la revisión. Comprueba el estado antes de reintentar.",
+          show_alert: true,
+        });
+        return;
+      }
+      if (result.status === "uncertain") {
+        await ctx.answerCallbackQuery({
+          text: result.message,
+          show_alert: true,
+        });
+        return;
+      }
+      if (result.status === "already-verified") {
+        let reviews: VerifiedTagReview[];
+        try {
+          reviews = await listVerifiedTagReviews(groupId);
+        } catch (error) {
+          console.error(`[VERIFIED_TAG] No se pudo recargar candidatas groupId=${groupId}:`, error);
+          await ctx.answerCallbackQuery({
+            text: "La verificación existente no se modificó, pero no se pudo cargar la lista.",
+            show_alert: true,
+          });
+          return;
+        }
+        await ctx.answerCallbackQuery({
+          text: "La persona ya está verificada; no se cambiaron sus permisos.",
+          show_alert: true,
+        });
+        try {
+          await renderPanel(
+            ctx,
+            buildVerifiedTagCandidatesPanel(reviews, 0, groupTitle),
+          );
+        } catch (error) {
+          console.error(`[VERIFIED_TAG] No se pudo presentar candidatas groupId=${groupId}:`, error);
+          await ctx.reply("La revisión se completó, pero no se pudo actualizar el panel.");
+        }
+        return;
+      }
+      await ctx.answerCallbackQuery(
+        "Candidata aprobada y verificación guardada mediante el registro de ZEUS.",
+      );
+      try {
+        await renderPanel(
+          ctx,
+          buildVerifiedUserPanel(result.user, groupTitle, "member"),
+        );
+      } catch (error) {
+        console.error(`[VERIFIED_TAG] No se pudo presentar verificación groupId=${groupId} userId=${userId}:`, error);
+        await ctx.reply("La verificación quedó guardada, pero no se pudo actualizar el panel.");
+      }
+      return;
+    }
     if (kind === "add") {
       ctx.session.user.pendingAction = { kind: "verifiedAdd", groupId };
       ctx.session.user.pendingSince = Date.now();
@@ -384,6 +796,25 @@ moderationActions.on("callback_query:data", async (ctx) => {
       const users = await getVerifiedUsers(groupId);
       await syncVerifiedUserStates(groupId, users);
       await renderPanel(ctx, buildVerifiedUsersPanel(users, groupTitle));
+      return;
+    }
+    if (kind === "revoked-list") {
+      try {
+        const page = Number(parts[2] ?? 0);
+        if (!Number.isInteger(page) || page < 0) {
+          await ctx.answerCallbackQuery("Página no válida.");
+          return;
+        }
+        const users = await getRevokedVerifiedUsers(groupId);
+        await ctx.answerCallbackQuery();
+        await renderPanel(ctx, buildRevokedVerifiedUsersPanel(users, groupTitle, page));
+      } catch (error) {
+        console.error(`[VERIFIED] No se pudieron cargar los revocados groupId=${groupId}:`, error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudieron cargar los registros revocados.",
+          show_alert: true,
+        });
+      }
       return;
     }
     if (kind === "cancel") {
@@ -506,26 +937,141 @@ moderationActions.on("callback_query:data", async (ctx) => {
       return;
     }
     if (kind === "view") {
-      const user = await getVerifiedUser(groupId, Number(parts[2]));
+      const userId = Number(parts[2]);
+      if (!Number.isSafeInteger(userId) || userId <= 0) {
+        await ctx.answerCallbackQuery("Usuario no válido.");
+        return;
+      }
+      const user = await getVerifiedUser(groupId, userId);
       if (!user) {
         await ctx.answerCallbackQuery("Verificada no encontrada.");
         return;
       }
-      let telegramStatus:
-        | "creator"
-        | "administrator"
-        | "member"
-        | "restricted"
-        | "left"
-        | "kicked"
-        | undefined;
-      try {
-        telegramStatus = (await ctx.api.getChatMember(groupId, user.user_id)).status;
-      } catch (error) {
-        console.error(`[VERIFIED] No se pudo consultar estado Telegram userId=${user.user_id}:`, error);
+      const { status, details } = await loadVerifiedProfileDetails(ctx, groupId, user);
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildVerifiedUserPanel(user, groupTitle, status, details));
+      return;
+    }
+    if (kind === "revoke-confirm" || kind === "revoke") {
+      const userId = Number(parts[2]);
+      const user = Number.isSafeInteger(userId) && userId > 0
+        ? await getVerifiedUser(groupId, userId)
+        : undefined;
+      if (!user) {
+        await ctx.answerCallbackQuery({ text: "La verificación ya no está activa.", show_alert: true });
+        return;
       }
       await ctx.answerCallbackQuery();
-      await renderPanel(ctx, buildVerifiedUserPanel(user, groupTitle, telegramStatus));
+      await renderPanel(ctx, buildVerifiedActionConfirmPanel(user, "revoke", groupTitle));
+      return;
+    }
+    if (kind === "revoke-apply") {
+      const userId = Number(parts[2]);
+      try {
+        if (!Number.isSafeInteger(userId) || userId <= 0) {
+          await ctx.answerCallbackQuery({ text: "Usuario no válido.", show_alert: true });
+          return;
+        }
+        const user = await getVerifiedUser(groupId, userId);
+        if (!user) {
+          await ctx.answerCallbackQuery({
+            text: "La verificación ya no está activa.",
+            show_alert: true,
+          });
+          return;
+        }
+        await revokeVerifiedUser(groupId, userId);
+        await unmarkUserVerified(groupId, userId);
+        await ctx.answerCallbackQuery({
+          text: "Verificación revocada. No se modificaron sanciones ni la membresía.",
+          show_alert: true,
+        });
+        await renderPanel(ctx, buildVerifiedUsersPanel(await getVerifiedUsers(groupId), groupTitle));
+      } catch (error) {
+        console.error(`[VERIFIED] No se pudo revocar userId=${userId}:`, error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudo revocar la verificación.",
+          show_alert: true,
+        });
+      }
+      return;
+    }
+    if (kind === "reactivate-confirm" || kind === "reactivate-apply") {
+      const userId = Number(parts[2]);
+      if (!Number.isSafeInteger(userId) || userId <= 0) {
+        await ctx.answerCallbackQuery({ text: "Usuario no válido.", show_alert: true });
+        return;
+      }
+      try {
+        const user = await getVerifiedUserRecord(groupId, userId);
+        if (!user || (user.verified && !user.revoked_at)) {
+          await ctx.answerCallbackQuery({
+            text: user ? "El registro ya está activo." : "Registro revocado no encontrado.",
+            show_alert: true,
+          });
+          return;
+        }
+        if (kind === "reactivate-confirm") {
+          await ctx.answerCallbackQuery();
+          await renderPanel(ctx, buildVerifiedActionConfirmPanel(user, "reactivate", groupTitle));
+          return;
+        }
+        const expectedSnapshot = parts[3];
+        if (!expectedSnapshot || verifiedPermissionsSnapshot(user.permissions) !== expectedSnapshot) {
+          await ctx.answerCallbackQuery({
+            text: "Los permisos del registro cambiaron. Revisa y confirma de nuevo.",
+            show_alert: true,
+          });
+          await renderPanel(ctx, buildVerifiedActionConfirmPanel(user, "reactivate", groupTitle));
+          return;
+        }
+        const member = await getVerifiedGroupMember(ctx.api, groupId, userId);
+        await addVerifiedUser({
+          groupId,
+          userId,
+          username: member.user.username ?? user.username ?? undefined,
+          displayName:
+            [member.user.first_name, member.user.last_name].filter(Boolean).join(" ") ||
+            user.display_name ||
+            undefined,
+          createdBy: ctx.from?.id ?? 0,
+          permissions: user.permissions,
+        });
+        try {
+          await markUserVerified(
+            groupId,
+            userId,
+            member.user.username ?? user.username ?? undefined,
+            [member.user.first_name, member.user.last_name].filter(Boolean).join(" ") ||
+              user.display_name ||
+              undefined,
+          );
+        } catch (syncError) {
+          console.error(`[VERIFIED] Reactivada en Supabase sin sync local userId=${userId}:`, syncError);
+          await ctx.answerCallbackQuery({
+            text: "La verificación se reactivó en Supabase, pero falló la sincronización local.",
+            show_alert: true,
+          });
+          return;
+        }
+        await ctx.answerCallbackQuery({
+          text: "Verificación reactivada con los permisos confirmados. Las sanciones no se alteraron.",
+          show_alert: true,
+        });
+        const activeUser = await getVerifiedUser(groupId, userId);
+        if (!activeUser) throw new Error("La verificación no apareció activa después de reactivarla.");
+        const { status, details } = await loadVerifiedProfileDetails(ctx, groupId, activeUser);
+        await renderPanel(
+          ctx,
+          buildVerifiedUserPanel(activeUser, groupTitle, status, details),
+        );
+      } catch (error) {
+        console.error(`[VERIFIED] No se pudo reactivar userId=${userId}:`, error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudo reactivar. Comprueba el estado antes de volver a intentarlo.",
+          show_alert: true,
+        });
+      }
       return;
     }
     if (kind === "revoke-permissions") {
@@ -639,30 +1185,186 @@ moderationActions.on("callback_query:data", async (ctx) => {
       const userId = Number(parts[2]);
       const permission = parts[3] as keyof VerifiedUserPermissions;
       const user = await getVerifiedUser(groupId, userId);
-      if (!user || !(permission in user.permissions)) {
+      if (
+        !user ||
+        !(permission in user.permissions) ||
+        permission === "can_send_links" ||
+        permission === "bypass_promotion_filter"
+      ) {
         await ctx.answerCallbackQuery("Verificada no encontrada.");
         return;
       }
-      await updateVerifiedUser(groupId, userId, {
-        permissions: { [permission]: !user.permissions[permission] },
-      });
-      await ctx.answerCallbackQuery("Permiso actualizado.");
-      await renderPanel(ctx, buildVerifiedUserPanel(
-        (await getVerifiedUser(groupId, userId))!,
-        groupTitle,
-      ));
+      const desired = !user.permissions[permission];
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildVerifiedPermissionConfirmPanel(user, permission, desired, groupTitle),
+      );
       return;
     }
-    if (kind === "revoke") {
+    if (kind === "permission-apply") {
+      const userId = Number(parts[2]);
+      const permission = parts[3] as keyof VerifiedUserPermissions;
+      const valueFlag = parts[4];
+      const previousValueFlag = parts[5];
+      const allowedPermissions: Array<keyof VerifiedUserPermissions> = [
+        "can_post",
+        "can_send_media",
+        "bypass_antispam",
+        "bypass_illegal_filter",
+        "bypass_automatic_deletion",
+      ];
+      if (
+        !Number.isSafeInteger(userId) ||
+        userId <= 0 ||
+        !allowedPermissions.includes(permission) ||
+        (valueFlag !== "0" && valueFlag !== "1") ||
+        (previousValueFlag !== "0" && previousValueFlag !== "1")
+      ) {
+        await ctx.answerCallbackQuery({ text: "Cambio de permiso no válido.", show_alert: true });
+        return;
+      }
+      const value = valueFlag === "1";
+      const user = await getVerifiedUser(groupId, userId);
+      if (!user) {
+        await ctx.answerCallbackQuery({ text: "La verificación ya no está activa.", show_alert: true });
+        return;
+      }
+      if (user.permissions[permission] !== (previousValueFlag === "1")) {
+        await ctx.answerCallbackQuery({
+          text: "El permiso cambió desde la confirmación. Revisa el nuevo estado.",
+          show_alert: true,
+        });
+        await renderPanel(
+          ctx,
+          buildVerifiedPermissionConfirmPanel(user, permission, value, groupTitle),
+        );
+        return;
+      }
       try {
-        const userId = Number(parts[2]);
-        await revokeVerifiedUser(groupId, userId);
-        await unmarkUserVerified(groupId, userId);
-        await ctx.answerCallbackQuery("Verificación revocada.");
-        await renderPanel(ctx, buildVerifiedUsersPanel(await getVerifiedUsers(groupId), groupTitle));
+        if (user.permissions[permission] === value) {
+          await ctx.answerCallbackQuery({
+            text: "El permiso ya tiene ese estado; no se cambió nada.",
+            show_alert: true,
+          });
+        } else {
+          await updateVerifiedUser(groupId, userId, {
+            permissions: { [permission]: value },
+          });
+          await ctx.answerCallbackQuery({
+            text: "Permiso actualizado explícitamente.",
+            show_alert: true,
+          });
+        }
+        const updated = await getVerifiedUser(groupId, userId);
+        if (!updated) throw new Error("La verificación no está activa tras actualizar el permiso.");
+        const { status, details } = await loadVerifiedProfileDetails(ctx, groupId, updated);
+        await renderPanel(ctx, buildVerifiedUserPanel(updated, groupTitle, status, details));
       } catch (error) {
-        console.error("[VERIFIED] No se pudo revocar el usuario:", error);
-        await ctx.answerCallbackQuery("No se pudo quitar la verificación.");
+        console.error(`[VERIFIED] No se pudo actualizar permiso userId=${userId}:`, error);
+        await ctx.answerCallbackQuery({
+          text: "No se pudo guardar el permiso. Comprueba su estado antes de reintentar.",
+          show_alert: true,
+        });
+      }
+      return;
+    }
+    if (kind === "kick-confirm" || kind === "kick-apply") {
+      const userId = Number(parts[2]);
+      const user = Number.isSafeInteger(userId) && userId > 0
+        ? await getVerifiedUserRecord(groupId, userId)
+        : undefined;
+      if (!user) {
+        await ctx.answerCallbackQuery({ text: "Usuario no válido.", show_alert: true });
+        return;
+      }
+      if (kind === "kick-confirm") {
+        await ctx.answerCallbackQuery();
+        await renderPanel(ctx, buildVerifiedActionConfirmPanel(user, "kick", groupTitle));
+        return;
+      }
+      const who = user.display_name ?? user.username ?? String(userId);
+      if (isCerberoExecutionEnabled()) {
+        const queued = await delegateSecurityCommand({
+          groupId,
+          action: "KICK_USER",
+          targetUserId: userId,
+          idempotencyKey: String(ctx.update.update_id),
+          payload: { requester_id: ctx.from?.id, requester_name: ctx.from?.first_name },
+        });
+        await ctx.answerCallbackQuery({
+          text: queued.ok
+            ? `⏳ Orden de expulsión enviada a Cerbero (${queued.commandId}); aún no está confirmada.`
+            : `⛔ ${queued.error}`,
+          show_alert: true,
+        });
+        return;
+      }
+      const banned = await banUser(ctx, groupId, userId, who);
+      if (!banned.ok) {
+        await ctx.answerCallbackQuery({ text: banned.error, show_alert: true });
+        return;
+      }
+      const unbanned = await unbanUser(ctx, groupId, userId, who);
+      if (!unbanned.ok) {
+        await ctx.answerCallbackQuery({
+          text: "El usuario fue retirado, pero el desbaneo falló y sigue baneado. Revisa su estado.",
+          show_alert: true,
+        });
+        return;
+      }
+      await ctx.answerCallbackQuery({
+        text: "Usuario expulsado; el desbaneo posterior permite que vuelva a unirse.",
+        show_alert: true,
+      });
+      const refreshed = await getVerifiedUserRecord(groupId, userId);
+      if (refreshed) {
+        const { status, details } = await loadVerifiedProfileDetails(ctx, groupId, refreshed);
+        await renderPanel(ctx, buildVerifiedUserPanel(refreshed, groupTitle, status, details));
+      }
+      return;
+    }
+    if (kind === "mute-indefinite-confirm" || kind === "mute-indefinite") {
+      const userId = Number(parts[2]);
+      const user = Number.isSafeInteger(userId) && userId > 0
+        ? await getVerifiedUserRecord(groupId, userId)
+        : undefined;
+      if (!user) {
+        await ctx.answerCallbackQuery({ text: "Usuario no válido.", show_alert: true });
+        return;
+      }
+      if (kind === "mute-indefinite-confirm") {
+        await ctx.answerCallbackQuery();
+        await renderPanel(
+          ctx,
+          buildVerifiedActionConfirmPanel(user, "mute-indefinite", groupTitle),
+        );
+        return;
+      }
+      if (isCerberoExecutionEnabled()) {
+        const queued = await delegateSecurityCommand({
+          groupId,
+          action: "MUTE_USER",
+          targetUserId: userId,
+          idempotencyKey: String(ctx.update.update_id),
+          payload: { requester_id: ctx.from?.id, requester_name: ctx.from?.first_name },
+        });
+        await ctx.answerCallbackQuery({
+          text: queued.ok
+            ? `⏳ Silencio indefinido enviado a Cerbero (${queued.commandId}); aún no está confirmado.`
+            : `⛔ ${queued.error}`,
+          show_alert: true,
+        });
+        return;
+      }
+      const result = await muteUser(ctx, groupId, userId, undefined, user.display_name ?? user.username ?? undefined);
+      await ctx.answerCallbackQuery({
+        text: result.ok ? "Usuario silenciado indefinidamente." : result.error,
+        show_alert: true,
+      });
+      if (result.ok) {
+        const { status, details } = await loadVerifiedProfileDetails(ctx, groupId, user);
+        await renderPanel(ctx, buildVerifiedUserPanel(user, groupTitle, status, details));
       }
       return;
     }
@@ -772,9 +1474,18 @@ moderationActions.on("callback_query:data", async (ctx) => {
       }
       if (kind === "remove") {
         const userId = Number(parts[2]);
-        const result = await removeInactiveUser(ctx, groupId, userId);
+        const result = await removeInactiveUser(
+          ctx,
+          groupId,
+          userId,
+          String(ctx.update.update_id),
+        );
         await ctx.answerCallbackQuery(
-          result === "removed" ? "✅ Usuario expulsado." : "⛔ No se pudo expulsar.",
+          result === "removed"
+            ? "✅ Usuario expulsado."
+            : result === "queued"
+              ? "⏳ Orden enviada a Cerbero; aún no se ha confirmado la expulsión."
+              : "⛔ No se pudo expulsar.",
         );
         await renderPanel(ctx, buildInactivityPanel((await getGroupData(groupId)).inactivity, title));
         return;
@@ -782,20 +1493,26 @@ moderationActions.on("callback_query:data", async (ctx) => {
       if (kind === "confirm") {
         const users = await getInactiveUsers(ctx, groupId);
         let removed = 0;
+        let queued = 0;
         let skipped = 0;
         let errors = 0;
         for (const user of users) {
           const result = await removeInactiveUser(ctx, groupId, user.id);
           if (result === "removed") removed += 1;
+          else if (result === "queued") queued += 1;
           else if (result === "skipped") skipped += 1;
           else errors += 1;
         }
-        await ctx.answerCallbackQuery("✅ Limpieza completada.");
+        await ctx.answerCallbackQuery(
+          queued > 0
+            ? `⏳ ${queued} órdenes enviadas; las expulsiones no están confirmadas todavía.`
+            : `✅ Limpieza completada: ${removed} expulsados.`,
+        );
         await renderPanel(
           ctx,
           buildInactivityPanel((await getGroupData(groupId)).inactivity, title),
         );
-        console.log(`[INACTIVITY] groupId=${groupId} removed=${removed} skipped=${skipped} errors=${errors}`);
+        console.log(`[INACTIVITY] groupId=${groupId} removed=${removed} queued=${queued} skipped=${skipped} errors=${errors}`);
         return;
       }
       if (kind === "cancel") {
@@ -1207,6 +1924,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
           groupId,
           action: "UNWARN_USER",
           targetUserId: userId,
+          idempotencyKey: String(ctx.update.update_id),
           payload: {
             requester_id: ctx.from?.id,
             requester_name: ctx.from?.first_name,
@@ -1251,6 +1969,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
           groupId,
           action: "UNWARN_ALL",
           targetUserId: userId,
+          idempotencyKey: String(ctx.update.update_id),
           payload: {
             requester_id: ctx.from?.id,
             requester_name: ctx.from?.first_name,
@@ -1318,6 +2037,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
           groupId,
           action: "MUTE_USER",
           targetUserId: userId,
+          idempotencyKey: String(ctx.update.update_id),
           payload: {
             duration_minutes: minutes,
             reason: "Acción manual desde Zeus",
@@ -1373,6 +2093,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
           groupId,
           action: "UNMUTE_USER",
           targetUserId: userId,
+          idempotencyKey: String(ctx.update.update_id),
         });
         await ctx.answerCallbackQuery({
           text: queued.ok ? "⏳ Desmute enviado a Cerbero." : `⛔ ${queued.error}`,
@@ -1414,6 +2135,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
           groupId,
           action: "BAN_USER",
           targetUserId: userId,
+          idempotencyKey: String(ctx.update.update_id),
           payload: { reason: "Acción manual desde Zeus" },
         });
         await ctx.answerCallbackQuery({
@@ -1450,6 +2172,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
           groupId,
           action: "UNBAN_USER",
           targetUserId: userId,
+          idempotencyKey: String(ctx.update.update_id),
         });
         await ctx.answerCallbackQuery({
           text: queued.ok ? "⏳ Desban enviado a Cerbero." : `⛔ ${queued.error}`,
@@ -1501,6 +2224,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
         const queued = await delegateSecurityCommand({
           groupId,
           action: "CLEAN_MESSAGES",
+          idempotencyKey: String(ctx.update.update_id),
           payload: {
             message_ids: messageIds,
             requester_id: ctx.from?.id,

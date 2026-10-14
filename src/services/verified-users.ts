@@ -99,6 +99,13 @@ async function getStoredVerifiedUser(
   return (data as VerifiedUser | null) ?? undefined;
 }
 
+export async function getVerifiedUserRecord(
+  groupId: number,
+  userId: number,
+): Promise<VerifiedUser | undefined> {
+  return getStoredVerifiedUser(groupId, userId);
+}
+
 export async function getVerifiedUsers(
   groupId: number,
   search?: string,
@@ -117,6 +124,20 @@ export async function getVerifiedUsers(
   const { data, error } = await query;
   if (error) throw error;
   return (data ?? []) as VerifiedUser[];
+}
+
+export async function getRevokedVerifiedUsers(
+  groupId: number,
+): Promise<VerifiedUser[]> {
+  const { data, error } = await getClient()
+    .from("verified_users")
+    .select("*")
+    .eq("group_id", groupId)
+    .order("updated_at", { ascending: false });
+  if (error) throw error;
+  return ((data ?? []) as VerifiedUser[]).filter(
+    (user) => !isActiveVerifiedRecord(user),
+  );
 }
 
 export async function getVerifiedUser(

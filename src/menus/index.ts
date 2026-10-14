@@ -1,7 +1,7 @@
 import { Composer } from "grammy";
 import { isUserAdminOf } from "../utils/permissions.js";
 import { getAdministrableGroups } from "../utils/groups.js";
-import { getGroupData } from "../storage/index.js";
+import { getActivityGroupData, getGroupData } from "../storage/index.js";
 import {
   buildGroupPickerPanel,
   buildMainPanel,
@@ -10,7 +10,6 @@ import {
   buildInactivityPanel,
   buildUsersPanel,
   buildCerberoPanel,
-  buildActivityPanel,
   buildPromptPanel,
   buildHelpEmergenciesPanel,
   buildHelpRecoveryPanel,
@@ -22,8 +21,12 @@ import {
   getSecurityEvents,
   getSecurityStats,
 } from "../services/security-commands.js";
-import { calculateActivity } from "../services/activity.js";
 import { recordObservedUser } from "../services/user-registry.js";
+import {
+  handleActivitySummary,
+  isActivityPanelAction,
+  presentActivityPanel,
+} from "./activity-summary.js";
 
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
@@ -42,7 +45,7 @@ interface ParsedMenuAction {
  * Interpreta un callback_data del panel. Devuelve `undefined` si el
  * callback no pertenece a este panel (para no robar callbacks ajenos).
  */
-function parseMenuAction(data: string): ParsedMenuAction | undefined {
+export function parseMenuAction(data: string): ParsedMenuAction | undefined {
   if (!data.startsWith("menu:")) {
     return undefined;
   }
@@ -153,10 +156,69 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
     return;
   }
 
+  if (isActivityPanelAction(action)) {
+    await handleActivitySummary({
+      groupId: selectedGroupId,
+      groupTitle: ctx.session.user.selectedGroupTitle,
+      authorize: () => isUserAdminOf(ctx, selectedGroupId),
+      answerCallback: async (message) => {
+        await ctx.answerCallbackQuery(message);
+      },
+      recordUser: async () => {
+        if (ctx.from) {
+          await recordObservedUser(selectedGroupId, ctx.from, {
+            activity: true,
+          });
+        }
+      },
+      loadGroupData: () => getActivityGroupData(selectedGroupId),
+      presentPanel: (panel) =>
+        presentActivityPanel(panel, {
+          edit: async (activityPanel) => {
+            const message = ctx.callbackQuery.message;
+            const chatId = ctx.chat?.id;
+            if (!message || !chatId) {
+              return false;
+            }
+            await ctx.api.editMessageText(
+              chatId,
+              message.message_id,
+              activityPanel.text,
+              {
+                reply_markup: activityPanel.keyboard,
+                parse_mode: "Markdown",
+              },
+            );
+            return true;
+          },
+          reply: async (activityPanel) => {
+            await ctx.reply(activityPanel.text, {
+              reply_markup: activityPanel.keyboard,
+              parse_mode: "Markdown",
+            });
+          },
+          logError: (message, error) => {
+            console.error(`[ACTIVITY PANEL] ${message}`, error);
+          },
+        }),
+      sendError: async (message) => {
+        await ctx.reply(message);
+      },
+      logError: (message, error) => {
+        console.error(
+          `[ACTIVITY PANEL] ${message} groupId=${selectedGroupId}`,
+          error,
+        );
+      },
+    });
+    return;
+  }
+
   if (!(await isUserAdminOf(ctx, selectedGroupId))) {
     await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
     return;
   }
+
   if (ctx.from) {
     await recordObservedUser(selectedGroupId, ctx.from, { activity: true });
   }
@@ -176,15 +238,6 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
         console.error("[CERBERO PANEL] No se pudo cargar el estado:", error);
         await ctx.answerCallbackQuery("No se pudo consultar Cerbero.");
       }
-      return;
-    }
-    if (action.section === "actividad") {
-      const stats = calculateActivity(
-        await getGroupData(selectedGroupId),
-        selectedGroupId,
-      );
-      await ctx.answerCallbackQuery();
-      await renderPanel(ctx, buildActivityPanel(stats, title));
       return;
     }
     const data = await getGroupData(selectedGroupId);

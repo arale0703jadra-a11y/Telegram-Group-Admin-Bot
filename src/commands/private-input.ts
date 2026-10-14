@@ -114,7 +114,8 @@ privateInput.on("message:text", async (ctx) => {
     pending.kind === "automaticMessage" ||
     pending.kind === "automaticFrequency" ||
     pending.kind === "configMentions" ||
-    pending.kind === "verifiedTitles"
+    pending.kind === "verifiedTitles" ||
+    pending.kind === "verifiedMemberTags"
   ) {
     if (!(await isUserAdminOf(ctx, pending.groupId))) {
       ctx.session.user.pendingAction = undefined;
@@ -157,6 +158,26 @@ privateInput.on("message:text", async (ctx) => {
       data.verifiedTitles = titles;
       await saveGroupData(pending.groupId, data);
       await ctx.reply("✅ Títulos reconocidos guardados.");
+    } else if (pending.kind === "verifiedMemberTags") {
+      const tags = [...new Set(
+        text.split(",").map((tag) => tag.trim()).filter(Boolean),
+      )];
+      if (
+        tags.length === 0 ||
+        tags.some(
+          (tag) =>
+            Array.from(tag).length > 16 ||
+            /\p{Extended_Pictographic}/u.test(tag),
+        )
+      ) {
+        await ctx.reply(
+          "❌ Indica al menos una etiqueta válida, de 1 a 16 caracteres y sin emojis, separadas por comas.",
+        );
+        return;
+      }
+      data.verifiedMemberTags = tags;
+      await saveGroupData(pending.groupId, data);
+      await ctx.reply("✅ Etiquetas de miembro reconocidas guardadas.");
     } else {
       const mentions = Number(text);
       if (!Number.isInteger(mentions) || mentions < 0 || mentions > 50) {
@@ -372,6 +393,7 @@ async function handleWarnReason(
       groupId,
       action: "WARN_USER",
       targetUserId: userId,
+      idempotencyKey: String(ctx.update.update_id),
       payload: {
         requester_id: ctx.from?.id,
         requester_name: ctx.from?.first_name,
@@ -456,6 +478,7 @@ async function handlePick(
           groupId,
           action: "UNMUTE_USER",
           targetUserId: user.id,
+          idempotencyKey: String(ctx.update.update_id),
         });
         await ctx.reply(
           queued.ok ? "⏳ Desmute enviado a Cerbero." : `⛔ ${queued.error}`,
@@ -529,6 +552,7 @@ async function handleMuteMinutes(
       groupId,
       action: "MUTE_USER",
       targetUserId: userId,
+      idempotencyKey: String(ctx.update.update_id),
       payload: {
         duration_minutes: minutes,
         reason: "Acción manual desde Zeus",

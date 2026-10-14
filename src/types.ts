@@ -54,6 +54,7 @@ export type PendingAction =
     }
   | { kind: "warnReason"; userId: number; groupId: number; messageId?: number }
   | { kind: "verifiedAdd"; groupId: number; messageId?: number }
+  | { kind: "verifiedMemberTags"; groupId: number; messageId?: number }
   | {
       kind: "verifiedAddConfirm";
       groupId: number;

@@ -17,6 +17,7 @@ import {
   isCerberoExecutionEnabled,
 } from "../services/security-commands.js";
 import { getVerifiedUserPermissions } from "../services/verified-users.js";
+import { shouldSkipAutomaticDeletion, shouldSkipIllegalFilter } from "../services/verified-user-policy.js";
 
 export const illegalModeration = new Composer<MyContext>();
 
@@ -47,7 +48,15 @@ illegalModeration.on("message", async (ctx, next) => {
     await next();
     return;
   }
-  const verifiedPermissions = await getVerifiedUserPermissions(ctx.chat.id, userId);
+  let verifiedPermissions;
+  try {
+    verifiedPermissions = await getVerifiedUserPermissions(ctx.chat.id, userId);
+  } catch (error) {
+    console.error(
+      `[ILLEGAL] No se pudieron consultar permisos de verificada groupId=${ctx.chat.id} userId=${userId}; se mantiene el filtro de seguridad:`,
+      error,
+    );
+  }
 
   const member = await getMemberSafely(ctx, ctx.chat.id, ctx.from.id);
   const protectedUser =
@@ -62,7 +71,12 @@ illegalModeration.on("message", async (ctx, next) => {
     await next();
     return;
   }
-  if (verifiedPermissions?.bypass_illegal_filter) {
+  if (
+    shouldSkipIllegalFilter(
+      verifiedPermissions?.bypass_illegal_filter === true,
+      detection.critical,
+    )
+  ) {
     await next();
     return;
   }
@@ -78,6 +92,7 @@ illegalModeration.on("message", async (ctx, next) => {
           groupId: ctx.chat.id,
           action: "DELETE_MESSAGE",
           targetMessageId: ctx.message.message_id,
+          idempotencyKey: String(ctx.update.update_id),
           payload: { reason: "ILLEGAL_CONTENT:critical" },
         });
         deletion = { ok: order.ok };
@@ -87,6 +102,7 @@ illegalModeration.on("message", async (ctx, next) => {
           groupId: ctx.chat.id,
           action: "BAN_USER",
           targetUserId: ctx.from.id,
+          idempotencyKey: String(ctx.update.update_id),
           payload: { reason: "ILLEGAL_CONTENT:critical" },
         });
         ban = { ok: order.ok };
@@ -104,7 +120,11 @@ illegalModeration.on("message", async (ctx, next) => {
     await logEvent(ctx, ctx.chat.id, "ILLEGAL", {
       targetId: ctx.from.id,
       targetName: ctx.from.username ?? ctx.from.first_name,
-      result: deletion.ok || ban.ok ? "ok" : "error",
+      result: deletion.ok || ban.ok
+        ? isCerberoExecutionEnabled()
+          ? "queued"
+          : "ok"
+        : "error",
       detail:
         `critical;delete=${deletion.ok};ban=${ban.ok};` +
         `banSkipped=${!member ? "unknown-member" : protectedUser ? "protected" : !rights.canRestrict ? "no-ban-permission" : "no-ban"}`,
@@ -118,13 +138,18 @@ illegalModeration.on("message", async (ctx, next) => {
     detection.confidence === "high"
       ? data.illegalContent.highConfidenceDelete
       : data.illegalContent.suspiciousDeletes;
+  const automaticDeletionDisabled = shouldSkipAutomaticDeletion(
+    verifiedPermissions?.bypass_automatic_deletion === true,
+    detection.critical,
+  );
   let deletion = { ok: false };
-  if (shouldDelete && rights.canDelete) {
+  if (shouldDelete && !automaticDeletionDisabled && rights.canDelete) {
     if (isCerberoExecutionEnabled()) {
       const order = await delegateSecurityCommand({
         groupId: ctx.chat.id,
         action: "DELETE_MESSAGE",
         targetMessageId: ctx.message.message_id,
+        idempotencyKey: String(ctx.update.update_id),
         payload: { reason: `ILLEGAL_CONTENT:${detection.confidence}` },
       });
       deletion = { ok: order.ok };
@@ -140,6 +165,7 @@ illegalModeration.on("message", async (ctx, next) => {
           groupId: ctx.chat.id,
           action: "BAN_USER",
           targetUserId: ctx.from.id,
+          idempotencyKey: String(ctx.update.update_id),
           payload: { reason: `ILLEGAL_CONTENT:${detection.confidence}` },
         });
         ban = { ok: order.ok };
@@ -152,7 +178,11 @@ illegalModeration.on("message", async (ctx, next) => {
   await logEvent(ctx, ctx.chat.id, "ILLEGAL", {
     targetId: ctx.from.id,
     targetName: ctx.from.username ?? ctx.from.first_name,
-    result: deletion.ok || ban.ok ? "ok" : "error",
+    result: deletion.ok || ban.ok
+      ? isCerberoExecutionEnabled()
+        ? "queued"
+        : "ok"
+      : "error",
     detail: `${detection.category ?? "custom"}:${detection.confidence};delete=${deletion.ok};ban=${ban.ok};protected=${Boolean(protectedUser)}`,
   });
   if (!deletion.ok) {

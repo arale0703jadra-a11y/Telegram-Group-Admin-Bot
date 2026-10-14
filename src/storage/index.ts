@@ -21,13 +21,21 @@ export type {
  * Las advertencias, silencios, baneos, eventos y configuración de cada
  * grupo sobreviven a los reinicios del bot.
  */
-export const store: PersistenceStore = new FileStore();
+const fileStore = new FileStore();
+export const store: PersistenceStore = fileStore;
 
 /**
  * Lee los datos de moderación de un grupo.
  */
 export async function getGroupData(chatId: number): Promise<GroupData> {
   return store.loadGroup(chatId);
+}
+
+/**
+ * Lee datos para estadísticas que no deben convertir fallos de disco en ceros.
+ */
+export async function getActivityGroupData(chatId: number): Promise<GroupData> {
+  return fileStore.loadGroupStrict(chatId);
 }
 
 /**

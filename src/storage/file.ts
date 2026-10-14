@@ -1,5 +1,4 @@
 import {
-  existsSync,
   copyFileSync,
   mkdirSync,
   readFileSync,
@@ -31,6 +30,7 @@ import type { IllegalContentConfig, PromotionConfig } from "./types.js";
 export class FileStore implements PersistenceStore {
   private readonly cache = new Map<number, GroupData>();
   private readonly dirty = new Set<number>();
+  private readonly loadErrors = new Map<number, unknown>();
   private timer: ReturnType<typeof setTimeout> | undefined;
 
   private storageDir(): string {
@@ -47,31 +47,51 @@ export class FileStore implements PersistenceStore {
       return structuredClone(cached);
     }
 
-    let data = initialGroupData();
+    let data: GroupData;
     try {
-      const file = this.filePath(chatId);
-      if (existsSync(file)) {
-        try {
-          const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<
-            string,
-            unknown
-          >;
-          data = normalizeGroupData(parsed);
-        } catch (error) {
-          const backup = `${file}.corrupt-${Date.now()}.bak`;
-          console.error(
-            `[STORAGE] JSON corrupto en el grupo ${chatId}; se conserva el original y se crea ${backup}:`,
-            error,
-          );
-          copyFileSync(file, backup);
-        }
-      }
+      data = this.readGroupFile(chatId);
+      this.loadErrors.delete(chatId);
     } catch (error) {
+      this.loadErrors.set(chatId, error);
       console.error(`[STORAGE] No se pudo leer el grupo ${chatId}:`, error);
+      data = initialGroupData();
     }
 
     this.cache.set(chatId, data);
     return structuredClone(data);
+  }
+
+  async loadGroupStrict(chatId: number): Promise<GroupData> {
+    if (this.loadErrors.has(chatId)) {
+      try {
+        const data = this.readGroupFile(chatId, false);
+        this.cache.set(chatId, data);
+        this.dirty.delete(chatId);
+        this.loadErrors.delete(chatId);
+        return structuredClone(data);
+      } catch (error) {
+        this.loadErrors.set(chatId, error);
+        throw new Error(`No se pudieron leer los datos del grupo ${chatId}.`, {
+          cause: error,
+        });
+      }
+    }
+
+    const cached = this.cache.get(chatId);
+    if (cached) {
+      return structuredClone(cached);
+    }
+
+    try {
+      const data = this.readGroupFile(chatId);
+      this.cache.set(chatId, data);
+      return structuredClone(data);
+    } catch (error) {
+      this.loadErrors.set(chatId, error);
+      throw new Error(`No se pudieron leer los datos del grupo ${chatId}.`, {
+        cause: error,
+      });
+    }
   }
 
   async saveGroup(chatId: number, data: GroupData): Promise<void> {
@@ -98,6 +118,12 @@ export class FileStore implements PersistenceStore {
       if (!data) {
         continue;
       }
+      if (this.loadErrors.has(chatId)) {
+        console.error(
+          `[STORAGE] Se omite la escritura del grupo ${chatId} porque su archivo no se pudo leer.`,
+        );
+        continue;
+      }
       try {
         const file = this.filePath(chatId);
         mkdirSync(dirname(file), { recursive: true });
@@ -120,10 +146,63 @@ export class FileStore implements PersistenceStore {
     }
     await this.flushAll();
   }
+
+  private readGroupFile(chatId: number, backupCorrupt = true): GroupData {
+    const file = this.filePath(chatId);
+    let contents: string;
+    try {
+      contents = readFileSync(file, "utf8");
+    } catch (error) {
+      if (isNodeErrorWithCode(error, "ENOENT")) {
+        return initialGroupData();
+      }
+      throw error;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(contents) as unknown;
+      if (!isRecord(parsed)) {
+        throw new Error("El contenido raíz del archivo no es un objeto JSON.");
+      }
+    } catch (error) {
+      if (backupCorrupt) {
+        const backup = `${file}.corrupt-${Date.now()}.bak`;
+        try {
+          copyFileSync(file, backup);
+          console.error(
+            `[STORAGE] JSON corrupto en el grupo ${chatId}; se conserva el original y se crea ${backup}:`,
+            error,
+          );
+        } catch (backupError) {
+          throw new Error(
+            `El archivo del grupo ${chatId} está corrupto y no se pudo respaldar.`,
+            { cause: new AggregateError([error, backupError]) },
+          );
+        }
+      }
+      throw new Error(`El archivo del grupo ${chatId} contiene JSON inválido.`, {
+        cause: error,
+      });
+    }
+
+    return normalizeGroupData(parsed);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isNodeErrorWithCode(
+  error: unknown,
+  code: string,
+): error is NodeJS.ErrnoException {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === code
+  );
 }
 
 /**
@@ -187,6 +266,13 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
       typeof parsed.autoDetectVerifiedTitles === "boolean"
         ? parsed.autoDetectVerifiedTitles
         : base.autoDetectVerifiedTitles,
+    verifiedMemberTags: Array.isArray(parsed.verifiedMemberTags)
+      ? parsed.verifiedMemberTags.filter(
+          (tag): tag is string =>
+            typeof tag === "string" && tag.trim().length > 0,
+        )
+      : base.verifiedMemberTags,
+    verifiedTagSyncEnabled: parsed.verifiedTagSyncEnabled === true,
     activityMessages: Array.isArray(parsed.activityMessages)
       ? parsed.activityMessages.filter((item): item is ActivityMessage =>
           isRecord(item) &&

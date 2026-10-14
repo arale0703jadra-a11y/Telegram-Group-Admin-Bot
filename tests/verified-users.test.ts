@@ -10,7 +10,11 @@ import {
 import {
   buildUserStatusBadges,
   canRevokeVerifiedAdministrator,
+  getVerifiedMessageRestriction,
   isActiveVerifiedRecord,
+  shouldSkipAutomaticDeletion,
+  shouldSkipIllegalFilter,
+  shouldSkipOrdinarySpamViolation,
   shouldSkipPromotionFilter,
 } from "../src/services/verified-user-policy.js";
 
@@ -201,6 +205,36 @@ test("promotion filter bypass depends on verified-user permissions, not local us
   assert.equal(shouldSkipPromotionFilter(true, false), false);
   assert.equal(shouldSkipPromotionFilter(true, true), true);
   assert.equal(shouldSkipPromotionFilter(false, false), true);
+});
+
+test("verified message posting and media permissions have independent effects", () => {
+  const permissions = { can_post: true, can_send_media: false };
+  assert.equal(getVerifiedMessageRestriction(permissions, false), undefined);
+  assert.equal(getVerifiedMessageRestriction(permissions, true), "media_disabled");
+  assert.equal(
+    getVerifiedMessageRestriction({ can_post: false, can_send_media: true }, false),
+    "posting_disabled",
+  );
+});
+
+test("verified promotional freedom does not depend on the legacy promotion bypass flag", () => {
+  assert.equal(DEFAULT_VERIFIED_PERMISSIONS.bypass_promotion_filter, true);
+  assert.equal(shouldSkipPromotionFilter(true, true), true);
+  assert.equal(shouldSkipPromotionFilter(true, false), false);
+});
+
+test("ordinary spam bypass does not exempt critical terms or repeat-offender policy", () => {
+  assert.equal(shouldSkipOrdinarySpamViolation(true, "spam_repeated"), true);
+  assert.equal(shouldSkipOrdinarySpamViolation(true, "excessive_links"), true);
+  assert.equal(shouldSkipOrdinarySpamViolation(true, "prohibited_word"), false);
+  assert.equal(shouldSkipOrdinarySpamViolation(true, "repeat_offender"), false);
+});
+
+test("illegal-filter and automatic-deletion bypasses cannot suppress critical threats", () => {
+  assert.equal(shouldSkipIllegalFilter(true, false), true);
+  assert.equal(shouldSkipIllegalFilter(true, true), false);
+  assert.equal(shouldSkipAutomaticDeletion(true, false), true);
+  assert.equal(shouldSkipAutomaticDeletion(true, true), false);
 });
 
 test("manual add persists a current group member using only columns present before migrations 009/010", async () => {

@@ -104,6 +104,8 @@ export function initialGroupData(): GroupData {
     verifiedTitles: ["✅ Verificada", "Verificada"],
     autoDetectVerifiedTitles: true,
     autoRemoveVerifiedWhenTitleRemoved: true,
+    verifiedMemberTags: ["Verificada"],
+    verifiedTagSyncEnabled: false,
     activityMessages: [],
     automaticMessage: undefined,
   };

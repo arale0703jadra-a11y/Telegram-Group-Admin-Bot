@@ -12,6 +12,7 @@ import {
   isCerberoExecutionEnabled,
 } from "../services/security-commands.js";
 import { getVerifiedUserPermissions } from "../services/verified-users.js";
+import { shouldSkipAutomaticDeletion } from "../services/verified-user-policy.js";
 import { logEvent } from "../moderation/events.js";
 import { isGroupChat } from "../utils/permissions.js";
 import type { MyContext } from "../types.js";
@@ -128,8 +129,22 @@ antiSpam.on("message", async (ctx, next) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from.id;
   const data = await getGroupData(chatId);
-  const verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
+  let verifiedPermissions;
+  try {
+    verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
+  } catch (error) {
+    console.error(
+      `[ANTISPAM] No se pudieron consultar permisos de verificada groupId=${chatId} userId=${userId}; se aplican filtros ordinarios:`,
+      error,
+    );
+  }
   if (verifiedPermissions?.bypass_antispam) {
+    await logEvent(ctx, chatId, "ANTISPAM", {
+      targetId: userId,
+      targetName: ctx.from.username ?? ctx.from.first_name,
+      result: "ok",
+      detail: "Controles ordinarios omitidos por bypass_antispam.",
+    });
     await next();
     return;
   }
@@ -185,12 +200,19 @@ antiSpam.on("message", async (ctx, next) => {
     const minutes = [15, 60, 240, 1440][Math.min(infraction - 2, 3)] ?? 1440;
     let deleted = { ok: false };
     let muted = false;
-    if (isCerberoExecutionEnabled()) {
+    const skipAutomaticDeletion = shouldSkipAutomaticDeletion(
+      verifiedPermissions?.bypass_automatic_deletion === true,
+      false,
+    );
+    if (skipAutomaticDeletion) {
+      deleted = { ok: false };
+    } else if (isCerberoExecutionEnabled()) {
       const deleteOrder = rights.canDelete
         ? await delegateSecurityCommand({
             groupId: chatId,
             action: "DELETE_MESSAGE",
             targetMessageId: ctx.message.message_id,
+            idempotencyKey: String(ctx.update.update_id),
             payload: { reason: `ANTI_SPAM:${reason}` },
           })
         : { ok: false as const, error: "Sin permiso de borrado." };
@@ -200,6 +222,7 @@ antiSpam.on("message", async (ctx, next) => {
           groupId: chatId,
           action: "MUTE_USER",
           targetUserId: userId,
+          idempotencyKey: String(ctx.update.update_id),
           payload: {
             duration_minutes: minutes,
             reason: `ANTI_SPAM:${reason}`,
@@ -221,8 +244,12 @@ antiSpam.on("message", async (ctx, next) => {
     await logEvent(ctx, chatId, "ANTISPAM", {
       targetId: userId,
       targetName: ctx.from.username ?? ctx.from.first_name,
-      result: deleted.ok ? "ok" : "error",
-      detail: `ANTI_SPAM:${reason};delete=${deleted.ok};mute=${muted}`,
+      result: deleted.ok
+        ? isCerberoExecutionEnabled()
+          ? "queued"
+          : "ok"
+        : "error",
+      detail: `ANTI_SPAM:${reason};delete=${deleted.ok ? (isCerberoExecutionEnabled() ? "queued" : "ok") : "error"};mute=${muted ? (isCerberoExecutionEnabled() ? "queued" : "ok") : "error"}`,
     });
     resetState(state);
     return;
