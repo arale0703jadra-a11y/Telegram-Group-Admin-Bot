@@ -7,12 +7,6 @@ import {
   isVerifiableMember,
   muteUser,
 } from "../moderation/actions.js";
-import {
-  delegateSecurityCommand,
-  isCerberoExecutionEnabled,
-} from "../services/security-commands.js";
-import { getVerifiedUserPermissions } from "../services/verified-users.js";
-import { shouldSkipAutomaticDeletion } from "../services/verified-user-policy.js";
 import { logEvent } from "../moderation/events.js";
 import { isGroupChat } from "../utils/permissions.js";
 import type { MyContext } from "../types.js";
@@ -129,25 +123,6 @@ antiSpam.on("message", async (ctx, next) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from.id;
   const data = await getGroupData(chatId);
-  let verifiedPermissions;
-  try {
-    verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
-  } catch (error) {
-    console.error(
-      `[ANTISPAM] No se pudieron consultar permisos de verificada groupId=${chatId} userId=${userId}; se aplican filtros ordinarios:`,
-      error,
-    );
-  }
-  if (verifiedPermissions?.bypass_antispam) {
-    await logEvent(ctx, chatId, "ANTISPAM", {
-      targetId: userId,
-      targetName: ctx.from.username ?? ctx.from.first_name,
-      result: "ok",
-      detail: "Controles ordinarios omitidos por bypass_antispam.",
-    });
-    await next();
-    return;
-  }
   if (!data.antiSpam.enabled) {
     await next();
     return;
@@ -192,64 +167,41 @@ antiSpam.on("message", async (ctx, next) => {
           : undefined;
 
   if (reason) {
+    const deleted = rights.canDelete
+      ? await ctx.api.deleteMessage(chatId, ctx.message.message_id).then(
+          () => ({ ok: true }),
+          () => ({ ok: false }),
+        )
+      : { ok: false };
     const key = String(userId);
     const infraction = (data.antiSpam.infractions[key] ?? 0) + 1;
     data.antiSpam.infractions[key] = infraction;
     await saveGroupData(chatId, data);
 
-    const minutes = [15, 60, 240, 1440][Math.min(infraction - 2, 3)] ?? 1440;
-    let deleted = { ok: false };
     let muted = false;
-    const skipAutomaticDeletion = shouldSkipAutomaticDeletion(
-      verifiedPermissions?.bypass_automatic_deletion === true,
-      false,
-    );
-    if (skipAutomaticDeletion) {
-      deleted = { ok: false };
-    } else if (isCerberoExecutionEnabled()) {
-      const deleteOrder = rights.canDelete
-        ? await delegateSecurityCommand({
-            groupId: chatId,
-            action: "DELETE_MESSAGE",
-            targetMessageId: ctx.message.message_id,
-            idempotencyKey: String(ctx.update.update_id),
-            payload: { reason: `ANTI_SPAM:${reason}` },
-          })
-        : { ok: false as const, error: "Sin permiso de borrado." };
-      deleted = { ok: deleteOrder.ok };
-      if (infraction >= 2 && rights.canRestrict) {
-        const muteOrder = await delegateSecurityCommand({
-          groupId: chatId,
-          action: "MUTE_USER",
-          targetUserId: userId,
-          idempotencyKey: String(ctx.update.update_id),
-          payload: {
-            duration_minutes: minutes,
-            reason: `ANTI_SPAM:${reason}`,
-          },
-        });
-        muted = muteOrder.ok;
-      }
-    } else {
-      deleted = rights.canDelete
-        ? await ctx.api.deleteMessage(chatId, ctx.message.message_id).then(
-            () => ({ ok: true }),
-            () => ({ ok: false }),
-          )
-        : { ok: false };
-      if (infraction >= 2 && rights.canRestrict) {
-        muted = (await muteUser(ctx, chatId, userId, minutes, ctx.from.first_name)).ok;
-      }
+    if (infraction >= 2 && rights.canRestrict) {
+      const minutes = [15, 60, 240, 1440][Math.min(infraction - 2, 3)] ?? 1440;
+      muted = (await muteUser(ctx, chatId, userId, minutes, ctx.from.first_name)).ok;
+    }
+    try {
+      const status = muted
+        ? deleted.ok
+          ? "⚠️ Spam detectado. Tu mensaje fue eliminado y has sido silenciado temporalmente."
+          : "⚠️ Spam detectado. No se pudo eliminar tu mensaje, pero has sido silenciado temporalmente."
+        : deleted.ok
+          ? "⚠️ Spam detectado. Tu mensaje fue eliminado."
+          : "⚠️ Spam detectado. No se pudo eliminar tu mensaje.";
+      await ctx.reply(
+        status,
+      );
+    } catch (error) {
+      console.error("[ANTI-SPAM] No se pudo enviar la notificación:", error);
     }
     await logEvent(ctx, chatId, "ANTISPAM", {
       targetId: userId,
       targetName: ctx.from.username ?? ctx.from.first_name,
-      result: deleted.ok
-        ? isCerberoExecutionEnabled()
-          ? "queued"
-          : "ok"
-        : "error",
-      detail: `ANTI_SPAM:${reason};delete=${deleted.ok ? (isCerberoExecutionEnabled() ? "queued" : "ok") : "error"};mute=${muted ? (isCerberoExecutionEnabled() ? "queued" : "ok") : "error"}`,
+      result: deleted.ok ? "ok" : "error",
+      detail: `ANTI_SPAM:${reason};delete=${deleted.ok};mute=${muted}`,
     });
     resetState(state);
     return;

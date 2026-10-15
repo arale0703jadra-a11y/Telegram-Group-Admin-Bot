@@ -9,10 +9,6 @@ import { scheduleMessageDeletion } from "../utils/cleanup.js";
 import { buildUserCardPanel } from "../menus/panels.js";
 import { getUserCard } from "../utils/users.js";
 import type { MyContext } from "../types.js";
-import {
-  delegateSecurityCommand,
-  isCerberoExecutionEnabled,
-} from "../services/security-commands.js";
 
 /**
  * Comandos de moderación ejecutados DENTRO del grupo.
@@ -44,24 +40,6 @@ moderationCommand.command("borrar", async (ctx) => {
     return;
   }
 
-  if (isCerberoExecutionEnabled()) {
-    const queued = await delegateSecurityCommand({
-      groupId: chatId,
-      action: "DELETE_MESSAGE",
-      targetMessageId: target.message_id,
-      idempotencyKey: String(ctx.update.update_id),
-      payload: {
-        requester_id: ctx.from?.id,
-        requester_name: ctx.from?.first_name,
-        reason: "Comando /borrar desde Zeus",
-      },
-    });
-    if (!queued.ok) {
-      await sendEphemeral(ctx, `⛔ ${queued.error}`);
-    }
-    return;
-  }
-
   const { canDelete } = await getBotRights(ctx, chatId);
   if (!canDelete) {
     await deleteMessageById(ctx, chatId, command.message_id);
@@ -80,7 +58,9 @@ moderationCommand.command("borrar", async (ctx) => {
     detail: result.ok ? `Mensaje ${target.message_id}` : result.error,
   });
 
-  if (!result.ok) {
+  if (result.ok) {
+    await sendEphemeral(ctx, "🗑️ Mensaje borrado.");
+  } else {
     await sendEphemeral(ctx, `⚠️ ${result.error ?? "No se pudo borrar el mensaje."}`);
   }
 });

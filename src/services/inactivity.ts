@@ -7,12 +7,9 @@ import {
   isVerifiableMember,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
+import { OWNER_ID } from "../config.js";
 import type { MyContext } from "../types.js";
 import type { IndexedUser } from "../storage/types.js";
-import {
-  delegateSecurityCommand,
-  isCerberoExecutionEnabled,
-} from "./security-commands.js";
 
 export interface InactiveUser extends IndexedUser {
   inactiveDays: number;
@@ -49,7 +46,7 @@ export async function getInactiveUsers(
       member.status === "kicked" ||
       isProtectedMember(member) ||
       !isVerifiableMember(member) ||
-      false
+      OWNER_ID === user.id
     ) {
       continue;
     }
@@ -67,8 +64,7 @@ export async function removeInactiveUser(
   ctx: MyContext,
   chatId: number,
   userId: number,
-  idempotencyKey?: string,
-): Promise<"removed" | "queued" | "skipped" | "error"> {
+): Promise<"removed" | "skipped" | "error"> {
   const data = await getGroupData(chatId);
   if (!data.inactivity.enabled) {
     return "skipped";
@@ -93,7 +89,7 @@ export async function removeInactiveUser(
     member.status === "kicked" ||
     isProtectedMember(member) ||
     !isVerifiableMember(member) ||
-    false
+    OWNER_ID === userId
   ) {
     await logEvent(ctx, chatId, "INACTIVITY_REMOVE_ERROR", {
       targetId: userId,
@@ -110,23 +106,6 @@ export async function removeInactiveUser(
       detail: "Sin permisos para expulsar.",
     });
     return "error";
-  }
-  if (isCerberoExecutionEnabled()) {
-    const queued = await delegateSecurityCommand({
-      groupId: chatId,
-      action: "KICK_USER",
-      targetUserId: userId,
-      idempotencyKey: idempotencyKey ?? String(ctx.update.update_id),
-      payload: { reason: "INACTIVITY" },
-    });
-    await logEvent(ctx, chatId, "INACTIVITY_REMOVE", {
-      targetId: userId,
-      result: queued.ok ? "queued" : "error",
-      detail: queued.ok
-        ? `Orden KICK_USER enviada a Cerbero: ${queued.commandId}`
-        : queued.error,
-    });
-    return queued.ok ? "queued" : "error";
   }
   try {
     await ctx.api.banChatMember(chatId, userId);
@@ -162,20 +141,12 @@ export async function runInactivityScan(ctx: MyContext): Promise<void> {
         continue;
       }
       const candidates = await getInactiveUsers(ctx, group.id);
-      let queuedCount = 0;
-      const scanKey = `inactivity-scan:${Math.floor(Date.now() / 3_600_000)}`;
       for (const candidate of candidates) {
-        const result = await removeInactiveUser(
-          ctx,
-          group.id,
-          candidate.id,
-          scanKey,
-        );
-        if (result === "queued") queuedCount += 1;
+        await removeInactiveUser(ctx, group.id, candidate.id);
       }
       await logEvent(ctx, group.id, "INACTIVITY_SCAN", {
-        result: queuedCount > 0 ? "queued" : "ok",
-        detail: `Candidatos revisados: ${candidates.length}; órdenes pendientes: ${queuedCount}`,
+        result: "ok",
+        detail: `Candidatos revisados: ${candidates.length}`,
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message.slice(0, 240) : "Error desconocido";

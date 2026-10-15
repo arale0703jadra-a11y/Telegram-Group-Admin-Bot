@@ -21,7 +21,7 @@ function adminMember(
 
 function apiWith(
   result: ChatMember | Error,
-  onCall?: (chatId: number, botId: number) => void,
+  onCall?: (chatId: number | string, botId: number) => void,
 ): Pick<Api, "getChatMember"> {
   return {
     getChatMember: async (chatId, botId) => {
@@ -33,7 +33,7 @@ function apiWith(
 }
 
 test("group registration validates Zeus membership in the requested chat", async () => {
-  let request: [number, number] | undefined;
+  let request: [number | string, number] | undefined;
   const member = await verifyZeusCanAdministerGroup(
     apiWith(adminMember(), (chatId, botId) => {
       request = [chatId, botId];

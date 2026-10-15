@@ -23,14 +23,6 @@ startCommand.command("start", async (ctx) => {
     return;
   }
 
-  if (ctx.chat?.type !== "private") {
-    await ctx.reply(
-      `¡Hola${name}! 👋\n\n` +
-        "La administración se gestiona desde el chat privado del bot.",
-    );
-    return;
-  }
-
   await ctx.reply(
     `¡Hola${name}! 👋\n\n` +
       `${BOT_DESCRIPTION}.\n\n` +

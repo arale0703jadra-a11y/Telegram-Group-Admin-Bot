@@ -24,6 +24,7 @@ import {
 import { calculateActivity } from "../src/services/activity.js";
 import { FileStore } from "../src/storage/file.js";
 import { initialGroupData } from "../src/storage/initial.js";
+import { buttonCallbackData } from "./helpers.js";
 
 function createOptions(
   overrides: Partial<Parameters<typeof handleActivitySummary>[0]> = {},
@@ -202,7 +203,7 @@ test("the unavailable activity panel does not present zero-valued statistics", (
   assert.ok(
     panel.keyboard.inline_keyboard.flat().some(
       (button) =>
-        button.callback_data ===
+        buttonCallbackData(button) ===
         MenuAction.action("actividad", "actualizar"),
     ),
   );

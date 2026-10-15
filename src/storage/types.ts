@@ -1,5 +1,7 @@
 import type { ChatPermissions } from "@grammyjs/types";
 
+export const MAX_ACTIVITY_MESSAGES = 10_000;
+
 /**
  * Tipos del almacenamiento persistente.
  *
@@ -25,7 +27,7 @@ export type ModerationType =
   | "INACTIVITY_REMOVE_ERROR";
 
 /**
- * Registro del resultado observado de una acción de moderación.
+ * Registro de una acción de moderación realizada por un administrador.
  */
 export interface ModerationEvent {
   id: string;
@@ -36,7 +38,7 @@ export interface ModerationEvent {
   targetId?: number;
   targetName?: string;
   date: string;
-  result: "ok" | "error" | "queued";
+  result: "ok" | "queued" | "error";
   detail?: string;
 }
 
@@ -69,15 +71,11 @@ export interface ActivityMessage {
   messageId: number;
   groupId: number;
   userId: number;
-  name?: string;
   firstName?: string;
   lastName?: string;
+  name?: string;
   username?: string;
   timestamp: number;
-}
-
-export interface NewUsersConfig {
-  enabled: boolean;
 }
 
 export interface AutomaticMessageConfig {
@@ -87,6 +85,10 @@ export interface AutomaticMessageConfig {
   nextRunAt?: string;
   lastSentAt?: string;
   lastMessageId?: number;
+}
+
+export interface NewUsersConfig {
+  enabled: boolean;
 }
 
 /**
@@ -133,6 +135,24 @@ export interface BanRecord extends IndexedUser {
  */
 export type WarnAction = "none" | "mute" | "ban";
 
+/**
+ * Configuración de la bienvenida del grupo.
+ * Por ahora se usa el texto predeterminado; desde la sección
+ * "👋 Bienvenida" se podrá editar en una fase posterior.
+ */
+export interface WelcomeConfig {
+  enabled: boolean;
+  message: string;
+}
+
+export interface PromotionMessages {
+  promotionWarning: string;
+  promotionRemoved: string;
+  promotionMuted: string;
+  linkWarning: string;
+  verificationRequired: string;
+}
+
 export interface PromotionStatistics {
   analyzed: number;
   buying: number;
@@ -149,6 +169,7 @@ export interface PromotionConfig {
   verificationContacts: string[];
   verifiedUsers: Record<string, boolean>;
   recurrenceMuteMinutes: number[];
+  messages: PromotionMessages;
   infractions: Record<string, number>;
   statistics: PromotionStatistics;
 }
@@ -191,16 +212,17 @@ export interface GroupData {
   recentMessages: number[];
   indexedUsers: Record<string, IndexedUser>;
   events: ModerationEvent[];
-  newUsers: NewUsersConfig;
+  welcome: WelcomeConfig;
   promotion: PromotionConfig;
   illegalContent: IllegalContentConfig;
   antiSpam: AntiSpamConfig;
   inactivity: InactivityConfig;
+  activityMessages: ActivityMessage[];
+  automaticMessage?: AutomaticMessageConfig;
+  newUsers: NewUsersConfig;
   verifiedTitles: string[];
   autoDetectVerifiedTitles: boolean;
   autoRemoveVerifiedWhenTitleRemoved: boolean;
-  verifiedMemberTags: string[];
   verifiedTagSyncEnabled: boolean;
-  activityMessages: ActivityMessage[];
-  automaticMessage?: AutomaticMessageConfig;
+  verifiedMemberTags: string[];
 }

@@ -1,4 +1,5 @@
 import {
+  existsSync,
   copyFileSync,
   mkdirSync,
   readFileSync,
@@ -6,14 +7,16 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type {
-  ActivityMessage,
   BanRecord,
+  ActivityMessage,
+  AutomaticMessageConfig,
   GroupData,
   IndexedUser,
   ModerationEvent,
   MuteRecord,
   WarningEntry,
 } from "./types.js";
+import { MAX_ACTIVITY_MESSAGES } from "./types.js";
 import type { PersistenceStore } from "./interface.js";
 import { DEFAULT_PROMOTION_STATISTICS, initialGroupData } from "./initial.js";
 import type { IllegalContentConfig, PromotionConfig } from "./types.js";
@@ -30,7 +33,7 @@ import type { IllegalContentConfig, PromotionConfig } from "./types.js";
 export class FileStore implements PersistenceStore {
   private readonly cache = new Map<number, GroupData>();
   private readonly dirty = new Set<number>();
-  private readonly loadErrors = new Map<number, unknown>();
+  private readonly corruptGroups = new Set<number>();
   private timer: ReturnType<typeof setTimeout> | undefined;
 
   private storageDir(): string {
@@ -47,14 +50,28 @@ export class FileStore implements PersistenceStore {
       return structuredClone(cached);
     }
 
-    let data: GroupData;
+    let data = initialGroupData();
     try {
-      data = this.readGroupFile(chatId);
-      this.loadErrors.delete(chatId);
+      const file = this.filePath(chatId);
+      if (existsSync(file)) {
+        try {
+          const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<
+            string,
+            unknown
+          >;
+          data = normalizeGroupData(parsed);
+        } catch (error) {
+          this.corruptGroups.add(chatId);
+          const backup = `${file}.corrupt-${Date.now()}.bak`;
+          console.error(
+            `[STORAGE] JSON corrupto en el grupo ${chatId}; se conserva el original y se crea ${backup}:`,
+            error,
+          );
+          copyFileSync(file, backup);
+        }
+      }
     } catch (error) {
-      this.loadErrors.set(chatId, error);
       console.error(`[STORAGE] No se pudo leer el grupo ${chatId}:`, error);
-      data = initialGroupData();
     }
 
     this.cache.set(chatId, data);
@@ -62,39 +79,19 @@ export class FileStore implements PersistenceStore {
   }
 
   async loadGroupStrict(chatId: number): Promise<GroupData> {
-    if (this.loadErrors.has(chatId)) {
-      try {
-        const data = this.readGroupFile(chatId, false);
-        this.cache.set(chatId, data);
-        this.dirty.delete(chatId);
-        this.loadErrors.delete(chatId);
-        return structuredClone(data);
-      } catch (error) {
-        this.loadErrors.set(chatId, error);
-        throw new Error(`No se pudieron leer los datos del grupo ${chatId}.`, {
-          cause: error,
-        });
-      }
-    }
-
-    const cached = this.cache.get(chatId);
-    if (cached) {
-      return structuredClone(cached);
-    }
-
-    try {
-      const data = this.readGroupFile(chatId);
-      this.cache.set(chatId, data);
-      return structuredClone(data);
-    } catch (error) {
-      this.loadErrors.set(chatId, error);
-      throw new Error(`No se pudieron leer los datos del grupo ${chatId}.`, {
-        cause: error,
-      });
-    }
+    const file = this.filePath(chatId);
+    if (!existsSync(file)) return initialGroupData();
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    return normalizeGroupData(parsed);
   }
 
   async saveGroup(chatId: number, data: GroupData): Promise<void> {
+    if (this.corruptGroups.has(chatId)) {
+      console.error(
+        `[STORAGE] No se sobrescribe el archivo corrupto del grupo ${chatId}; requiere recuperación manual.`,
+      );
+      return;
+    }
     this.cache.set(chatId, structuredClone(data));
     this.dirty.add(chatId);
     this.scheduleFlush();
@@ -116,12 +113,6 @@ export class FileStore implements PersistenceStore {
     for (const chatId of ids) {
       const data = this.cache.get(chatId);
       if (!data) {
-        continue;
-      }
-      if (this.loadErrors.has(chatId)) {
-        console.error(
-          `[STORAGE] Se omite la escritura del grupo ${chatId} porque su archivo no se pudo leer.`,
-        );
         continue;
       }
       try {
@@ -146,63 +137,10 @@ export class FileStore implements PersistenceStore {
     }
     await this.flushAll();
   }
-
-  private readGroupFile(chatId: number, backupCorrupt = true): GroupData {
-    const file = this.filePath(chatId);
-    let contents: string;
-    try {
-      contents = readFileSync(file, "utf8");
-    } catch (error) {
-      if (isNodeErrorWithCode(error, "ENOENT")) {
-        return initialGroupData();
-      }
-      throw error;
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(contents) as unknown;
-      if (!isRecord(parsed)) {
-        throw new Error("El contenido raíz del archivo no es un objeto JSON.");
-      }
-    } catch (error) {
-      if (backupCorrupt) {
-        const backup = `${file}.corrupt-${Date.now()}.bak`;
-        try {
-          copyFileSync(file, backup);
-          console.error(
-            `[STORAGE] JSON corrupto en el grupo ${chatId}; se conserva el original y se crea ${backup}:`,
-            error,
-          );
-        } catch (backupError) {
-          throw new Error(
-            `El archivo del grupo ${chatId} está corrupto y no se pudo respaldar.`,
-            { cause: new AggregateError([error, backupError]) },
-          );
-        }
-      }
-      throw new Error(`El archivo del grupo ${chatId} contiene JSON inválido.`, {
-        cause: error,
-      });
-    }
-
-    return normalizeGroupData(parsed);
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function isNodeErrorWithCode(
-  error: unknown,
-  code: string,
-): error is NodeJS.ErrnoException {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }
 
 /**
@@ -241,9 +179,10 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
     events: Array.isArray(parsed.events)
       ? (parsed.events as ModerationEvent[])
       : [],
-    newUsers: {
-      enabled:
-        isRecord(parsed.newUsers) && parsed.newUsers.enabled === true,
+    welcome: {
+      enabled: true,
+      message: "",
+      ...(isRecord(parsed.welcome) ? parsed.welcome : {}),
     },
     promotion: normalizePromotion(parsed.promotion, base.promotion),
     illegalContent: normalizeIllegalContent(
@@ -252,58 +191,64 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
     ),
     antiSpam: normalizeAntiSpam(parsed.antiSpam, base.antiSpam),
     inactivity: normalizeInactivity(parsed.inactivity, base.inactivity),
+    activityMessages: normalizeActivityMessages(parsed.activityMessages),
+    automaticMessage: normalizeAutomaticMessage(parsed.automaticMessage),
+    newUsers: {
+      enabled:
+        isRecord(parsed.newUsers) && parsed.newUsers.enabled === true,
+    },
     verifiedTitles: Array.isArray(parsed.verifiedTitles)
-      ? parsed.verifiedTitles.filter(
-          (title): title is string =>
-            typeof title === "string" && title.trim().length > 0,
-        )
+      ? parsed.verifiedTitles.filter((title): title is string => typeof title === "string")
       : base.verifiedTitles,
-    autoRemoveVerifiedWhenTitleRemoved:
-      typeof parsed.autoRemoveVerifiedWhenTitleRemoved === "boolean"
-        ? parsed.autoRemoveVerifiedWhenTitleRemoved
-        : base.autoRemoveVerifiedWhenTitleRemoved,
     autoDetectVerifiedTitles:
       typeof parsed.autoDetectVerifiedTitles === "boolean"
         ? parsed.autoDetectVerifiedTitles
         : base.autoDetectVerifiedTitles,
+    autoRemoveVerifiedWhenTitleRemoved:
+      typeof parsed.autoRemoveVerifiedWhenTitleRemoved === "boolean"
+        ? parsed.autoRemoveVerifiedWhenTitleRemoved
+        : base.autoRemoveVerifiedWhenTitleRemoved,
+    verifiedTagSyncEnabled:
+      typeof parsed.verifiedTagSyncEnabled === "boolean"
+        ? parsed.verifiedTagSyncEnabled
+        : base.verifiedTagSyncEnabled,
     verifiedMemberTags: Array.isArray(parsed.verifiedMemberTags)
-      ? parsed.verifiedMemberTags.filter(
-          (tag): tag is string =>
-            typeof tag === "string" && tag.trim().length > 0,
-        )
+      ? parsed.verifiedMemberTags.filter((tag): tag is string => typeof tag === "string")
       : base.verifiedMemberTags,
-    verifiedTagSyncEnabled: parsed.verifiedTagSyncEnabled === true,
-    activityMessages: Array.isArray(parsed.activityMessages)
-      ? parsed.activityMessages.filter((item): item is ActivityMessage =>
-          isRecord(item) &&
-          typeof item.messageId === "number" &&
-          typeof item.groupId === "number" &&
-          typeof item.userId === "number" &&
-          typeof item.timestamp === "number")
-      : [],
-    automaticMessage: normalizeAutomaticMessage(parsed.automaticMessage),
   };
 }
 
-function normalizeAutomaticMessage(
-  raw: unknown,
-): GroupData["automaticMessage"] {
-  if (!isRecord(raw) || typeof raw.message !== "string") {
-    return undefined;
-  }
+function normalizeActivityMessages(value: unknown): ActivityMessage[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is ActivityMessage => {
+    if (!isRecord(item)) return false;
+    return Number.isSafeInteger(item.messageId) &&
+      Number.isSafeInteger(item.groupId) &&
+      Number.isSafeInteger(item.userId) &&
+      typeof item.timestamp === "number" &&
+      Number.isFinite(item.timestamp) &&
+      (item.firstName === undefined || typeof item.firstName === "string") &&
+      (item.lastName === undefined || typeof item.lastName === "string") &&
+      (item.name === undefined || typeof item.name === "string") &&
+      (item.username === undefined || typeof item.username === "string");
+  }).slice(-MAX_ACTIVITY_MESSAGES);
+}
+
+function normalizeAutomaticMessage(value: unknown): AutomaticMessageConfig | undefined {
+  if (!isRecord(value) || typeof value.message !== "string") return undefined;
   return {
-    enabled: raw.enabled === true,
-    message: raw.message,
-    intervalMinutes:
-      typeof raw.intervalMinutes === "number" &&
-      Number.isFinite(raw.intervalMinutes) &&
-      raw.intervalMinutes > 0
-        ? raw.intervalMinutes
-        : undefined,
-    nextRunAt: typeof raw.nextRunAt === "string" ? raw.nextRunAt : undefined,
-    lastSentAt: typeof raw.lastSentAt === "string" ? raw.lastSentAt : undefined,
-    lastMessageId:
-      typeof raw.lastMessageId === "number" ? raw.lastMessageId : undefined,
+    enabled: value.enabled === true,
+    message: value.message,
+    ...(typeof value.intervalMinutes === "number" &&
+      Number.isFinite(value.intervalMinutes) && value.intervalMinutes > 0
+      ? { intervalMinutes: value.intervalMinutes }
+      : {}),
+    ...(typeof value.nextRunAt === "string" ? { nextRunAt: value.nextRunAt } : {}),
+    ...(typeof value.lastSentAt === "string" ? { lastSentAt: value.lastSentAt } : {}),
+    ...(typeof value.lastMessageId === "number" &&
+      Number.isSafeInteger(value.lastMessageId)
+      ? { lastMessageId: value.lastMessageId }
+      : {}),
   };
 }
 
@@ -395,12 +340,13 @@ function normalizePromotion(
   if (!isRecord(raw)) {
     return fallback;
   }
-  const rawStatistics = isRecord(raw.statistics) ? raw.statistics : {};
+  const messages = isRecord(raw.messages) ? raw.messages : {};
+  const statistics = isRecord(raw.statistics) ? raw.statistics : {};
   const statistic = (key: keyof typeof DEFAULT_PROMOTION_STATISTICS): number =>
-    typeof rawStatistics[key] === "number" &&
-    Number.isFinite(rawStatistics[key]) &&
-    rawStatistics[key] >= 0
-      ? rawStatistics[key]
+    typeof statistics[key] === "number" &&
+    Number.isFinite(statistics[key]) &&
+    statistics[key] >= 0
+      ? statistics[key]
       : DEFAULT_PROMOTION_STATISTICS[key];
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
@@ -420,6 +366,29 @@ function normalizePromotion(
           (item): item is number => typeof item === "number" && item >= 0,
         )
       : fallback.recurrenceMuteMinutes,
+    messages: {
+      ...fallback.messages,
+      promotionWarning:
+        typeof messages.promotionWarning === "string"
+          ? messages.promotionWarning
+          : fallback.messages.promotionWarning,
+      promotionRemoved:
+        typeof messages.promotionRemoved === "string"
+          ? messages.promotionRemoved
+          : fallback.messages.promotionRemoved,
+      promotionMuted:
+        typeof messages.promotionMuted === "string"
+          ? messages.promotionMuted
+          : fallback.messages.promotionMuted,
+      linkWarning:
+        typeof messages.linkWarning === "string"
+          ? messages.linkWarning
+          : fallback.messages.linkWarning,
+      verificationRequired:
+        typeof messages.verificationRequired === "string"
+          ? messages.verificationRequired
+          : fallback.messages.verificationRequired,
+    },
     infractions: isRecord(raw.infractions)
       ? (raw.infractions as Record<string, number>)
       : {},

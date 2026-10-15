@@ -8,48 +8,17 @@ import {
 import { scheduleMessageDeletion } from "../utils/cleanup.js";
 import { openPrivatePanel } from "../utils/private-panel.js";
 import type { MyContext } from "../types.js";
-import { ensureCerberoBinding } from "../services/security-commands.js";
-import {
-  GroupRegistrationError,
-  verifyZeusCanAdministerGroup,
-} from "../services/group-registration.js";
 
 export const menuCommand = new Composer<MyContext>();
 
-export function isMenuTrigger(text: string, botUsername?: string): boolean {
-  const normalized = text.trim();
-  if (/^menu$/i.test(normalized)) {
-    return true;
-  }
-  const commandMatch = normalized.match(/^\/menu(?:@([A-Za-z0-9_]+))?$/i);
-  if (!commandMatch) {
-    return false;
-  }
-  return (
-    !commandMatch[1] ||
-    (botUsername !== undefined &&
-      commandMatch[1].toLowerCase() === botUsername.toLowerCase())
-  );
-}
-
-menuCommand.on("message:text", async (ctx, next) => {
-  if (!isMenuTrigger(ctx.message.text, ctx.me.username)) {
-    await next();
-    return;
-  }
-
+menuCommand.command("menu", async (ctx) => {
   const from = ctx.from;
   const chat = ctx.chat;
   const username = ctx.me.username;
 
-  if (ctx.chat?.type === "private") {
-    // La autorización privada se resuelve por ctx.from.id y los grupos registrados.
-    await openPrivatePanel(ctx);
-    return;
-  }
-
   if (!isGroupChat(ctx)) {
-    await ctx.reply("🔐 El panel administrativo solo está disponible en el chat privado del bot.");
+    // En privado, el panel se abre directamente (igual que /start).
+    await openPrivatePanel(ctx);
     return;
   }
 
@@ -70,27 +39,7 @@ menuCommand.on("message:text", async (ctx, next) => {
   const groupTitle = chat.title ?? "";
   const botLink = `https://t.me/${username}`;
 
-  try {
-    await verifyZeusCanAdministerGroup(ctx.api, groupId, ctx.me.id);
-    registerGroup(groupId, groupTitle);
-  } catch (error) {
-    if (error instanceof GroupRegistrationError) {
-      if (error.code === "TELEGRAM_ERROR") {
-        console.error(
-          `[REGISTRO] Telegram no pudo validar ZEUS en groupId=${groupId}:`,
-          error.cause,
-        );
-      }
-      await ctx.reply(`⛔ ${error.message}`);
-      return;
-    }
-    console.error(`[REGISTRO] No se pudo registrar groupId=${groupId}:`, error);
-    await ctx.reply(
-      "⛔ No se pudo guardar el registro de este grupo. No se abrió el panel; inténtalo de nuevo.",
-    );
-    return;
-  }
-  await ensureCerberoBinding(groupId);
+  registerGroup(groupId, groupTitle);
   markUserAsAdmin(groupId, from.id);
 
   // El administrador gestiona ahora este grupo en su chat privado.

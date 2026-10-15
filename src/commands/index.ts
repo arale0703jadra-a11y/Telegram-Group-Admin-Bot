@@ -4,6 +4,7 @@ import { ayudaCommand } from "./ayuda.js";
 import { menuCommand } from "./menu.js";
 import { moderationCommand } from "./moderation.js";
 import { privateInput } from "./private-input.js";
+import { welcomeCommand } from "./welcome.js";
 import { zeusCommand } from "./zeus.js";
 import type { MyContext } from "../types.js";
 
@@ -13,9 +14,10 @@ import type { MyContext } from "../types.js";
  */
 export function registerCommands(bot: Composer<MyContext>): void {
   bot.use(startCommand);
-  bot.use(zeusCommand);
   bot.use(ayudaCommand);
   bot.use(menuCommand);
   bot.use(moderationCommand);
   bot.use(privateInput);
+  bot.use(welcomeCommand);
+  bot.use(zeusCommand);
 }

@@ -1,5 +1,6 @@
 import type { ChatMember, ChatPermissions } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
+import { OWNER_ID } from "../config.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
 import { logEvent } from "./events.js";
 
@@ -128,6 +129,7 @@ export async function warnUser(
     !member ||
     member.user.is_bot ||
     !isVerifiableMember(member) ||
+    OWNER_ID === userId ||
     isProtectedMember(member)
   ) {
     return {
@@ -278,7 +280,7 @@ export async function muteUser(
   ctx: MyContext,
   chatId: number,
   userId: number,
-  minutes: number | undefined,
+  minutes: number,
   targetName?: string,
 ): Promise<ActionResult> {
   const name = targetName ?? String(userId);
@@ -300,15 +302,16 @@ export async function muteUser(
   if (
     member.user.is_bot ||
     !isVerifiableMember(member) ||
+    OWNER_ID === userId ||
     isProtectedMember(member)
   ) {
     return { ok: false, error: "No se puede silenciar a un administrador o al propietario." };
   }
 
-  const until = minutes === undefined ? undefined : isEpochNowSeconds() + minutes * 60;
+  const until = isEpochNowSeconds() + minutes * 60;
   try {
     await ctx.api.restrictChatMember(chatId, userId, MUTE_PERMISSIONS, {
-      ...(until === undefined ? {} : { until_date: until }),
+      until_date: until,
     });
   } catch {
     await logEvent(ctx, chatId, "MUTE", {
@@ -322,7 +325,7 @@ export async function muteUser(
   try {
     const data = await getGroupData(chatId);
     data.mutedUsers[String(userId)] = {
-      until: until ?? 0,
+      until,
       adminId: ctx.from?.id,
       adminName: ctx.from?.first_name,
       at: new Date().toISOString(),
@@ -357,7 +360,7 @@ export async function muteUser(
     targetId: userId,
     targetName: name,
     result: "ok",
-    detail: minutes === undefined ? "Indefinido" : `${minutes} min`,
+    detail: `${minutes} min`,
   });
   return { ok: true };
 }
@@ -462,6 +465,7 @@ export async function banUser(
   if (
     member.user.is_bot ||
     !isVerifiableMember(member) ||
+    OWNER_ID === userId ||
     isProtectedMember(member)
   ) {
     await logEvent(ctx, chatId, "BAN", {

@@ -6,6 +6,7 @@ dist/
 
 # Variables de entorno (contienen secretos). Nunca subir.
 .env
+**/.env
 
 # Registro persistente del bot (generado en runtime)
 data/

@@ -12,8 +12,10 @@ export type {
   ModerationType,
   MuteRecord,
   PromotionConfig,
+  PromotionMessages,
   WarnAction,
   WarningEntry,
+  WelcomeConfig,
 } from "./types.js";
 
 /**
@@ -21,21 +23,13 @@ export type {
  * Las advertencias, silencios, baneos, eventos y configuración de cada
  * grupo sobreviven a los reinicios del bot.
  */
-const fileStore = new FileStore();
-export const store: PersistenceStore = fileStore;
+export const store: PersistenceStore = new FileStore();
 
 /**
  * Lee los datos de moderación de un grupo.
  */
 export async function getGroupData(chatId: number): Promise<GroupData> {
   return store.loadGroup(chatId);
-}
-
-/**
- * Lee datos para estadísticas que no deben convertir fallos de disco en ceros.
- */
-export async function getActivityGroupData(chatId: number): Promise<GroupData> {
-  return fileStore.loadGroupStrict(chatId);
 }
 
 /**

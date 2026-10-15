@@ -1,7 +1,11 @@
 import { Composer } from "grammy";
 import { isUserAdminOf } from "../utils/permissions.js";
 import { getAdministrableGroups } from "../utils/groups.js";
-import { getActivityGroupData, getGroupData } from "../storage/index.js";
+import { getGroupData } from "../storage/index.js";
+import {
+  generateRecoveryKey,
+  isSystemOwner,
+} from "../services/system-owner.js";
 import {
   buildGroupPickerPanel,
   buildMainPanel,
@@ -9,30 +13,16 @@ import {
   buildAntiSpamPanel,
   buildInactivityPanel,
   buildUsersPanel,
-  buildCerberoPanel,
-  buildPromptPanel,
-  buildHelpEmergenciesPanel,
-  buildHelpRecoveryPanel,
 } from "./panels.js";
 import { renderPanel } from "./render.js";
 import type { MyContext } from "../types.js";
-import {
-  getCerberoStatus,
-  getSecurityEvents,
-  getSecurityStats,
-} from "../services/security-commands.js";
-import { recordObservedUser } from "../services/user-registry.js";
-import {
-  handleActivitySummary,
-  isActivityPanelAction,
-  presentActivityPanel,
-} from "./activity-summary.js";
 
+const DEVELOPMENT_MESSAGE = "🚧 Esta función está en desarrollo.";
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
   "Primero selecciona el grupo que quieres administrar.";
 
-type MenuKind = "main" | "home" | "sub" | "action" | "groups" | "group" | "help";
+type MenuKind = "main" | "home" | "sub" | "action" | "groups" | "group";
 
 interface ParsedMenuAction {
   kind: MenuKind;
@@ -68,9 +58,6 @@ export function parseMenuAction(data: string): ParsedMenuAction | undefined {
   if (kind === "action" && parts[2] && parts[3]) {
     return { kind, section: parts[2], item: parts[3] };
   }
-  if (kind === "help" && parts[2]) {
-    return { kind, item: parts[2] };
-  }
   return undefined;
 }
 
@@ -90,7 +77,7 @@ async function getGroupTitle(
  * Navegación del panel de administración (chat privado).
  *
  * - Autoriza SIEMPRE contra el chat_id del grupo seleccionado.
- * - Los botones visibles siempre apuntan a acciones implementadas.
+ * - Las acciones no implementadas muestran el aviso de desarrollo.
  * - La navegación edita el mismo mensaje para no generar spam.
  */
 export const menuNavigation = new Composer<MyContext>();
@@ -102,32 +89,36 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
     return;
   }
 
+  if (action.kind === "action" && action.section === "ayuda") {
+    if (ctx.chat?.type !== "private" || !ctx.from) {
+      await ctx.answerCallbackQuery("⛔ Disponible solo en el chat privado del bot.");
+      return;
+    }
+    if (action.item === "recuperar") {
+      ctx.session.user.pendingAction = { kind: "recoveryKey" };
+      await ctx.answerCallbackQuery();
+      await ctx.reply("🔐 Envía tu clave de recuperación de un solo uso.");
+      return;
+    }
+    if (action.item === "generar-clave") {
+      if (!(await isSystemOwner(ctx.from.id))) {
+        await ctx.answerCallbackQuery("⛔ No autorizado.");
+        return;
+      }
+      const key = await generateRecoveryKey(ctx.from.id);
+      await ctx.answerCallbackQuery();
+      await ctx.reply(
+        `🔐 Clave de recuperación de un solo uso:\n\n${key}\n\n` +
+        "Guárdala fuera de Telegram. No volveré a mostrarla.",
+      );
+      return;
+    }
+  }
+
   if (action.kind === "groups") {
     ctx.session.user.pendingAction = undefined;
     await ctx.answerCallbackQuery();
     await showGroupPicker(ctx);
-    return;
-  }
-
-  if (action.kind === "help") {
-    await ctx.answerCallbackQuery();
-    if (action.item === "emergencias") {
-      await renderPanel(ctx, buildHelpEmergenciesPanel());
-      return;
-    }
-    if (action.item === "recovery") {
-      await renderPanel(ctx, buildHelpRecoveryPanel());
-      return;
-    }
-    if (action.item === "recover") {
-      ctx.session.user.pendingAction = { kind: "recoveryKey" };
-      await renderPanel(
-        ctx,
-        buildPromptPanel("🔐 Envía tu clave de recuperación de un solo uso."),
-      );
-      return;
-    }
-    await renderPanel(ctx, buildMainPanel());
     return;
   }
 
@@ -156,116 +147,20 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
     return;
   }
 
-  if (isActivityPanelAction(action)) {
-    await handleActivitySummary({
-      groupId: selectedGroupId,
-      groupTitle: ctx.session.user.selectedGroupTitle,
-      authorize: () => isUserAdminOf(ctx, selectedGroupId),
-      answerCallback: async (message) => {
-        await ctx.answerCallbackQuery(message);
-      },
-      recordUser: async () => {
-        if (ctx.from) {
-          await recordObservedUser(selectedGroupId, ctx.from, {
-            activity: true,
-          });
-        }
-      },
-      loadGroupData: () => getActivityGroupData(selectedGroupId),
-      presentPanel: (panel) =>
-        presentActivityPanel(panel, {
-          edit: async (activityPanel) => {
-            const message = ctx.callbackQuery.message;
-            const chatId = ctx.chat?.id;
-            if (!message || !chatId) {
-              return false;
-            }
-            await ctx.api.editMessageText(
-              chatId,
-              message.message_id,
-              activityPanel.text,
-              {
-                reply_markup: activityPanel.keyboard,
-                parse_mode: "Markdown",
-              },
-            );
-            return true;
-          },
-          reply: async (activityPanel) => {
-            await ctx.reply(activityPanel.text, {
-              reply_markup: activityPanel.keyboard,
-              parse_mode: "Markdown",
-            });
-          },
-          logError: (message, error) => {
-            console.error(`[ACTIVITY PANEL] ${message}`, error);
-          },
-        }),
-      sendError: async (message) => {
-        await ctx.reply(message);
-      },
-      logError: (message, error) => {
-        console.error(
-          `[ACTIVITY PANEL] ${message} groupId=${selectedGroupId}`,
-          error,
-        );
-      },
-    });
-    return;
-  }
-
   if (!(await isUserAdminOf(ctx, selectedGroupId))) {
     await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
     return;
   }
 
-  if (ctx.from) {
-    await recordObservedUser(selectedGroupId, ctx.from, { activity: true });
-  }
-
-  const title = ctx.session.user.selectedGroupTitle;
   if (action.kind === "action") {
-    if (action.section === "cerbero") {
-      try {
-        const [status, stats, events] = await Promise.all([
-          getCerberoStatus(),
-          getSecurityStats(selectedGroupId),
-          getSecurityEvents(selectedGroupId, 5),
-        ]);
-        await ctx.answerCallbackQuery();
-        await renderPanel(ctx, buildCerberoPanel(status, stats, events, title));
-      } catch (error) {
-        console.error("[CERBERO PANEL] No se pudo cargar el estado:", error);
-        await ctx.answerCallbackQuery("No se pudo consultar Cerbero.");
-      }
-      return;
-    }
-    const data = await getGroupData(selectedGroupId);
-    const summaries: Record<string, string> = {
-      reglas: "Las reglas se consultan desde la configuración local del grupo.",
-      config:
-        `Anti-spam: ${data.antiSpam.enabled ? "activo" : "inactivo"}\n` +
-        `Filtros: ${data.promotion.enabled ? "activos" : "inactivos"}\n` +
-        `Inactividad: ${data.inactivity.enabled ? "activa" : "inactiva"}`,
-      mensajes: "No hay mensajes automáticos configurados.",
-      ayuda: action.item === "comandos"
-        ? "Comandos disponibles: /menu, /admin y /start."
-        : "El panel exige permisos de administrador verificados por Telegram.",
-    };
-    await ctx.answerCallbackQuery();
-    await renderPanel(
-      ctx,
-      buildPromptPanel(
-        `📋 ${action.section ?? "Configuración"}\n\n` +
-          (summaries[action.section ?? ""] ?? "Configuración consultada correctamente."),
-      ),
-    );
+    await ctx.answerCallbackQuery(DEVELOPMENT_MESSAGE);
     return;
   }
 
   // Navegar a otra sección cancela cualquier operación en espera.
   ctx.session.user.pendingAction = undefined;
 
+  const title = ctx.session.user.selectedGroupTitle;
   let panel;
   if (action.kind === "sub" && action.section === "usuarios") {
     const data = await getGroupData(selectedGroupId);

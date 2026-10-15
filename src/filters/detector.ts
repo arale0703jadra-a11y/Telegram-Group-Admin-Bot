@@ -23,29 +23,24 @@ export interface PromotionDetection {
 }
 
 export const BUYING_SIGNAL_EXAMPLES = [
-  "busco",
+  "busco alguien que venda",
   "quiero comprar",
-  "quiero ver",
-  "quiero pedir",
   "quien vende",
-  "quien hace",
-  "alguna chica",
-  "donde consigo",
+  "alguien selling",
+  "looking for someone who sells",
+  "where can I buy",
   "cuanto cuesta",
-  "que precio tiene",
-  "cuanto sale",
 ] as const;
 
 export const SELLING_SIGNAL_EXAMPLES = [
   "vendo",
   "ofrezco",
-  "tengo contenido",
-  "hago videos",
-  "realizo videollamadas",
+  "hago videos para clientes",
   "acepto pedidos",
-  "estoy tomando pedidos",
-  "mi contenido",
-  "promociono",
+  "busco comprador",
+  "mis packs a la venta",
+  "I sell",
+  "I take commissions",
 ] as const;
 
 export const CONTACT_SIGNAL_EXAMPLES = [
@@ -58,55 +53,59 @@ export const CONTACT_SIGNAL_EXAMPLES = [
   "escribeme al privado",
   "habla conmigo",
   "mandame mensaje",
-  "para comprar",
-  "compra aqui",
-  "pedidos por privado",
+  "por privado",
+  "message me",
+  "send me a message",
 ] as const;
 
+const COMMERCIAL_OBJECT_PATTERN =
+  /\b(?:contenido|content|material|packs?|paquetes?|bundles?|sets?|catalogo|menu|galerias?|galleries|clips?|fotos?|photos?|pics?|videos?|albums?|nudes?|sexting|videollamadas?|video calls?|llamadas?|calls?|servicios?|services?|pedidos?|orders?|comisiones?|commissions?|customs?|personalizad[oa]s?)\b/u;
 const CONTACT_PATTERN =
-  /\b(?:dm|inbox|directo|escribeme|hablame|contactame|interesados?|por privado|al privado|habla conmigo|mandame mensaje|mensajeame|para comprar|compra aqui|pedidos por privado)\b/u;
+  /\b(?:dm|inbox|directo|escribeme|hablame|contactame|interesados?|por privado|al privado|habla conmigo|mandame mensaje|mensajeame|message me|send me a message|private message|details by dm|dm me)\b/u;
 const LINK_PATTERN = /(?:https?:\/\/|www\.|t\.me\/|telegram\.me\/)/iu;
 
-const BUYING_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/\b(?:busco|buscando)\b/u, "busco"],
-  [/\bquiero comprar\b/u, "quiero comprar"],
-  [/\bquiero ver\b/u, "quiero ver"],
-  [/\bquiero pedir\b/u, "quiero pedir"],
-  [/\b(?:quiero|quisiera|necesito|me interesa)\b/u, "quiero/necesito"],
-  [/\bquien(?:es)?\s+(?:vende|venden|hace|hacen|ofrece|ofrecen)\b/u, "quien ofrece"],
-  [/\balguna chica\b/u, "alguna chica"],
-  [/\b(?:busco|necesito|quiero)\s+(?:una?\s+)?(?:chica|alguien|persona)\b/u, "busco alguien"],
-  [/\bdonde consigo\b/u, "donde consigo"],
-  [/\bcuanto cuesta\b/u, "cuanto cuesta"],
-  [/\bque precio tiene\b/u, "que precio tiene"],
-  [/\bcuanto sale\b/u, "cuanto sale"],
-  [/\b(?:busco|quiero|necesito)\s+(?:videos?|fotos?|packs?|contenido|videollamadas?)\b/u, "busqueda de contenido"],
-  [/\bque chica\b.{0,50}\b(?:disponible|hace|ofrece)\b/u, "pregunta por disponibilidad"],
-  [/\b(?:alguien|alguna chica)\s+que\s+haga\b/u, "pregunta por servicio"],
+const AUTHOR_SELLING_ACTION =
+  /\b(?:(?:yo|nosotros|nosotras)\s+)?(?:vendo|vendemos|ofrezco|ofrecemos|hago|hacemos|realizo|realizamos|preparo|preparamos|creo|creamos|acepto|aceptamos|tomo|tomamos|estoy\s+(?:tomando|ofreciendo)|promociono|promocionando)\b|\b(?:quiero|voy\s+a|planeo)\s+vender\b|\b(?:i|we)\s+(?:(?:am|are)\s+)?(?:(?:also|sometimes|still|now)\s+)?(?:selling|sell|offer|make|create|do|accept|take|prepare|commission)\b|\bi\s+(?:(?:might|may|could|would)\s+)?sell\b|\bi['’]?m\s+(?:selling|offering|taking|accepting)\b|\b(?:taking|accepting|offering)\s+(?:custom\s+)?(?:orders|requests|commissions)\b|\bselling\s+(?:my|our)\b/u;
+const NEGATED_SELLING_ACTION =
+  /\b(?:no|nunca|jamas|not|never|don['’]?t|do\s+not|doesn['’]?t|does\s+not|isn['’]?t|is\s+not|aren['’]?t|are\s+not|am\s+not)\b.{0,32}\b(?:vendo|vendemos|vender|ofrezco|ofrecemos|ofrecer|hago|hacemos|hacer|realizo|realizamos|acepto|tomando|selling|sell|offer|offering|make|making|accept|taking)\b/u;
+const OWNED_OBJECT_PATTERN =
+  /\b(?:tengo|mi|mis|nuestro|nuestra|nuestros|nuestras|i\s+have|i['’]?ve\s+got|my|our)\b.{0,45}\b(?:contenido|content|material|packs?|paquetes?|bundles?|sets?|catalogo|menu|galerias?|galleries|clips?|fotos?|photos?|pics?|videos?|albums?|nudes?|sexting|videollamadas?|llamadas?|servicios?|services?|pedidos?|orders?|comisiones?|commissions?|customs?)\b/u;
+const OFFER_DESCRIPTOR_PATTERN =
+  /\b(?:nuevo|nueva|nuevos|nuevas|new|exclusive|exclusivo|exclusiva|disponible|available|por\s+encargo|for\s+sale|a\s+la\s+venta|sale|descuento|discount|precio|prices?|tarifa|rates?|usd|eur|euros?|dolares?|dollars?)\b/u;
+const SELLING_BUYER_AUDIENCE_PATTERN =
+  /\b(?:busco|buscando|buscamos|looking\s+for)\s+(?:(?:both|ambos)\s+)?(?:a\s+)?(?:clientes?|clientas?|buyers?|comprador(?:es)?|customers?|interesad[oa]s?|people\s+interested|interested\s+people)\b/u;
+const OWNED_SALE_PATTERN =
+  /\b(?:mis?|nuestros?|nuestras?|my|our)\b.{0,45}\b(?:a\s+la\s+venta|for\s+sale|available|disponible|discount|descuento|precios?|prices?|usd|eur|euros?|dolares?|dollars?)\b/u;
+const STRONG_OFFER_CONTEXT_PATTERN =
+  /\b(?:para\s+quien\s+quiera|for\s+anyone\s+interested|if\s+you['’]?re\s+interested|interesados?\s+(?:al|por)|details?\s+(?:by|via)|detalles?\s+por|solo\s+gente\s+seria|serious\s+buyers)\b/u;
+
+const BUYING_ACTION_PATTERN =
+  /\b(?:busco|buscando|quiero\s+comprar|quisiera\s+comprar|necesito\s+comprar|me\s+interesa\s+comprar|compro|quiero\s+(?:ver|conseguir|pedir)|necesito\s+(?:conseguir|ver|pedir)|looking\s+for|i\s+(?:(?:also|might|still)\s+)?want\s+to\s+buy|i\s+(?:(?:am|might|also|still)\s+){0,2}looking\s+to\s+buy|can\s+i\s+buy|i['’]?m\s+looking\s+for|where\s+can\s+i\s+buy|donde\s+(?:puedo\s+)?comprar|donde\s+consigo|cuanto\s+cuesta|cuanto\s+sale|how\s+much\s+(?:does\s+it\s+)?cost|what\s+are\s+your\s+rates?)\b/u;
+const BUYER_SEEKING_SELLER_PATTERN =
+  /\b(?:busco|buscando|looking\s+(?:for|4)|need)\s+(?:a|un|una)?\s*(?:vendedor(?:es)?|seller(?:s)?)\b|\b(?:and|y)\s+(?:a|un|una)?\s*(?:vendedor(?:es)?|seller(?:s)?)\b|\b(?:busco|buscando|looking\s+(?:for|4))\b.{0,65}\b(?:alguien|alguna?\s+persona|una?\s+chica|a\s+girl|someone|somebody|a\s+creator|a\s+seller)\b.{0,45}\b(?:que\s+)?(?:venda|vendan|ofrezca|ofrezcan|haga|hagan|vende|selling|sells?|offers?|makes?|does)\b|\b(?:alguien|someone|anyone|anybody)\s+(?:who\s+|que\s+)?(?:vende|venda|vendan|sells?|offers?|ofrece|takes?|acepta)\b|\b(?:anyone|anybody|any1|who|where\s+can\s+i)\b.{0,35}\b(?:selling|sell|sells|offering|offers|making|does|takes)\b|\b(?:do\s+you|does\s+anyone|does\s+anybody)\s+(?:sell|offer|have|make)\b|\b(?:who|quien)\s+(?:takes?|accepts?|acepta|ofrece|vende)\b.{0,40}\b(?:orders?|pedidos?|customs?)\b|\balguna\s+chica\b.{0,40}\b(?:vende|venden|ofrece|ofrecen|hace|hacen)\b|\balguien\s+(?:acepta|toma)\s+pedidos?\b|\b(?:quien(?:es)?|alguien|alguna?)\s+(?:vende|venden|ofrece|ofrecen|hace|hacen)\b|\b(?:vendes|ofreces|tienes|haces)\b/u;
+const BUYING_OBJECT_REQUEST_PATTERN =
+  /\b(?:busco|buscando|quiero|quisiera|necesito|looking\s+(?:for|4)|i\s+want|i\s+need|anyone\s+have|do\s+you\s+have)\b.{0,55}\b(?:contenido|content|material|packs?|paquetes?|bundles?|sets?|catalogo|menu|galerias?|galleries|clips?|fotos?|photos?|pics?|videos?|albums?|nudes?|customs?|videollamadas?|video\s+calls?)\b|\b(?:can\s+(?:someone|anyone)|could\s+someone)\s+(?:send|share)\s+me\b.{0,55}\b(?:contenido|content|material|packs?|catalogo|menu|galerias?|galleries|clips?|fotos?|photos?|pics?|videos?|albums?|customs?)\b|\b(?:can|could)\s+(?:someone|anyone)\s+share\s+(?:their|the)\b.{0,55}\b(?:contenido|content|material|packs?|catalogo|menu|galerias?|galleries|clips?|fotos?|photos?|pics?|videos?|albums?|customs?)\b|\b(?:who\s+sells|anyone\s+selling|anybody\s+selling|any1\s+selling|who\s+offers|who\s+makes)\b.{0,45}\b(?:contenido|content|material|packs?|bundles?|sets?|galerias?|galleries|clips?|fotos?|photos?|videos?|albums?|customs?)\b/u;
+const BUYING_PRICE_QUESTION_PATTERN =
+  /\b(?:cuanto\s+(?:cuesta|sale|cobras)|que\s+precio\s+(?:tiene|tienen)|how\s+much|what\s+do\s+you\s+charge|what\s+are\s+your\s+prices)\b/u;
+const BUYING_SIGNAL_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [BUYER_SEEKING_SELLER_PATTERN, "busqueda de vendedor"],
+  [BUYING_ACTION_PATTERN, "intencion de compra"],
+  [BUYING_OBJECT_REQUEST_PATTERN, "busqueda de producto o servicio"],
+  [BUYING_PRICE_QUESTION_PATTERN, "pregunta de precio"],
 ];
 
-const EXPLICIT_SELLING_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/\b(?:vendo|vendemos|ofrezco|ofrecemos)\b/u, "oferta en primera persona"],
-  [/\b(?:quiero|puedo|voy a|planeo)\s+vender\b/u, "intencion de vender"],
-  [/\b(?:hago|hacemos|realizo|realizamos)\b/u, "servicio en primera persona"],
-  [/\b(?:acepto|tom[oó]|estoy tomando)\s+pedidos?\b/u, "acepta pedidos"],
-  [/\b(?:promociono|promocionando)\b/u, "autopromocion"],
-];
+const THIRD_PERSON_SELLER_PATTERN =
+  /\b(?:(?:mi|mis|su|sus|my|his|her|their)\b.{0,35}\b(?:amig[oa]|friend|pareja|sister|hermana|conocid[oa]|creator|creadora|chica|girl|vendedor|seller)|conozco\s+(?:a\s+)?(?:una?\s+)?(?:chica|persona|creadora)|i\s+know\s+(?:a\s+)?(?:girl|creator|seller))\b.{0,45}\b(?:vende|venden|vendia|sells?|selling|ofrece|ofrecen|offers?|hace|hacen|makes?)\b/u;
+const NEUTRAL_CONTEXT_PATTERN =
+  /\b(?:work\s+schedule|shared\s+calendar|phone|telefono|available\s+in\s+my\s+country|internet\s+(?:signal|service)|senal\s+de\s+internet|mi\s+zona|my\s+area|my\s+country|university|universidad|escuela|school|homework|tarea|class|clase|presentation|presentacion|work\s+presentation|proyecto|project|avatar|video\s+game|videogame|minecraft|bank|banco|monthly\s+statement|estado\s+de\s+cuenta|restaurant|restaurante|store|tienda|vacation|vacaciones|viaje|my\s+mom|my\s+mother|mi\s+mama|mi\s+madre|family|familia|familiar|youtube|pelicula|movie|trabajo|job\s+search|looking\s+for\s+a\s+job|miembros?|members?|curso|course|grupo|group|paquete\s+.*\b(?:llego|arrived)\b|(?:llego|arrived)\s+(?:incompleto|incomplete|damaged)|\b(?:bought|purchased|compre)\b)\b/u;
 
 export function normalizeFilterTerm(value: string): string {
   return value
     .toLocaleLowerCase("es")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\u200b/g, "")
     .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[¿?¡!,.;:]/g, "")
-    .replace(/\bq\b/g, "que")
-    .replace(/\bcontneido\b/g, "contenido")
-    .replace(/\bpresio\b/g, "precio")
-    .replace(/\bvideollamda\b/g, "videollamada")
-    .replace(/\bvideo llamada\b/g, "videollamada");
+    .trim();
 }
 
 function containsTerm(text: string, term: string): boolean {
@@ -130,55 +129,6 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-const NEGATED_SELLING_PATTERN =
-  /\b(?:no|nunca|jamas)\s+(?:vendo|vender|ofrezco|ofrecer|hago|realizo)\b/u;
-const NEUTRAL_CONTEXT_PATTERN =
-  /\b(?:escuela|universidad|clase|proyecto|presentacion|trabajo|empleo|encuesta|restaurante|comida|emprendimiento|diseno|youtube|auto|telefono|hotel|taxi|boleto|biblioteca|viaje|vacaciones|vacacion|paseo|evento|novio|novia|pareja|mama|familia|familiares?|amigas?|hermana|sister|oficina|historia|reunion|boyfriend|girlfriend|school|university|meeting|survey|restaurant|food|design|library|trip|vacation|ticket)\b/u;
-const SEXUAL_CONTEXT_PATTERN =
-  /\b(?:adult[oa]s?|desnud[oa]s?|nudes?|sexting|\+18|18\+|customs?|packs?|contenido|content|material|fotos?|photos?|videos?|videollamadas?|llamadas?|private calls?)\b/u;
-const COMMERCIAL_OBJECT_FOR_OFFER =
-  /\b(?:contenido|content|material|packs?|paquetes?|catalogo|catalog|menu|fotos?|photos?|videos?|nudes?|pics?|sexting|videollamadas?|llamadas?|calls?|customs?|personalizad[oa]s?|servicio|servicios|service|services|pedido|pedidos|encargo|encargos|order|orders|comisiones|commission|commissions|cliente|clientes|customer|customers|comprador|compradores|buyer|buyers|privad[oa]s?|private|precio|precios|price|prices|disponible|disponibles|available|custom|paypal|reservas?|info|informacion|ppv|opciones|options)\b/u;
-const BUYING_ACTION_PATTERN =
-  /\b(?:busco|buscando|quiero|quisiera|quiero saber|necesito|me interesa|cuanto|que precio|quien|alguien|alguna|aceptas|aceptan|haces|hace|tienes|tienen|hay|vendes|vende|venden|ofrece|ofreces|ofrecen|comprar|buy|looking for|want to buy|want to order|who sells|who does|who makes|does anyone|can someone|do you|what do you|how much|accept paypal|send me|show me|can i see|where can i|get|pasas|muestras|mandas|consigo|cobras|recibes)\b/u;
-const CTA_PATTERN =
-  /\b(?:dm|inbox|escribeme|hablame|contactame|interesados?|por privado|al privado|mensajeame|mandame mensaje|si te interesa|si quieren|interested|message me|dm me|by dm)\b/u;
-const BUYER_SEEKING_SELLER_PATTERN =
-  /\b(?:busco|buscando|looking for)\b.{0,45}\b(?:alguien|una chica|una creadora|alguien que|someone|a creator|a girl|who)\b.{0,30}\b(?:venda|vende|venden|haga|hace|ofrezca|sells|does|offers)\b/u;
-const AMBIGUOUS_PACK_PROVIDER_PATTERN =
-  /\b(?:busco|buscando|looking for)\b.{0,80}\b(?:venda|vende|sells)\s+packs?\b/u;
-const SEEKING_BUYERS_PATTERN =
-  /\b(?:busco|buscando|looking for)\b.{0,60}\b(?:clientes?|comprador(?:es)?|interesad[oa]s?|buyers?|customers?|people interested|quien compre|who buys|alguien que compre|someone to buy)\b/u;
-const NEGATED_OFFER_CONTEXT =
-  /\b(?:no vendo nada|no ofrezco nada|i don't sell anything|i do not sell anything)\b/u;
-const CONVERSATIONAL_ACTION_PATTERN =
-  /\b(?:me gusta|vi|vimos|hice|tuve|tuvimos|compartieron|publicaron|had|watched|like watching|shared|published|saw|disponible para hablar)\b/u;
-const BUYING_QUESTION_PATTERN =
-  /\b(?:quien tiene|who has|cuanto cobras|cuanto cuesta$|cuanto vale|que precio|aceptas paypal|recibes transferencias|me pasas|me muestras|me puedes mandar|do you accept paypal|how much(?: do you charge)?|what are your prices|can you send me|can i see)\b/u;
-const STRONG_SELLING_CLAUSE_PATTERN =
-  /\b(?:vendo|vendiendo|vendemos|vender|ofrezco|ofreciendo|ofrecemos|ofrecer|acepto|aceptando|estoy aceptando|tom[oó]|estoy tomando|promociono|promocionando|a la venta|en venta|contratame|contratanos|selling|i sell|i'm selling|i am selling|i offer|i'm offering|i am offering|taking|accepting|offering|i take commissions|i accept commissions)\b/u;
-const SELLING_OBJECT_PATTERN =
-  /\b(?:contenido|content|material|packs?|paquetes?|catalogo|catalog|menu|fotos?|photos?|videos?|nudes?|pics?|sexting|videollamadas?|llamadas?|calls?|customs?|personalizad[oa]s?|pedidos?|encargos?|orders?|contenido adulto|mi contenido|mis fotos|my content|my packs?|my photos|my videos?|private calls?|custom videos?|custom orders?|requests?)\b/u;
-const AUDIENCE_INVITATION_PATTERN =
-  /\b(?:si\s+(?:alguien|alguno|alguna|quieren|te)\s+(?:(?:esta\s+)?interesad[oa]s?|interesa)|si quieren|para\s+los\s+interesad[oa]s?|interested\??|if\s+you(?:'re| are)? interested|anyone interested|quien quiere ver|who wants to see)\b/u;
-const QUALIFIED_MAKER_OFFER_PATTERN =
-  /\b(?:hago|hacemos|realizo|realizamos|puedo hacer|make|can make|i make|i do)\b.{0,45}\b(?:personalizad[oa]s?|customs?|privad[oa]s?|paid|por dinero|por pago|por encargo)\b/u;
-const SELLER_HANDOFF_PATTERN =
-  /\b(?:te paso|te puedo pasar|les puedo pasar|puedo pasarles|te envio|te puedo enviar|send you|i can send you)\b.{0,35}\b(?:mi|mis|my|precio|precios|price|prices|menu|catalogo|catalog)\b/u;
-const PRICE_OFFER_PATTERN =
-  /\b(?:mis videos?|my videos?)\b.{0,30}\b(?:cuestan|valen|cost|costs)\b|\b(?:promotion|promocion|promo)\b.{0,70}\b(?:pack|contenido|content|video|fotos?|photos?).{0,50}\b(?:usd|dolares|precio|price|dm|reserva|book)\b/u;
-const IMPLICIT_SOLICITATION_PATTERN =
-  /\b(?:si\s+(?:alguien|alguno|alguna|quieren|te)\s+(?:(?:esta\s+)?interesad[oa]s?|interesa).{0,50}(?:me escribe|me escriben|escriban|escribeme|dm|message me)|si quieren.{0,35}(?:me escriben|escriban|escribeme|dm)|interesados?\s+(?:escriban|escribeme|al dm|por dm)|interested.{0,25}(?:dm|message me)|quien quiere ver.{0,30}lo que tengo)\b/u;
-const FIRST_PERSON_SELLING_INTENT_PATTERN =
-  /\b(?:vendo|vendiendo|vender|ofrezco|ofreciendo|acepto|aceptando|i sell|i'm selling|i am selling|i also sell|i offer|i'm offering|i am offering|i also offer)\b/u;
-const SEEKING_OPPOSITE_SIDES_PATTERN =
-  /\b(?:busco|buscando|looking for)\b.{0,45}\b(?:clientes?|comprador(?:es)?|buyers?|customers?)\b.{0,60}\b(?:tambien|y|and)\b.{0,25}\b(?:busco|buscando|looking for)\b.{0,35}\b(?:chica|creadora|alguien|girl|creator)\b/u;
-const SEEKING_PROVIDER_PATTERN =
-  /\b(?:busco|buscando|looking for)\b.{0,45}\b(?:una chica|chica|creadora|alguien|a girl|girl|creator|someone)\b/u;
-const WEAK_COMMERCIAL_CONTEXT_PATTERN =
-  /\b(?:info|paypal|reservas?|cuanto|how much|private call|message me|dm me|busco una chica|buscando una chica|busco alguien|buscando a alguien|looking for a girl|estoy buscando|tengo algo para|i have something for)\b/u;
-const NON_PROMOTIONAL_CHAT_PATTERN =
-  /\b(?:publican|publicaron|publico|subio|salio bien|parece viejo|me parece caro|precio.*caro|ese precio|too high|seems too high|a question about|disponible.*(?:hablar|conversar|reunion|meeting|talk)|available.*(?:talk|meeting)|para conversar|de la entrada|of the ticket|price.*(?:ticket|entry)|content.*(?:channel|class)|menu.*(?:tiene|con).*precios nuevos|articulo.*explica)\b/u;
-
 export function detectPromotion(
   text: string,
   dictionary: string[],
@@ -188,148 +138,160 @@ export function detectPromotion(
   const matches = unique(
     dictionary.filter((term) => term && containsTerm(normalized, term)),
   );
-  const hasLink = LINK_PATTERN.test(text);
-  const hasRelevantObject = COMMERCIAL_OBJECT_FOR_OFFER.test(normalized);
-  const hasNeutralContext = NEUTRAL_CONTEXT_PATTERN.test(normalized);
-  const hasSexualContext = SEXUAL_CONTEXT_PATTERN.test(normalized);
-  const clauses = text
-    .split(/[.!?;\n]+|\b(?:but|pero|although|sin embargo)\b/iu)
-    .map(normalizeFilterTerm);
-  const buyingSignals = collectSignals(normalized, BUYING_PATTERNS);
-  const contactSignals = CONTACT_PATTERN.test(normalized)
-    ? collectSignals(normalized, CONTACT_SIGNAL_EXAMPLES.map((phrase) => [
-        new RegExp(`\\b${normalizeFilterTerm(phrase).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "u"),
-        phrase,
-      ] as const))
-    : [];
+  const hasCommercialObject = COMMERCIAL_OBJECT_PATTERN.test(normalized);
   const commercialSignals = unique([
     ...matches.map(normalizeFilterTerm),
-    ...(hasRelevantObject ? ["producto o servicio"] : []),
+    ...(hasCommercialObject ? ["producto o servicio"] : []),
   ]);
-  const sellingPatterns = collectSignals(normalized, EXPLICIT_SELLING_PATTERNS);
-  const hasNegatedSelling = NEGATED_SELLING_PATTERN.test(normalized) ||
-    NEGATED_OFFER_CONTEXT.test(normalized);
-  const seekingBuyer = SEEKING_BUYERS_PATTERN.test(normalized);
-  const buyingDirection = BUYER_SEEKING_SELLER_PATTERN.test(normalized);
-  const ambiguousPackProvider =
-    AMBIGUOUS_PACK_PROVIDER_PATTERN.test(normalized) &&
-    !/\bme\s+venda\b/u.test(normalized);
-  const hasDirectOffer = clauses.some((clause) =>
-    (STRONG_SELLING_CLAUSE_PATTERN.test(clause) ||
-      QUALIFIED_MAKER_OFFER_PATTERN.test(clause)) &&
-    SELLING_OBJECT_PATTERN.test(clause) &&
-    !/\b(?:do you|can you)\s+(?:make|do|offer|sell)\b/u.test(clause) &&
-    !BUYER_SEEKING_SELLER_PATTERN.test(clause),
-  ) &&
-    !buyingDirection &&
-    !/\b(?:quieres|do you want to)\s+vender\b/u.test(normalized);
-  const ownedQualifiedOffer =
-    /\b(?:tengo|mi|mis|i have|my)\b/u.test(normalized) &&
-    /\b(?:nuevo|nueva|nuevos|nuevas|new|exclusivo|exclusiva|exclusivos|exclusivas|exclusive|premium|disponible|disponibles|available|privado|privada|private|personalizado|personalizada|custom|por encargo|a pedido)\b/u.test(normalized);
-  const hasImplicitOffer =
-    (
-      (hasRelevantObject && seekingBuyer && (hasSexualContext || /\b(?:servicio|servicios|service|services)\b/u.test(normalized))) ||
-      (hasRelevantObject && ownedQualifiedOffer) ||
-      (/\b(?:tengo|mi|mis|i have|my)\b/u.test(normalized) &&
-        (CTA_PATTERN.test(normalized) || AUDIENCE_INVITATION_PATTERN.test(normalized) || /\b(?:message me|dm me|interested)\b/u.test(normalized))) ||
-      (/\b(?:hago|puedo hacer|make|can make)\b/u.test(normalized) && /\b(?:personalizado|personalizada|custom)\b/u.test(normalized)) ||
-      /\b(?:taking custom orders|accepting custom requests|my menu|prices in dm|menu in dm|content available, dm|i sell|i'm selling|i am selling|i offer|i'm offering|i am offering|i make|i do customs|i take custom|i accept custom|my content is available|new content available|i take commissions|i accept commissions)\b/u.test(normalized) ||
-      (hasRelevantObject && /\b(?:por encargo|a pedido|on request|by request)\b/u.test(normalized)) ||
-      SELLER_HANDOFF_PATTERN.test(normalized) ||
-      PRICE_OFFER_PATTERN.test(normalized) ||
-      /\b(?:content|packs?|videos?|photos?|contenido|fotos?)\s+(?:available|disponible|disponibles|por privado|al privado).{0,25}\b(?:dm|escribeme|message me|inbox|privado|private)\b/u.test(normalized) ||
-      /\b(?:custom orders available|packs? disponibles? por privado|contenido disponible.{0,20}escribeme)\b/u.test(normalized) ||
-      IMPLICIT_SOLICITATION_PATTERN.test(normalized) ||
-      (AUDIENCE_INVITATION_PATTERN.test(normalized) &&
-        (hasRelevantObject || CTA_PATTERN.test(normalized) || /\b(?:my|mi|mis|tengo|i have)\b/u.test(normalized))));
-  const buyingQuestion = BUYING_QUESTION_PATTERN.test(normalized) ||
-    (/\b(?:cuanto|que precio)\b/u.test(normalized) && hasRelevantObject && !/\b(?:mañana|tomorrow)\b/u.test(normalized)) ||
-    (/\b(?:precio|price)\b/u.test(normalized) && /\b(?:cu[aá]l es|what are|what is)\b/u.test(normalized));
-  const sellingEvidence = hasDirectOffer || hasImplicitOffer;
-  const buyingEvidence = (hasRelevantObject &&
-    BUYING_ACTION_PATTERN.test(normalized) &&
-    !seekingBuyer &&
-    !ambiguousPackProvider &&
-    !/\b(?:quiero|quieres)\s+vender\b/u.test(normalized) &&
-    !/\b(?:quiero|quieres)\s+hablar en privado\b/u.test(normalized)) ||
-    buyingQuestion ||
-    (/\b(?:busco|buscando|looking for)\s+(?:(?:una?|a)\s+)?(?:chica|girl|creator|creadora)\b/u.test(normalized) &&
-      !ambiguousPackProvider &&
-      !/\b(?:para hablar|to talk)\b/u.test(normalized));
-  const weakOwnerAlongsideQuestion =
-    /\b(?:tengo|i have)\b/u.test(normalized) &&
-    buyingEvidence &&
-    !sellingEvidence &&
-    (/\b(?:que precio tienes|cuanto cobras|how much do you charge)\b/u.test(normalized) ||
-      buyingDirection ||
-      SEEKING_PROVIDER_PATTERN.test(normalized));
-  const negativeOffer = hasNegatedSelling && !sellingEvidence;
-  const contradiction =
-    (sellingEvidence && buyingEvidence) ||
-    weakOwnerAlongsideQuestion ||
-    (hasDirectOffer && seekingBuyer) ||
-    (seekingBuyer && buyingQuestion) ||
-    (buyingEvidence && FIRST_PERSON_SELLING_INTENT_PATTERN.test(normalized)) ||
-    SEEKING_OPPOSITE_SIDES_PATTERN.test(normalized);
+  const hasCommercialContext = hasCommercialObject || matches.length > 0;
+  const clauses = normalized
+    .split(/[,.!?;\n]+|\b(?:pero|but|although|however|sin embargo)\b/u)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  const buyingSignals = collectSignals(normalized, BUYING_SIGNAL_PATTERNS);
+  const buyerSeekingSeller = BUYER_SEEKING_SELLER_PATTERN.test(normalized);
+  const seeksOwnBuyers = clauses.some((clause) =>
+    SELLING_BUYER_AUDIENCE_PATTERN.test(clause),
+  );
+  const independentBuyingClause = clauses.some((clause) =>
+    (!SELLING_BUYER_AUDIENCE_PATTERN.test(clause) ||
+      /\b(?:quiero|quisiera|necesito)\s+comprar|\bcompro\b|\bi\s+(?:want|need)\s+to\s+buy\b/u.test(
+        clause,
+      )) &&
+    (!AUTHOR_SELLING_ACTION.test(clause) ||
+      /\b(?:quiero|quisiera|necesito)\s+comprar|\bcompro\b|\bi\s+(?:want|need)\s+to\s+buy\b/u.test(
+        clause,
+      ) ||
+      !hasCommercialObject) &&
+    (BUYING_OBJECT_REQUEST_PATTERN.test(clause) ||
+      (BUYING_ACTION_PATTERN.test(clause) &&
+        (!BUYING_PRICE_QUESTION_PATTERN.test(clause) ||
+          hasCommercialObject)) ||
+      (BUYING_PRICE_QUESTION_PATTERN.test(clause) && hasCommercialObject)),
+  );
+
+  const contactSignals = CONTACT_PATTERN.test(normalized)
+    ? CONTACT_SIGNAL_EXAMPLES.filter((phrase) =>
+        containsTerm(normalized, phrase),
+      )
+    : [];
+  const hasContactCallToAction = contactSignals.length > 0;
+  const hasLink = LINK_PATTERN.test(text);
+  const buyerIntent =
+    (hasCommercialContext ||
+      (hasLink && buyerSeekingSeller) ||
+      (seeksOwnBuyers && buyerSeekingSeller)) &&
+    (buyerSeekingSeller || independentBuyingClause);
+  const hasNegatedSeller = clauses.some((clause) =>
+    NEGATED_SELLING_ACTION.test(clause),
+  );
+  const neutralContext = NEUTRAL_CONTEXT_PATTERN.test(normalized);
+  const thirdPersonSeller = THIRD_PERSON_SELLER_PATTERN.test(normalized);
+
+  const authorSellingClauses = clauses.filter((clause) => {
+    if (NEGATED_SELLING_ACTION.test(clause)) return false;
+    if (THIRD_PERSON_SELLER_PATTERN.test(clause)) return false;
+
+    const authorAction = AUTHOR_SELLING_ACTION.test(clause);
+    const seeksBuyers = SELLING_BUYER_AUDIENCE_PATTERN.test(clause);
+    const ownedOffer =
+      OWNED_OBJECT_PATTERN.test(clause) &&
+      (OFFER_DESCRIPTOR_PATTERN.test(clause) ||
+        OWNED_SALE_PATTERN.test(clause) ||
+        STRONG_OFFER_CONTEXT_PATTERN.test(clause) ||
+        hasContactCallToAction);
+    const advertisedObject =
+      hasCommercialObject &&
+      (STRONG_OFFER_CONTEXT_PATTERN.test(clause) ||
+        (/\b(?:nuevo|nueva|nuevos|nuevas|new|fresh|exclusive|exclusivo|exclusiva)\b/u.test(
+          clause,
+        ) &&
+          /\b(?:disponible|available)\b/u.test(clause)));
+    return (
+      (authorAction && hasCommercialObject) ||
+      (seeksBuyers &&
+        (hasCommercialObject ||
+          OWNED_OBJECT_PATTERN.test(clause) ||
+          buyerSeekingSeller)) ||
+      ownedOffer ||
+      advertisedObject
+    );
+  });
+
+  const authorSelling = authorSellingClauses.length > 0 && !neutralContext;
+  const sellingSignals = authorSelling
+    ? unique([
+        ...(authorSellingClauses.some((clause) =>
+          AUTHOR_SELLING_ACTION.test(clause),
+        )
+          ? ["oferta propia en primera persona"]
+          : []),
+        ...(authorSellingClauses.some((clause) =>
+          SELLING_BUYER_AUDIENCE_PATTERN.test(clause),
+        )
+          ? ["busqueda de compradores"]
+          : []),
+        ...(authorSellingClauses.some((clause) =>
+          OWNED_OBJECT_PATTERN.test(clause),
+        )
+          ? ["producto propio con señal de oferta"]
+          : []),
+        ...(hasContactCallToAction ? contactSignals : []),
+      ])
+    : [];
+  const activeBuyingSignals = buyerIntent ? buyingSignals : [];
 
   const signals = new Set<PromotionSignal>();
-  if (/\b(?:vendo|vendemos|vender|ofrezco|ofrecemos|a la venta|selling)\b/u.test(normalized)) signals.add("sale");
-  if (/\b(?:pago|pagos|pagar|cobro|cobrar|transferencia|paypal|binance|usdt|usd|dolares|price|prices)\b/u.test(normalized)) signals.add("payment");
-  if (CTA_PATTERN.test(normalized)) signals.add("contact");
-  if (hasSexualContext) signals.add("adult");
-  if (/\b(?:promocion|oferta|descuento|promotion|offer)\b/u.test(normalized)) signals.add("offer");
+  if (authorSelling) signals.add("sale");
+  if (/\b(?:pago|pagos|pagar|cobro|cobrar|transferencia|paypal|binance|usdt|usd|dolares|dollars|eur|euros)\b/u.test(normalized)) {
+    signals.add("payment");
+  }
+  if (hasContactCallToAction) signals.add("contact");
+  if (/\b(?:adultos|desnudos?|nudes?|sexting|contenido \+18|contenido 18\+)\b/u.test(normalized)) {
+    signals.add("adult");
+  }
+  if (/\b(?:promocion|oferta|descuento|discount|for sale|a la venta)\b/u.test(normalized)) {
+    signals.add("offer");
+  }
   if (hasLink) signals.add("link");
 
   let intent: PromotionIntent;
   let confidence: number;
   let reason: string;
 
-  if (contradiction) {
+  if (authorSelling && buyerIntent) {
     intent = "AMBIGUOUS";
     confidence = 0.35;
-    reason = "Se detectaron intenciones de compra y oferta incompatibles.";
-  } else if (
-    hasNeutralContext ||
-    (NON_PROMOTIONAL_CHAT_PATTERN.test(normalized) &&
-      !hasDirectOffer)
-  ) {
-    intent = "NEUTRAL";
-    confidence = 0.94;
-    reason = "El contexto identifica una conversación o actividad no promocional.";
-  } else if (sellingEvidence && !negativeOffer) {
+    reason = "El mensaje combina una oferta atribuible al autor con una intención de compra.";
+  } else if (authorSelling) {
     intent = "SELLING";
-    confidence = hasDirectOffer ? 0.96 : ownedQualifiedOffer ? 0.91 : 0.86;
-    reason = hasDirectOffer
-      ? "Se detectó una acción de oferta propia junto con un producto o servicio."
-      : "Se detectó una oferta implícita dirigida a posibles clientes.";
-  } else if (
-    buyingEvidence ||
-    (hasRelevantObject && buyingDirection && !ambiguousPackProvider)
-  ) {
+    confidence = authorSellingClauses.some((clause) =>
+      AUTHOR_SELLING_ACTION.test(clause),
+    )
+      ? 0.94
+      : 0.84;
+    reason = "Se identifica una oferta del autor y un producto o servicio relacionado.";
+  } else if (buyerIntent) {
     intent = "BUYING";
-    confidence = 0.92;
-    reason = "La estructura expresa búsqueda, pregunta o intención de compra.";
-  } else if (
-    negativeOffer ||
-    (!hasRelevantObject &&
-      !CONTACT_PATTERN.test(normalized) &&
-      !CTA_PATTERN.test(normalized) &&
-      !WEAK_COMMERCIAL_CONTEXT_PATTERN.test(normalized) &&
-      !hasLink) ||
-    (CONVERSATIONAL_ACTION_PATTERN.test(normalized) && !sellingEvidence) ||
-    (NON_PROMOTIONAL_CHAT_PATTERN.test(normalized) && !sellingEvidence)
-  ) {
+    confidence = 0.9;
+    reason = "El autor busca comprar o pregunta por una oferta de otra persona.";
+  } else if (neutralContext || thirdPersonSeller || hasNegatedSeller) {
     intent = "NEUTRAL";
-    confidence = 0.94;
-    reason = "El mensaje es conversacional o no constituye una oferta promocional.";
+    confidence = 0.92;
+    reason = hasNegatedSeller
+      ? "La acción de venta está negada y no hay una intención positiva de compra."
+      : "El contexto describe una actividad cotidiana o una oferta atribuida a otra persona.";
   } else if (
-    hasRelevantObject ||
-    CONTACT_PATTERN.test(normalized) ||
+    hasCommercialContext ||
+    hasContactCallToAction ||
     hasLink ||
-    WEAK_COMMERCIAL_CONTEXT_PATTERN.test(normalized)
+    /\b(?:vendes?|vend(?:e|es|en)|sell|selling|precio|price|customs?|ppv)\b/u.test(
+      normalized,
+    ) ||
+    BUYING_PRICE_QUESTION_PATTERN.test(normalized)
   ) {
     intent = "AMBIGUOUS";
-    confidence = hasRelevantObject && CONTACT_PATTERN.test(normalized) ? 0.55 : 0.4;
+    confidence = 0.4;
     reason = "Hay señales comerciales, pero no se identifica con claridad quién compra o vende.";
   } else {
     intent = "NEUTRAL";
@@ -337,22 +299,18 @@ export function detectPromotion(
     reason = "No se encontraron señales comerciales relevantes.";
   }
 
-  const sellingSignals = unique([
-    ...sellingPatterns,
-    ...(seekingBuyer ? ["busqueda de compradores"] : []),
-    ...(hasImplicitOffer ? ["oferta implicita"] : []),
-  ]);
+  const shouldModerate = intent === "SELLING" && options.verified !== true;
   return {
     intent,
     confidence,
-    buyingSignals,
+    buyingSignals: activeBuyingSignals,
     sellingSignals,
     contactSignals,
     commercialSignals,
     matches,
     signals,
     hasLink,
-    shouldModerate: intent === "SELLING" && options.verified !== true,
+    shouldModerate,
     reason,
   };
 }

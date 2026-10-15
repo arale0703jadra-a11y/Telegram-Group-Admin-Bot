@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/bot.js",
     "test": "node --import tsx --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.tests.json"
   },
   "keywords": [
     "telegram",

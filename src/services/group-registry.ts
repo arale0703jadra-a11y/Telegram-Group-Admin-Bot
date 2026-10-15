@@ -78,7 +78,6 @@ function saveRegistry(): void {
     } catch (cleanupError) {
       console.error("[REGISTRO] No se pudo limpiar el archivo temporal:", cleanupError);
     }
-    throw new Error("No se pudo persistir el registro de grupos.", { cause: error });
   }
 }
 
@@ -90,17 +89,12 @@ loadRegistry();
  */
 export function registerGroup(chatId: number, title: string): void {
   const existing = registry.get(chatId);
-  const updated: RegistryGroup = existing
-    ? { ...existing, title }
-    : { id: chatId, title, adminUserIds: new Set() };
-  registry.set(chatId, updated);
-  try {
-    saveRegistry();
-  } catch (error) {
-    if (existing) registry.set(chatId, existing);
-    else registry.delete(chatId);
-    throw error;
+  if (existing) {
+    existing.title = title;
+  } else {
+    registry.set(chatId, { id: chatId, title, adminUserIds: new Set() });
   }
+  saveRegistry();
 }
 
 /**
@@ -108,14 +102,8 @@ export function registerGroup(chatId: number, title: string): void {
  * ya no administrador). También se persiste.
  */
 export function unregisterGroup(chatId: number): void {
-  const existing = registry.get(chatId);
   registry.delete(chatId);
-  try {
-    saveRegistry();
-  } catch (error) {
-    if (existing) registry.set(chatId, existing);
-    throw error;
-  }
+  saveRegistry();
 }
 
 /**
@@ -125,13 +113,9 @@ export function unregisterGroup(chatId: number): void {
  */
 export function markUserAsAdmin(chatId: number, userId: number): void {
   const group = registry.get(chatId);
-  if (!group || group.adminUserIds.has(userId)) return;
-  group.adminUserIds.add(userId);
-  try {
+  if (group) {
+    group.adminUserIds.add(userId);
     saveRegistry();
-  } catch (error) {
-    group.adminUserIds.delete(userId);
-    throw error;
   }
 }
 

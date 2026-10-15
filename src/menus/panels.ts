@@ -10,9 +10,7 @@ import type {
   IndexedUser,
   PromotionConfig,
   WarningEntry,
-  AutomaticMessageConfig,
 } from "../storage/types.js";
-import type { ActivityStats } from "../services/activity.js";
 import type { ResolvedUser, UserCardData } from "../utils/users.js";
 import type { MyContext } from "../types.js";
 import { getGroupData } from "../storage/index.js";
@@ -20,9 +18,12 @@ import {
   BUYING_SIGNAL_EXAMPLES,
   SELLING_SIGNAL_EXAMPLES,
 } from "../filters/detector.js";
-import type { VerifiedUser, VerifiedUserPermissions } from "../services/verified-users.js";
-import { buildUserStatusBadges } from "../services/verified-user-policy.js";
+import type { ActivityStats } from "../services/activity.js";
 import type { VerifiedTagReview } from "../services/verified-tag-reviews.js";
+import type {
+  VerifiedUser,
+  VerifiedUserPermissions,
+} from "../services/verified-users.js";
 
 export interface Panel {
   text: string;
@@ -33,7 +34,7 @@ export interface Panel {
  * Esquema de callback_data del panel.
  *   menu:main / menu:home        -> panel principal
  *   menu:sub:<seccion>           -> abre un submenú
- *   menu:action:<seccion>:<id>   -> acción de sección
+ *   menu:action:<seccion>:<id>   -> acción aún en desarrollo
  *   menu:groups                  -> selector de grupos
  *   menu:group:<chat_id>         -> selecciona un grupo
  *
@@ -49,7 +50,6 @@ export const MenuAction = {
     `${MENU_PREFIX}:action:${section}:${id}`,
   groups: `${MENU_PREFIX}:groups`,
   group: (chatId: number): string => `${MENU_PREFIX}:group:${chatId}`,
-  help: (section: string): string => `${MENU_PREFIX}:help:${section}`,
 };
 
 /**
@@ -132,44 +132,6 @@ export const InactivityAction = {
   cancel: "ia:cancel",
 };
 
-export const VerifiedAction = {
-  add: "vu:add",
-  confirmAdd: (userId: number): string => `vu:confirm:${userId}`,
-  cancelAdd: "vu:cancel",
-  revoke: (userId: number): string => `vu:revoke:${userId}`,
-  revokeConfirm: (userId: number): string => `vu:revoke-confirm:${userId}`,
-  revokeApply: (userId: number): string => `vu:revoke-apply:${userId}`,
-  revokedList: "vu:revoked-list",
-  revokedPage: (page: number): string => `vu:revoked-list:${page}`,
-  reactivateConfirm: (userId: number): string => `vu:reactivate-confirm:${userId}`,
-  reactivateApply: (userId: number, permissionSnapshot: string): string =>
-    `vu:reactivate-apply:${userId}:${permissionSnapshot}`,
-  permissionApply: (
-    userId: number,
-    permission: keyof VerifiedUserPermissions,
-    value: boolean,
-    previousValue: boolean,
-  ): string =>
-    `vu:permission-apply:${userId}:${permission}:${value ? 1 : 0}:${previousValue ? 1 : 0}`,
-  kickConfirm: (userId: number): string => `vu:kick-confirm:${userId}`,
-  kickApply: (userId: number): string => `vu:kick-apply:${userId}`,
-  muteIndefiniteConfirm: (userId: number): string => `vu:mute-indefinite-confirm:${userId}`,
-  muteIndefinite: (userId: number): string => `vu:mute-indefinite:${userId}`,
-  revokePermissions: (userId: number): string => `vu:revoke-permissions:${userId}`,
-  toggle: (userId: number, permission: keyof VerifiedUserPermissions): string =>
-    `vu:toggle:${userId}:${permission}`,
-};
-
-export const UserAction = {
-  all: "us:all",
-  new: "us:new",
-  active: "us:active",
-  inactive: "us:inactive",
-  admins: "us:admins",
-  verified: "us:verified",
-  scan: "us:scan",
-};
-
 const PANEL_TITLE = "🛡️ *PANEL DE ADMINISTRACIÓN*";
 
 /**
@@ -196,7 +158,7 @@ function formatUserName(user: ResolvedUser): string {
 interface MenuItem {
   id: string;
   label: string;
-  /** Callback_data de la acción implementada para este botón. */
+  /** Callback_data alternativo. Si no existe, se muestra "en desarrollo". */
   cb?: string;
 }
 
@@ -204,17 +166,16 @@ interface MenuItem {
  * Categorías del panel principal, en el orden solicitado.
  */
 const CATEGORIES: MenuItem[] = [
-{ id: "usuarios", label: "👥 Usuarios" },
-{ id: "filtros", label: "🚫 Filtros" },
-{ id: "antispam", label: "🛡️ Anti-spam" },
-{ id: "inactividad", label: "⏰ Inactividad" },
-{ id: "limpieza", label: "🧹 Limpieza" },
-{ id: "actividad", label: "📊 Actividad" },
-{ id: "config", label: "⚙️ Configuración" },
-{ id: "cerbero", label: "🛡️ Seguridad Cerbero" },
-{ id: "verificadas", label: "👑 Verificadas" },
-{ id: "mensajes", label: "📢 Mensajes automáticos" },
-{ id: "ayuda", label: "🆘 Ayuda" },
+  { id: "usuarios", label: "👥 Usuarios" },
+  { id: "filtros", label: "🚫 Filtros" },
+  { id: "antispam", label: "🛡️ Anti-spam" },
+  { id: "inactividad", label: "⏰ Inactividad" },
+  { id: "limpieza", label: "👻 Limpieza" },
+  { id: "actividad", label: "📊 Actividad" },
+  { id: "reglas", label: "📜 Reglas" },
+  { id: "bienvenida", label: "👋 Bienvenida" },
+  { id: "config", label: "⚙️ Configuración" },
+  { id: "ayuda", label: "❓ Ayuda" },
 ];
 
 interface SubmenuDef {
@@ -236,13 +197,6 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     items: [
       { id: "buscar", label: "🔎 Buscar usuario", cb: ModAction.search },
       { id: "lista", label: "👥 Usuarios detectados", cb: ModAction.users(0) },
-      { id: "todos", label: "📋 Todos", cb: UserAction.all },
-      { id: "nuevos", label: "🆕 Nuevos", cb: UserAction.new },
-      { id: "activos", label: "🟢 Activos", cb: UserAction.active },
-      { id: "inactivos", label: "⚪ Inactivos", cb: UserAction.inactive },
-      { id: "admins", label: "🛡️ Administradores", cb: UserAction.admins },
-      { id: "verificadas", label: "👑 Verificadas", cb: UserAction.verified },
-      { id: "escanear", label: "🔄 Escanear grupo", cb: UserAction.scan },
       { id: "baneados", label: "🚫 Usuarios baneados", cb: ModAction.unbanList },
     ],
   },
@@ -259,6 +213,7 @@ const SUBMENUS: Record<string, SubmenuDef> = {
         label: "🗑️ Eliminar palabra/frase",
         cb: FilterAction.deletePage(0),
       },
+      { id: "accion", label: "⚙️ Configurar acción" },
       { id: "activar", label: "🔔 Activar/desactivar filtros", cb: FilterAction.toggle },
       { id: "ilegal", label: "🔴 Filtro de contenido ilegal", cb: FilterAction.illegal },
     ],
@@ -268,11 +223,11 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Anti-spam",
     description: "Protección contra spam, enlaces y flujo de mensajes.",
     items: [
-      { id: "activar", label: "🛡️ Activar/desactivar", cb: AntiSpamAction.toggle },
-      { id: "menciones", label: "👥 Máx. menciones", cb: AntiSpamAction.mentions },
-      { id: "enlaces", label: "🔗 Control de enlaces", cb: AntiSpamAction.links },
-      { id: "repetidos", label: "📩 Control de mensajes repetidos", cb: AntiSpamAction.repeated },
-      { id: "automatico", label: "🤖 Detección automática", cb: AntiSpamAction.automated },
+      { id: "activar", label: "🛡️ Activar/desactivar" },
+      { id: "sensibilidad", label: "⚙️ Configurar sensibilidad" },
+      { id: "enlaces", label: "🔗 Control de enlaces" },
+      { id: "repetidos", label: "📩 Control de mensajes repetidos" },
+      { id: "flood", label: "⚡ Control de flood" },
     ],
   },
   inactividad: {
@@ -280,291 +235,77 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Inactividad",
     description: "Detecta y gestiona usuarios inactivos del grupo.",
     items: [
-      { id: "activar", label: "⏰ Activar/desactivar", cb: InactivityAction.toggle },
-      { id: "periodo", label: "📅 Configurar período", cb: InactivityAction.config },
-      { id: "inactivos", label: "👥 Ver usuarios inactivos", cb: InactivityAction.list(0) },
-      { id: "limpiar", label: "🧹 Limpiar inactivos", cb: InactivityAction.clean },
+      { id: "activar", label: "⏰ Activar/desactivar" },
+      { id: "periodo", label: "📅 Configurar período" },
+      { id: "inactivos", label: "👥 Ver usuarios inactivos" },
+      { id: "limpiar", label: "🧹 Limpiar inactivos" },
     ],
   },
   limpieza: {
-    icon: "🧹",
+    icon: "👻",
     title: "Limpieza",
-    description: "Elimina mensajes recientes que ZEUS puede localizar.",
+    description: "Detección y limpieza de cuentas eliminadas y sin actividad.",
     items: [
-      { id: "limpiar", label: "🧹 Limpiar mensajes recientes", cb: ModAction.clean },
-      { id: "ayuda", label: "ℹ️ Límites de limpieza", cb: ModAction.deleteHelp },
+      { id: "detectar", label: "👻 Detectar cuentas eliminadas" },
+      { id: "limpiar", label: "🧹 Limpiar cuentas eliminadas" },
+      { id: "auto", label: "⚙️ Configuración automática" },
     ],
   },
   actividad: {
     icon: "📊",
     title: "Actividad",
-    description: "Consulta la actividad observada del grupo.",
+    description: "Estadísticas y registro de eventos del grupo.",
     items: [
-      { id: "resumen", label: "📊 Resumen", cb: MenuAction.action("actividad", "resumen") },
-      { id: "actualizar", label: "🔄 Actualizar", cb: MenuAction.action("actividad", "actualizar") },
+      { id: "estadisticas", label: "📈 Estadísticas del grupo" },
+      { id: "activos", label: "👥 Usuarios más activos" },
+      { id: "mensajes", label: "📨 Mensajes registrados" },
+      { id: "moderacion", label: "🛡️ Acciones de moderación" },
+      { id: "eventos", label: "📋 Registro de eventos" },
+    ],
+  },
+  reglas: {
+    icon: "📜",
+    title: "Reglas",
+    description: "Gestiona las reglas publicadas del grupo.",
+    items: [
+      { id: "ver", label: "📜 Ver reglas" },
+      { id: "editar", label: "✏️ Editar reglas" },
+      { id: "publicar", label: "📌 Publicar reglas" },
+      { id: "eliminar", label: "🗑️ Eliminar reglas" },
+    ],
+  },
+  bienvenida: {
+    icon: "👋",
+    title: "Bienvenida",
+    description: "Configura el mensaje de bienvenida del grupo.",
+    items: [
+      { id: "activar", label: "👋 Activar/desactivar" },
+      { id: "editar", label: "✏️ Editar mensaje" },
+      { id: "probar", label: "🧪 Probar bienvenida" },
     ],
   },
   config: {
     icon: "⚙️",
     title: "Configuración",
-    description: "Consulta la configuración activa del grupo.",
+    description: "Ajustes generales y avanzados del bot en este grupo.",
     items: [
-      { id: "ver", label: "⚙️ Ver configuración", cb: "cfg:config_view" },
-      { id: "antispam", label: "🛡️ Alternar anti-spam", cb: "cfg:antispam_toggle" },
-      { id: "enlaces", label: "🔗 Alternar enlaces", cb: "cfg:links_toggle" },
-      { id: "multimedia", label: "🖼️ Alternar multimedia repetida", cb: "cfg:multimedia_toggle" },
-      { id: "nuevos", label: "👋 Alternar nuevos usuarios", cb: "cfg:new_users_toggle" },
-      { id: "recurrencia", label: "🔁 Cambiar recurrencia", cb: "cfg:recurrence_cycle" },
-      { id: "emergencia", label: "🚨 Alternar emergencia", cb: "cfg:emergency_toggle" },
-      { id: "menciones", label: "💬 Cambiar límite de menciones", cb: "cfg:mentions_edit" },
-      { id: "cerbero_estado", label: "🛡️ Alternar protección Cerbero", cb: "cfg:cerbero_toggle" },
-      { id: "cerbero_media", label: "🖼️ Alternar multimedia Cerbero", cb: "cfg:cerbero_media_toggle" },
-      { id: "cerbero", label: "🛡️ Sincronizar configuración Cerbero", cb: "cfg:cerbero_sync" },
-      { id: "verified", label: "👑 Configurar Verificadas", cb: "cfg:verified_view" },
-    ],
-  },
-  mensajes: {
-    icon: "📢",
-    title: "Mensajes automáticos",
-    description: "Consulta el estado de los mensajes automáticos del grupo.",
-    items: [
-      { id: "estado", label: "📢 Ver estado", cb: "cfg:auto_view" },
-      { id: "crear", label: "➕ Crear/editar mensaje", cb: "cfg:auto_edit" },
-      { id: "activar", label: "🟢 Activar/desactivar", cb: "cfg:auto_toggle" },
-      { id: "frecuencia", label: "⏱️ Cambiar frecuencia", cb: "cfg:auto_frequency" },
-      { id: "eliminar", label: "🗑️ Eliminar mensaje", cb: "cfg:auto_delete" },
-      { id: "ahora", label: "📨 Enviar ahora", cb: "cfg:auto_send" },
-    ],
-  },
-  verificadas: {
-    icon: "👑",
-    title: "Verificadas",
-    description: "Usuarios de confianza y excepciones internas por grupo.",
-    items: [
-      { id: "lista", label: "👑 Ver verificadas", cb: "vu:list" },
-      { id: "agregar", label: "➕ Agregar verificada", cb: VerifiedAction.add },
-    ],
-  },
-  cerbero: {
-    icon: "🛡️",
-    title: "Seguridad Cerbero",
-    description: "Estado, estadísticas y eventos del ejecutor de seguridad.",
-    items: [
-      { id: "estado", label: "📡 Estado del bot", cb: MenuAction.action("cerbero", "estado") },
-      { id: "estadisticas", label: "📊 Estadísticas últimas 24h", cb: MenuAction.action("cerbero", "estadisticas") },
-      { id: "eventos", label: "📋 Últimos eventos", cb: MenuAction.action("cerbero", "eventos") },
+      { id: "grupo", label: "🌐 Configuración del grupo" },
+      { id: "moderacion", label: "🛡️ Configuración de moderación" },
+      { id: "admins", label: "👥 Administradores" },
+      { id: "notificaciones", label: "🔔 Notificaciones" },
+      { id: "avanzado", label: "⚙️ Configuración avanzada" },
     ],
   },
   ayuda: {
-    icon: "🆘",
+    icon: "❓",
     title: "Ayuda",
-    description: "Accesos rápidos para emergencias y recuperación.",
+    description: "Información sobre el panel y los permisos del bot.",
     items: [
-      { id: "emergencias", label: "🚨 Emergencias", cb: MenuAction.help("emergencias") },
-      { id: "recovery", label: "🔐 Recovery Key", cb: MenuAction.help("recovery") },
+      { id: "comandos", label: "📖 Ver comandos" },
+      { id: "permisos", label: "🛡️ Sobre permisos" },
     ],
   },
 };
-
-export function buildHelpEmergenciesPanel(): Panel {
-  return {
-    text:
-      "🆘 *AYUDA*\n\n" +
-      "🚨 *Emergencias*\n\n" +
-      "/menu — Abrir el panel administrativo.\n" +
-      "/borrar — Eliminar un mensaje respondiendo a él.\n" +
-      "Los comandos /mute, /unmute, /ban, /unban y /kick no están implementados como comandos independientes; sus acciones están disponibles desde el panel.\n\n" +
-      "Los comandos de administración requieren permisos de administrador cuando corresponda.",
-    keyboard: new InlineKeyboard()
-      .text("⬅️ Volver", MenuAction.sub("ayuda")),
-  };
-}
-
-export function buildHelpRecoveryPanel(): Panel {
-  return {
-    text:
-      "🆘 *AYUDA*\n\n" +
-      "🔐 *Recovery Key*\n\n" +
-      "La Recovery Key sirve exclusivamente para recuperar el System Owner si pierdes el acceso a tu cuenta de Telegram.\n\n" +
-      "No sirve para administrar grupos ni concede permisos de Telegram. Es de un solo uso.\n\n" +
-      "Puedes crear o recuperar una cuenta nueva de Telegram, abrir Zeus desde esa cuenta y seleccionar “Recuperar System Owner”. Después introduce la Recovery Key para transferir el System Owner a la nueva cuenta. La clave utilizada queda consumida.",
-    keyboard: new InlineKeyboard()
-      .text("🔐 Recuperar System Owner", MenuAction.help("recover"))
-      .row()
-      .text("⬅️ Volver", MenuAction.sub("ayuda")),
-  };
-}
-
-export function buildAutomaticMessagePanel(
-  config: AutomaticMessageConfig | undefined,
-  groupTitle?: string,
-): Panel {
-  const keyboard = new InlineKeyboard()
-    .text("✏️ Crear/editar", "cfg:auto_edit").row()
-    .text("🟢 Activar/desactivar", "cfg:auto_toggle").row()
-    .text("⏱️ Cambiar frecuencia", "cfg:auto_frequency").row()
-    .text("📨 Enviar ahora", "cfg:auto_send").row()
-    .text("🗑️ Eliminar", "cfg:auto_delete").row()
-    .add(...buildNavRow().inline_keyboard.flat());
-  const body = config
-    ? `📢 ${config.message}\n\nEstado: ${config.enabled ? "activo" : "inactivo"}\nFrecuencia: ${config.intervalMinutes ?? "no definida"} min`
-    : "No hay mensaje automático configurado.";
-  return { text: `${formatGroupHeader(groupTitle)}\n\n${body}`, keyboard };
-}
-
-export function buildVerifiedTitleConfigPanel(
-  _titles: string[],
-  _autoDetect: boolean,
-  _autoRemove: boolean,
-  groupTitle?: string,
-  recognizedTags: string[] = ["Verificada"],
-  tagSyncEnabled = false,
-  pendingCount = 0,
-): Panel {
-  const tagList = recognizedTags.length ? recognizedTags.join(", ") : "ninguna";
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n⚙️ *VERIFICADAS*\n\n` +
-      "La verificación se reconoce únicamente desde el registro activo de ZEUS.\n" +
-      "La etiqueta de miembro solo genera una candidata para revisión; no concede ni revoca permisos.\n\n" +
-      `Etiquetas de miembro: ${escapeMarkdown(tagList)}\n` +
-      `Detección por etiquetas: ${tagSyncEnabled ? "activada" : "desactivada"}\n` +
-      `Candidatas pendientes: ${pendingCount}\n\n` +
-      "Los títulos administrativos (custom_title) no se consideran etiquetas.",
-    keyboard: new InlineKeyboard()
-      .text("🏷️ Editar etiquetas", "cfg:verified_tags_edit").row()
-      .text(
-        tagSyncEnabled ? "🟢 Desactivar detección" : "🔴 Activar detección",
-        "cfg:verified_tags_toggle",
-      ).row()
-      .text(`👀 Candidatas y discrepancias (${pendingCount})`, "vu:candidates").row()
-      .text("🔄 Sincronizar ahora", "cfg:verified_sync").row()
-      .add(...buildNavRow().inline_keyboard.flat()),
-  };
-}
-
-export function buildVerifiedTagCandidatesPanel(
-  reviews: VerifiedTagReview[],
-  page: number,
-  groupTitle?: string,
-): Panel {
-  const pageSize = 8;
-  const pageCount = Math.max(1, Math.ceil(reviews.length / pageSize));
-  const currentPage = Math.min(Math.max(page, 0), pageCount - 1);
-  const pageReviews = reviews.slice(
-    currentPage * pageSize,
-    (currentPage + 1) * pageSize,
-  );
-  const keyboard = new InlineKeyboard();
-  for (const review of pageReviews) {
-    if (
-      review.status === "pending" ||
-      review.status === "revoked_tag" ||
-      review.status === "approving"
-    ) {
-      keyboard
-        .text(
-          review.status === "revoked_tag"
-            ? `♻️ Aprobar reactivación ${review.user_id}`
-            : review.status === "approving"
-              ? `⏳ Comprobar ${review.user_id}`
-              : `✅ Aprobar ${review.user_id}`,
-          `vu:review:approve:${review.user_id}`,
-        );
-      if (review.status === "pending") {
-        keyboard.text(
-          `❌ Rechazar ${review.user_id}`,
-          `vu:review:reject:${review.user_id}`,
-        );
-      }
-      keyboard.row();
-    }
-  }
-  if (pageCount > 1) {
-    if (currentPage > 0) {
-      keyboard.text("⬅️ Anterior", `vu:candidates:${currentPage - 1}`);
-    }
-    if (currentPage < pageCount - 1) {
-      keyboard.text("Siguiente ➡️", `vu:candidates:${currentPage + 1}`);
-    }
-    keyboard.row();
-  }
-  keyboard
-    .text("⬅️ Volver a verificadas", "cfg:verified_view")
-    .row()
-    .add(...buildNavRow().inline_keyboard.flat());
-
-  const body = pageReviews.length === 0
-    ? "No hay candidatas ni discrepancias registradas."
-    : pageReviews.map((review, index) => {
-        const name = review.username
-          ? `@${review.username}`
-          : review.display_name || `ID ${review.user_id}`;
-        const state = verifiedTagReviewLabel(review.status);
-        const tag = review.observed_tag ?? "(etiqueta ausente)";
-        return `${currentPage * pageSize + index + 1}. ${escapeMarkdown(name)}\n` +
-          `   ID: ${review.user_id}\n` +
-          `   Etiqueta observada: ${escapeMarkdown(tag)}\n` +
-          `   Estado: ${state}\n` +
-          `   Detectado: ${formatVerifiedDate(review.last_seen_at)}`;
-      }).join("\n\n");
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n🏷️ *CANDIDATAS Y DISCREPANCIAS*\n\n` +
-      `${body}\n\nPágina ${currentPage + 1}/${pageCount}`,
-    keyboard,
-  };
-}
-
-export function buildVerifiedTagReviewConfirmPanel(
-  review: VerifiedTagReview,
-  decision: "approve" | "reject",
-  groupTitle?: string,
-): Panel {
-  const action = decision === "approve" ? "aprobar" : "rechazar";
-  const callback =
-    `vu:review-confirm:${decision}:${review.user_id}`;
-  const name = review.username
-    ? `@${review.username}`
-    : review.display_name || `ID ${review.user_id}`;
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n` +
-      `⚠️ *CONFIRMAR ${action.toLocaleUpperCase()} CANDIDATA*\n\n` +
-      `Usuario: ${escapeMarkdown(name)}\n` +
-      `ID: ${review.user_id}\n` +
-      `Etiqueta observada: ${escapeMarkdown(review.observed_tag ?? "(ausente)")}\n\n` +
-      (decision === "approve"
-        ? review.status === "revoked_tag"
-          ? "El registro interno está revocado. ZEUS comprobará otra vez el grupo, la identidad y la etiqueta; al confirmar, se reactivará mediante la aprobación manual y conservará sus permisos."
-          : review.status === "approving"
-            ? "La candidata puede estar siendo procesada. ZEUS comprobará el estado y solo continuará si la reserva anterior expiró; no se duplicará la aprobación."
-            : "ZEUS volverá a comprobar el grupo, la identidad y la etiqueta. La aprobación manual añadirá la verificación interna."
-        : "La candidata se rechazará sin cambiar el estado de verificación ni los permisos."),
-    keyboard: new InlineKeyboard()
-      .text(`Confirmar ${action}`, callback)
-      .text("Cancelar", "vu:candidates"),
-  };
-}
-
-function verifiedTagReviewLabel(status: VerifiedTagReview["status"]): string {
-  const labels: Record<VerifiedTagReview["status"], string> = {
-    pending: "⏳ Pendiente de revisión",
-    approving: "⏳ Comprobación en curso",
-    approved: "✅ Aprobada",
-    rejected: "❌ Rechazada",
-    matched: "✅ Coincide con el registro interno",
-    tag_absent: "⚠️ La candidata ya no tiene la etiqueta",
-    missing_tag: "⚠️ Verificada sin etiqueta reconocida",
-    revoked_tag: "⚠️ Registro revocado con etiqueta presente",
-    uncertain: "❔ Estado incierto",
-  };
-  return labels[status];
-}
-
-function escapeMarkdown(value: string): string {
-  return value.replace(/([_*`[\]])/g, "\\$1");
-}
 
 /**
  * Fila de navegación común: siempre permite salir del submenú.
@@ -586,7 +327,6 @@ export function buildMainPanel(groupTitle?: string): Panel {
     keyboard.text(category.label, MenuAction.sub(category.id));
     keyboard.row();
   }
-
   keyboard.text("🔄 Cambiar grupo", MenuAction.groups);
 
   return {
@@ -594,63 +334,6 @@ export function buildMainPanel(groupTitle?: string): Panel {
       `${formatGroupHeader(groupTitle)}\n\n` +
       "Selecciona una categoría para gestionar el grupo:\n\n" +
       "ℹ️ Solo los administradores del grupo pueden usar este panel.",
-    keyboard,
-  };
-}
-
-export function buildActivityPanel(
-  stats: ActivityStats,
-  groupTitle?: string,
-): Panel {
-  const topUsers = stats.topUsers.length
-    ? stats.topUsers
-        .map((user, index) => `${index + 1}. ${user.name}${user.username ? ` (@${user.username})` : ""}: ${user.count}`)
-        .join("\n")
-    : "Sin actividad registrada.";
-  const last7 = stats.byDay7.map((day) => `${day.label}: ${day.count}`).join("\n");
-  const last30 = stats.byDay30.map((day) => `${day.label}: ${day.count}`).join("\n");
-  const peak = [...stats.byHour].sort((a, b) => b.count - a.count)[0];
-  const previous = stats.messagesPrevious7Days;
-  const trend = stats.messagesLast7Days > previous
-    ? "📈 En aumento"
-    : stats.messagesLast7Days < previous
-      ? "📉 En descenso"
-      : "➡️ Estable";
-  const keyboard = new InlineKeyboard()
-    .text("🔄 Actualizar", MenuAction.action("actividad", "actualizar")).row()
-    .text("⬅️ Volver", MenuAction.sub("actividad"))
-    .text("🏠 Inicio", MenuAction.home);
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n` +
-      `📊 *Actividad del grupo*\n\n` +
-      `Mensajes registrados: ${stats.totalMessages}\n` +
-      `Usuarios activos: ${stats.activeUsers}\n` +
-      `Hoy: ${stats.messagesToday}\n` +
-      `Últimos 7 días: ${stats.messagesLast7Days}\n` +
-      `Últimos 30 días: ${stats.messagesLast30Days}\n` +
-      `Tendencia semanal: ${trend}\n` +
-      `Hora pico: ${peak && peak.count > 0 ? `${String(peak.hour).padStart(2, "0")}:00 (${peak.count})` : "Sin datos"}\n\n` +
-      `👥 *Usuarios más activos*\n${topUsers}\n\n` +
-      `📅 *Últimos 7 días*\n${last7}\n\n` +
-      `🗓️ *Últimos 30 días*\n${last30}\n\n` +
-      "ℹ️ Datos locales observados por ZEUS; máximo 10.000 mensajes por grupo. " +
-      "No representan el historial completo y pueden estar truncados.",
-    keyboard,
-  };
-}
-
-export function buildActivityUnavailablePanel(groupTitle?: string): Panel {
-  const keyboard = new InlineKeyboard()
-    .text("🔄 Reintentar", MenuAction.action("actividad", "actualizar")).row()
-    .text("⬅️ Volver", MenuAction.sub("actividad"))
-    .text("🏠 Inicio", MenuAction.home);
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n` +
-      "⚠️ *Datos de actividad no disponibles*\n\n" +
-      "No se pudieron leer los datos locales del grupo. No se muestran estadísticas " +
-      "para evitar confundir un error de lectura con actividad cero. Inténtalo de nuevo.",
     keyboard,
   };
 }
@@ -663,6 +346,9 @@ export function buildSubmenuPanel(
   id: string,
   groupTitle?: string,
 ): Panel | undefined {
+  if (id === "ayuda") {
+    return buildHelpPanel(groupTitle);
+  }
   const def = SUBMENUS[id];
   if (!def) {
     return undefined;
@@ -676,11 +362,7 @@ export function buildSubmenuPanel(
     );
     keyboard.row();
   }
-  if (id === "ayuda") {
-    keyboard.text("⬅️ Volver", MenuAction.main);
-  } else {
-    keyboard.add(...buildNavRow().inline_keyboard.flat());
-  }
+  keyboard.add(...buildNavRow().inline_keyboard.flat());
 
   return {
     text:
@@ -692,53 +374,23 @@ export function buildSubmenuPanel(
   };
 }
 
-export function buildCerberoPanel(
-  status: {
-    status: string;
-    version?: string;
-    lastHeartbeatAt?: string;
-  } | undefined,
-  stats: {
-    deletedMessages: number;
-    mutedUsers: number;
-    bannedUsers: number;
-    kickedUsers: number;
-    alerts: number;
-  },
-  events: Array<{
-    eventType: string;
-    details: Record<string, unknown>;
-    createdAt: string;
-  }>,
-  groupTitle?: string,
-): Panel {
-  const online = status?.status === "online" &&
-    Boolean(status.lastHeartbeatAt) &&
-    Date.now() - Date.parse(status.lastHeartbeatAt as string) <= 120000;
-  const lastHeartbeat = status?.lastHeartbeatAt
-    ? new Date(status.lastHeartbeatAt).toLocaleString("es-ES")
-    : "Sin conexión registrada";
-  const eventText = events.length === 0
-    ? "Sin eventos recientes."
-    : events.map((event) =>
-        `• ${event.eventType} · ${new Date(event.createdAt).toLocaleString("es-ES")}`,
-      ).join("\n");
+function buildHelpPanel(groupTitle?: string): Panel {
+  const keyboard = new InlineKeyboard()
+    .text("🔐 Generar Recovery Key", MenuAction.action("ayuda", "generar-clave"))
+    .row()
+    .text("🔐 Recuperar System Owner", MenuAction.action("ayuda", "recuperar"))
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
   return {
     text:
-      `${formatGroupHeader(groupTitle)}\n\n` +
-      "🛡️ *SEGURIDAD CERBERO*\n\n" +
-      `Estado: ${online ? "🟢 Online" : "🔴 Offline"}\n` +
-      `Versión: ${status?.version ?? "desconocida"}\n` +
-      `Última conexión: ${lastHeartbeat}\n\n` +
-      "📊 *Últimas 24 horas*\n" +
-      `🗑 Mensajes eliminados: ${stats.deletedMessages}\n` +
-      `🔇 Usuarios muteados: ${stats.mutedUsers}\n` +
-      `🚫 Baneos: ${stats.bannedUsers}\n` +
-      `👢 Expulsiones: ${stats.kickedUsers}\n` +
-      `⚠️ Alertas: ${stats.alerts}\n\n` +
-      "📋 *Últimos eventos*\n" +
-      eventText,
-    keyboard: buildNavRow(),
+      `${formatGroupHeader(groupTitle)}\n\n❓ *AYUDA Y COMANDOS*\n\n` +
+      "🚨 Emergencias\n" +
+      "La recuperación de System Owner solo debe usarse si perdiste el acceso a la cuenta propietaria.\n\n" +
+      "🔐 Recovery Key: genera una clave de un solo uso con /zeus-generar-recuperacion.\n" +
+      "🔐 Recuperar System Owner: envía /zeus-recuperar y luego la clave desde el chat privado del bot.\n\n" +
+      "Para eliminar un mensaje responde a él con:\n   /borrar\n\n" +
+      "/mute, /unmute, /ban, /unban y /kick no están implementados en el grupo.",
+    keyboard,
   };
 }
 
@@ -762,315 +414,6 @@ export function buildGroupPickerPanel(groups: AdministrableGroup[]): Panel {
   return { text, keyboard };
 }
 
-function permissionLabel(key: keyof VerifiedUserPermissions): string {
-  const labels: Record<keyof VerifiedUserPermissions, string> = {
-    can_post: "Publicaciones",
-    can_send_media: "Multimedia",
-    can_send_links: "Enlaces (sin aplicar)",
-    bypass_antispam: "Spam ordinario exento",
-    bypass_promotion_filter: "Libertad promocional fija",
-    bypass_illegal_filter: "Ilegal no crítico exento",
-    bypass_automatic_deletion: "Eliminación no crítica exenta",
-  };
-  return labels[key];
-}
-
-export function buildVerifiedUsersPanel(users: VerifiedUser[], groupTitle?: string): Panel {
-  const keyboard = new InlineKeyboard()
-    .text("➕ Agregar verificada", VerifiedAction.add)
-    .row()
-    .text("♻️ Ver registros revocados", VerifiedAction.revokedList)
-    .row();
-  for (const user of users) {
-    keyboard.text(
-      `👑 ${user.username ? `@${user.username}` : user.display_name || `ID ${user.user_id}`}`,
-      `vu:view:${user.user_id}`,
-    ).row();
-  }
-  keyboard.add(...buildNavRow().inline_keyboard.flat());
-  const list = users.length === 0
-    ? "No hay usuarios verificados en este grupo."
-    : users.map((user, index) => {
-        const name = user.username ? `@${user.username}` : user.display_name || `ID ${user.user_id}`;
-        return `${index + 1}. 👑 ${name}\n` +
-          `   ID: ${user.user_id}\n` +
-          "   Estado: ✅ Verificada\n" +
-          `   Registro ZEUS: ${formatVerifiedDate(user.created_at)}`;
-      }).join("\n");
-  return {
-    text: `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n${list}`,
-    keyboard,
-  };
-}
-
-function formatVerifiedDate(value: string): string {
-  return new Intl.DateTimeFormat("es-ES", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
-export function buildVerifiedAddConfirmPanel(
-  user: { id: number; username?: string; name?: string },
-  groupTitle?: string,
-): Panel {
-  const name = user.username
-    ? `@${user.username}`
-    : user.name || `ID ${user.id}`;
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n` +
-      "👑 *CONFIRMAR VERIFICACIÓN*\n\n" +
-      `Usuario: ${name}\nID: ${user.id}\n\n` +
-      "Confirma que esta es la persona correcta.",
-    keyboard: new InlineKeyboard()
-      .text("✅ Confirmar", VerifiedAction.confirmAdd(user.id))
-      .text("❌ Cancelar", VerifiedAction.cancelAdd),
-  };
-}
-
-export function buildVerifiedUserPanel(
-  user: VerifiedUser,
-  groupTitle?: string,
-  telegramStatus?: "creator" | "administrator" | "member" | "restricted" | "left" | "kicked",
-  details?: VerifiedUserProfileDetails,
-): Panel {
-  const permissionKeys = Object.keys(user.permissions) as Array<keyof VerifiedUserPermissions>;
-  const keyboard = new InlineKeyboard();
-  for (const key of permissionKeys) {
-    if (key === "bypass_promotion_filter" || key === "can_send_links") continue;
-    keyboard
-      .text(
-        `${user.permissions[key] ? "✅" : "❌"} ${permissionLabel(key)}`,
-        VerifiedAction.toggle(user.user_id, key),
-      )
-      .row();
-  }
-  keyboard
-    .text("🔇 Silenciar", ModAction.mute(user.user_id))
-    .text("🔊 Quitar silencio", ModAction.unmute(user.user_id))
-    .row()
-    .text("🔨 Banear", ModAction.banConfirm(user.user_id))
-    .text("♻️ Desbanear", ModAction.unban(user.user_id))
-    .row()
-    .text("👢 Expulsar", VerifiedAction.kickConfirm(user.user_id))
-    .text("🔇 Silencio indefinido", VerifiedAction.muteIndefiniteConfirm(user.user_id))
-    .row()
-    .text("⚠️ Revocar verificación", VerifiedAction.revokeConfirm(user.user_id))
-    .row();
-  if (telegramStatus === "administrator") {
-    keyboard.text("🛡️ Revocar permisos admin", VerifiedAction.revokePermissions(user.user_id)).row();
-  }
-  keyboard.text("⬅️ Volver", "vu:list");
-  const name = user.username ? `@${user.username}` : user.display_name || `ID ${user.user_id}`;
-  const adminStatus = telegramStatus === "creator"
-    ? "👑 Propietario"
-    : telegramStatus === "administrator"
-      ? "🛡️ Administrador"
-      : telegramStatus === "member" || telegramStatus === "restricted"
-        ? "👤 Miembro"
-        : telegramStatus === "left" || telegramStatus === "kicked"
-          ? "No es administrador"
-          : "❔ No se pudo consultar";
-  const membership =
-    telegramStatus === "member" || telegramStatus === "restricted"
-      ? "En el grupo"
-      : telegramStatus === "left" || telegramStatus === "kicked"
-        ? "Fuera del grupo"
-        : "No confirmado";
-  const permissionText = permissionKeys.map((key) => {
-    if (key === "bypass_promotion_filter") {
-      return "• Libertad promocional ✅ fija para toda verificada";
-    }
-    if (key === "can_send_links") {
-      return `• Enlaces ordinarios ${user.permissions[key] ? "✅" : "❌"} (no aplicado: falta clasificador compartido de intención)`;
-    }
-    return `• ${permissionLabel(key)} ${user.permissions[key] ? "✅" : "❌"}`;
-  }).join("\n");
-  const warningLines = details?.warnings
-    ? details.warnings.length
-      ? details.warnings.slice(-5).reverse().map((warning) =>
-        `• ${formatVerifiedDate(warning.date)} — ${escapeMarkdown(warning.reason || "Advertencia")}` +
-        (warning.revokedAt ? " (revocada)" : ""),
-      ).join("\n")
-      : "Sin advertencias registradas."
-    : "Historial de advertencias no disponible.";
-  const eventLines = details?.events
-    ? details.events.length
-      ? details.events.slice(0, 5).map((event) =>
-        `• ${formatVerifiedDate(event.createdAt)} — ${escapeMarkdown(event.eventType)}: ` +
-        `${escapeMarkdown(String(event.details.result ?? event.details.actionPerformed ?? "registrado"))}`,
-      ).join("\n")
-      : "Sin eventos de seguridad registrados."
-    : "Historial de eventos no disponible.";
-  const commandLines = details?.commands
-    ? details.commands.length
-      ? details.commands.slice(0, 5).map((command) =>
-        `• ${formatVerifiedDate(command.created_at)} — ${escapeMarkdown(command.action)} ` +
-        `[${command.resultState}]${command.last_error ? `: ${escapeMarkdown(command.last_error)}` : ""}`,
-      ).join("\n")
-      : "Sin órdenes recientes asociadas."
-    : "Historial de órdenes no disponible.";
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADA*\n\n` +
-      `${name}\nID: ${user.user_id}\nGrupo ID: ${details?.groupId ?? user.group_id}\n` +
-      `Username actual: ${details?.currentUsername ? `@${escapeMarkdown(details.currentUsername)}` : "No disponible"} (puede cambiar)\n` +
-      `Estado ZEUS: ✅ Verificada\nEstado Telegram: ${adminStatus}; ${membership}\n` +
-      `Silencio: ${details?.muteState ?? "No confirmado"}\nBaneo: ${details?.banState ?? "No confirmado"}\n` +
-      `Registro ZEUS: ${formatVerifiedDate(user.created_at)}\n\n` +
-      `Permisos:\n${permissionText}\n\n` +
-      `Advertencias:\n${warningLines}\n\nAcciones y alertas:\n${eventLines}\n\nÓrdenes CERBERO:\n${commandLines}` +
-      (details?.historyUnavailable?.length
-        ? `\n\n⚠️ Historial parcial: ${details.historyUnavailable.join("; ")}`
-        : ""),
-    keyboard,
-  };
-}
-
-export interface VerifiedUserProfileDetails {
-  groupId: number;
-  currentUsername?: string;
-  muteState?: string;
-  banState?: string;
-  warnings?: Array<{ date: string; reason?: string; revokedAt: string | null }>;
-  events?: Array<{
-    eventType: string;
-    createdAt: string;
-    details: Record<string, unknown>;
-  }>;
-  commands?: Array<{
-    action: string;
-    created_at: string;
-    resultState: string;
-    last_error: string | null;
-  }>;
-  historyUnavailable?: string[];
-}
-
-export function buildVerifiedActionConfirmPanel(
-  user: VerifiedUser,
-  action: "revoke" | "kick" | "reactivate" | "mute-indefinite",
-  groupTitle?: string,
-): Panel {
-  const labels = {
-    revoke: ["Revocar verificación", VerifiedAction.revokeApply(user.user_id)],
-    kick: ["Expulsar del grupo", VerifiedAction.kickApply(user.user_id)],
-    reactivate: ["Reactivar verificación", ""],
-    "mute-indefinite": [
-      "Aplicar silencio indefinido",
-      VerifiedAction.muteIndefinite(user.user_id),
-    ],
-  } as const;
-  const [label, callback] = labels[action];
-  const description = action === "revoke"
-    ? "Retirará la condición verificada. No baneará ni silenciará a la persona; el historial y las sanciones se conservan."
-    : action === "kick"
-      ? "Intentará expulsar a la persona del grupo mediante la acción de moderación disponible. No cambiará su verificación."
-      : action === "mute-indefinite"
-        ? "Impedirá que la persona envíe mensajes hasta que un administrador quite el silencio. No cambiará la verificación."
-        : "Reactivará la verificación usando exactamente los permisos mostrados abajo; las sanciones no se eliminarán.";
-  const permissions = Object.entries(user.permissions)
-    .map(([key, enabled]) => `${key}=${enabled ? "sí" : "no"}`)
-    .join(", ");
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n⚠️ *Confirmar ${label.toLocaleLowerCase()}*\n\n` +
-      `ID: ${user.user_id}\n${description}` +
-      (action === "reactivate" ? `\n\nPermisos que se restaurarán: ${permissions}` : ""),
-    keyboard: new InlineKeyboard()
-      .text(
-        `✅ Confirmar ${label}`,
-        action === "reactivate"
-          ? VerifiedAction.reactivateApply(
-              user.user_id,
-              verifiedPermissionsSnapshot(user.permissions),
-            )
-          : callback,
-      )
-      .text("Cancelar", `vu:view:${user.user_id}`),
-  };
-}
-
-export function verifiedPermissionsSnapshot(
-  permissions: VerifiedUserPermissions,
-): string {
-  const keys: Array<keyof VerifiedUserPermissions> = [
-    "can_post",
-    "can_send_media",
-    "can_send_links",
-    "bypass_antispam",
-    "bypass_promotion_filter",
-    "bypass_illegal_filter",
-    "bypass_automatic_deletion",
-  ];
-  return keys.map((key) => Number(permissions[key])).join("");
-}
-
-export function buildVerifiedPermissionConfirmPanel(
-  user: VerifiedUser,
-  permission: keyof VerifiedUserPermissions,
-  value: boolean,
-  groupTitle?: string,
-): Panel {
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n⚠️ *Confirmar cambio de permiso*\n\n` +
-      `Usuario ID: ${user.user_id}\nPermiso: ${permissionLabel(permission)}\n` +
-      `Nuevo estado: ${value ? "activado" : "desactivado"}\n\n` +
-      "El cambio se aplicará solo a esta identidad en este grupo.",
-    keyboard: new InlineKeyboard()
-      .text(
-        "✅ Confirmar cambio",
-        VerifiedAction.permissionApply(
-          user.user_id,
-          permission,
-          value,
-          user.permissions[permission],
-        ),
-      )
-      .text("Cancelar", `vu:view:${user.user_id}`),
-  };
-}
-
-export function buildRevokedVerifiedUsersPanel(
-  users: VerifiedUser[],
-  groupTitle?: string,
-  page = 0,
-): Panel {
-  const keyboard = new InlineKeyboard();
-  const pageSize = 10;
-  const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
-  const currentPage = Math.max(0, Math.min(page, pageCount - 1));
-  const visibleUsers = users.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
-  for (const user of visibleUsers) {
-    keyboard
-      .text(
-        `♻️ ${user.username ? `@${user.username}` : user.display_name || `ID ${user.user_id}`}`,
-        VerifiedAction.reactivateConfirm(user.user_id),
-      )
-      .row();
-  }
-  if (currentPage > 0) {
-    keyboard.text("⬅️ Anterior", VerifiedAction.revokedPage(currentPage - 1));
-  }
-  if (currentPage < pageCount - 1) {
-    keyboard.text("Siguiente ➡️", VerifiedAction.revokedPage(currentPage + 1));
-  }
-  if (currentPage > 0 || currentPage < pageCount - 1) keyboard.row();
-  keyboard.text("⬅️ Volver a verificadas", "vu:list");
-  return {
-    text:
-      `${formatGroupHeader(groupTitle)}\n\n♻️ *REGISTROS REVOCADOS*\n\n` +
-      (users.length
-        ? visibleUsers.map((user) =>
-            `• ${user.display_name || user.username || `ID ${user.user_id}`} (ID: ${user.user_id}; revocada ${formatVerifiedDate(user.revoked_at ?? user.updated_at)})`,
-          ).join("\n") + `\n\nPágina ${currentPage + 1} de ${pageCount} · ${users.length} registros`
-        : "No hay registros revocados disponibles."),
-    keyboard,
-  };
-}
-
 /**
  * Panel de espera de entrada (buscar usuario, duración personalizada…).
  * Solo muestra un botón para cancelar la operación en curso.
@@ -1086,10 +429,7 @@ export function buildFiltersPanel(
 ): Panel {
   const enabled = config.enabled;
   const keyboard = new InlineKeyboard()
-    .text(
-      enabled ? "🧠 Detección inteligente 🟢" : "🧠 Detección inteligente 🔴",
-      FilterAction.toggle,
-    )
+    .text(enabled ? "🧠 Detección inteligente 🟢" : "🧠 Detección inteligente 🔴", FilterAction.toggle)
     .row()
     .text("📊 Estadísticas", FilterAction.stats)
     .text("🧪 Probar mensaje", FilterAction.test)
@@ -1109,7 +449,7 @@ export function buildFiltersPanel(
       `${formatGroupHeader(groupTitle)}\n\n` +
       "🛡️ *DETECCIÓN DE PROMOCIONES*\n\n" +
       `Estado: ${enabled ? "🟢 Activo" : "🔴 Inactivo"}\n` +
-      "Separa intención de compra y venta. Solo modera SELLING no verificado.",
+      "Analiza intención de compra y venta; solo bloquea ventas no verificadas.",
     keyboard,
   };
 }
@@ -1131,7 +471,7 @@ export function buildPromotionSettingsPanel(
       FilterAction.toggle,
     )
     .row()
-    .text("⬅️ Volver a detección de promociones", FilterAction.home)
+    .text("⬅️ Volver a promociones", FilterAction.home)
     .row()
     .add(...buildNavRow().inline_keyboard.flat());
 
@@ -1139,9 +479,8 @@ export function buildPromotionSettingsPanel(
     text:
       `${formatGroupHeader(groupTitle)}\n\n` +
       "⚙️ *CONFIGURACIÓN DE PROMOCIONES*\n\n" +
-      "El diccionario aporta señales contextuales, no determina una venta por sí solo.\n" +
-      `Términos contextuales configurados: ${config.dictionary.length}\n` +
-      `Estado: ${enabled ? "🟢 Activo" : "🔴 Inactivo"}`,
+      "Las palabras personalizadas son señales contextuales, no reglas de venta por sí solas.\n" +
+      `Señales contextuales configuradas: ${config.dictionary.length}`,
     keyboard,
   };
 }
@@ -1149,14 +488,13 @@ export function buildPromotionSettingsPanel(
 export function buildPromotionInfoPanel(
   section: "stats" | "buying" | "selling" | "links" | "verified",
   config: PromotionConfig,
-  verifiedCount: number,
   groupTitle?: string,
 ): Panel {
-  const headings: Record<typeof section, string> = {
+  const heading: Record<typeof section, string> = {
     stats: "📊 *ESTADÍSTICAS DE PROMOCIONES*",
     buying: "🛒 *SEÑALES DE COMPRA*",
     selling: "💰 *SEÑALES DE VENTA*",
-    links: "🔗 *ENLACES*",
+    links: "🔗 *ANÁLISIS DE ENLACES*",
     verified: "👑 *VERIFICADAS*",
   };
   let body: string;
@@ -1167,35 +505,37 @@ export function buildPromotionInfoPanel(
         `Mensajes analizados: ${stats.analyzed}\n` +
         `BUYING: ${stats.buying}\nSELLING: ${stats.selling}\n` +
         `NEUTRAL: ${stats.neutral}\nAMBIGUOUS: ${stats.ambiguous}\n\n` +
-        `Promociones eliminadas: ${stats.blocked}\n` +
-        `SELLING permitido a verificadas: ${stats.allowedVerified}\n\n` +
-        "No existe actualmente un mecanismo para reportar falsos positivos.";
+        `Promociones bloqueadas: ${stats.blocked}\n` +
+        `SELLING permitido por verificación: ${stats.allowedVerified}\n\n` +
+        "Los falsos positivos no tienen actualmente un mecanismo de reporte.";
       break;
     }
     case "buying":
       body =
-        "La búsqueda o intención de compra se permite:\n\n" +
+        "Estas estructuras indican búsqueda o intención de compra y no se moderan:\n\n" +
         BUYING_SIGNAL_EXAMPLES.map((signal) => `• ${signal}`).join("\n");
       break;
     case "selling":
       body =
-        "Se exige una acción de oferta propia vinculada a producto/servicio o producto propio con llamada a la acción:\n\n" +
+        "La venta requiere una acción de oferta propia y contexto de producto/servicio:\n\n" +
         SELLING_SIGNAL_EXAMPLES.map((signal) => `• ${signal}`).join("\n");
       break;
     case "links":
       body =
-        "Un enlace es una señal adicional; no se considera SELLING por sí solo.\n\n" +
-        "Patrones promocionales: http://, https://, www., t.me/ y telegram.me/.\n" +
-        "Los controles independientes Anti-spam y contenido ilegal mantienen su comportamiento actual.";
+        "Los enlaces son una señal adicional y por sí solos no se eliminan por el detector de promociones.\n\n" +
+        "Patrones reconocidos: http://, https://, www., t.me/ y telegram.me/.\n" +
+        "Las capas independientes Anti-spam y contenido ilegal mantienen sus propias reglas.";
       break;
-    case "verified":
+    case "verified": {
+      const count = Object.values(config.verifiedUsers).filter(Boolean).length;
       body =
-        `Verificadas activas en verified_users: ${verifiedCount}.\n\n` +
-        "La moderación consulta el registro persistente mediante isVerifiedUser().";
+        `Verificadas reconocidas por la configuración actual del grupo: ${count}.\n\n` +
+        "Una SELLING de una persona verificada se permite. BUYING, NEUTRAL y AMBIGUOUS se permiten independientemente de la verificación.";
       break;
+    }
   }
   return {
-    text: `${formatGroupHeader(groupTitle)}\n\n${headings[section]}\n\n${body}`,
+    text: `${formatGroupHeader(groupTitle)}\n\n${heading[section]}\n\n${body}`,
     keyboard: new InlineKeyboard()
       .text("⬅️ Volver", FilterAction.home)
       .row()
@@ -1618,7 +958,6 @@ export function buildUsersPanel(
   users: IndexedUser[],
   page: number,
   groupTitle?: string,
-  verifiedUserIds?: ReadonlySet<number>,
 ): Panel {
   const pageSize = 8;
   const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
@@ -1656,22 +995,11 @@ export function buildUsersPanel(
       : visible
           .map((user) => `• ${user.name || user.username || `ID ${user.id}`}`)
           .join("\n");
-  const details = visible
-    .map((user) => {
-      const verified = verifiedUserIds?.has(user.id) ?? Boolean(user.verified);
-      const role = buildUserStatusBadges(user.status ?? "unknown", verified).join(" · ");
-      return `${user.name || user.username || `ID ${user.id}`} — ID ${user.id} · ` +
-        `entrada ${user.joinedAt ? new Date(user.joinedAt * 1000).toLocaleDateString("es-ES") : "desconocida"} · ` +
-        `actividad ${user.lastSeen ? new Date(user.lastSeen * 1000).toLocaleDateString("es-ES") : "sin datos"} · ` +
-        `mensajes ${user.messageCount ?? 0} · ${role}`;
-    })
-    .join("\n");
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n` +
       `👥 *USUARIOS*\n\n` +
-      `Usuarios detectados (página ${currentPage + 1}/${pageCount}):\n${list}\n\n` +
-      `Detalles:\n${details || "Sin datos."}`,
+      `Usuarios detectados (página ${currentPage + 1}/${pageCount}):\n${list}`,
     keyboard,
   };
 }
@@ -1906,4 +1234,362 @@ export function buildViewWarningsPanel(
 
   const keyboard = buildNavRow();
   return { text, keyboard };
+}
+
+export function buildActivityPanel(
+  stats: ActivityStats,
+  groupTitle?: string,
+): Panel {
+  const keyboard = new InlineKeyboard()
+    .text("🔄 Actualizar", MenuAction.action("actividad", "actualizar"))
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+  const topUsers = stats.topUsers.length
+    ? stats.topUsers
+        .slice(0, 5)
+        .map((user, index) => `${index + 1}. ${user.name} — ${user.count}`)
+        .join("\n")
+    : "Sin actividad registrada.";
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n📊 *RESUMEN DE ACTIVIDAD*\n\n` +
+      `Mensajes registrados: ${stats.totalMessages.toLocaleString("es-ES")}\n` +
+      `Usuarios activos: ${stats.activeUsers.toLocaleString("es-ES")}\n` +
+      `Mensajes hoy: ${stats.messagesToday.toLocaleString("es-ES")}\n` +
+      `Últimos 7 días: ${stats.messagesLast7Days.toLocaleString("es-ES")}\n` +
+      `Últimos 30 días: ${stats.messagesLast30Days.toLocaleString("es-ES")}\n\n` +
+      `Usuarios más activos:\n${topUsers}\n\n` +
+      "Se conservan como máximo 10.000 mensajes por grupo. Estas estadísticas " +
+      "No representan el historial completo del grupo.",
+    keyboard,
+  };
+}
+
+export function buildActivityUnavailablePanel(groupTitle?: string): Panel {
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n⚠️ *Datos de actividad no disponibles*\n\n` +
+      "No se muestran estadísticas porque no se pudieron leer los datos locales del grupo.",
+    keyboard: new InlineKeyboard()
+      .text("🔄 Reintentar", MenuAction.action("actividad", "actualizar"))
+      .row()
+      .add(...buildNavRow().inline_keyboard.flat()),
+  };
+}
+
+export const VerifiedAction = {
+  revokeConfirm: (userId: number): string => `vu:revoke-confirm:${userId}`,
+  revokeApply: (userId: number): string => `vu:revoke:${userId}`,
+  reactivateConfirm: (userId: number, permissions: string): string =>
+    `vu:reactivate-confirm:${userId}:${permissions}`,
+  reactivateApply: (userId: number, permissions: string): string =>
+    `vu:reactivate:${userId}:${permissions}`,
+  permissionConfirm: (
+    userId: number,
+    permission: keyof VerifiedUserPermissions,
+    value: boolean,
+  ): string => `vu:permission-confirm:${userId}:${permission}:${value}`,
+  permissionApply: (
+    userId: number,
+    permission: keyof VerifiedUserPermissions,
+    value: boolean,
+    expectedValue: boolean,
+  ): string =>
+    `vu:permission:${userId}:${permission}:${value}:${expectedValue}`,
+  toggle: (
+    userId: number,
+    permission: keyof VerifiedUserPermissions,
+  ): string => `vu:toggle:${userId}:${permission}`,
+};
+
+export function verifiedPermissionsSnapshot(
+  permissions: VerifiedUserPermissions,
+): string {
+  return [
+    permissions.can_post,
+    permissions.can_send_media,
+    permissions.can_send_links,
+    permissions.bypass_antispam,
+    permissions.bypass_promotion_filter,
+    permissions.bypass_illegal_filter,
+    permissions.bypass_automatic_deletion,
+  ].map(Number).join("");
+}
+
+export interface VerifiedUserPanelHistory {
+  groupId: number;
+  currentUsername?: string;
+  muteState?: string;
+  banState?: string;
+  warnings?: Array<{ date: string; reason?: string; revokedAt: string | null }>;
+  events?: Array<{ eventType: string; createdAt: string; details: Record<string, unknown> }>;
+  commands?: Array<{
+    action: string;
+    created_at: string;
+    resultState: string;
+    last_error: string | null;
+  }>;
+}
+
+const VERIFIED_PERMISSION_LABELS: Record<keyof VerifiedUserPermissions, string> = {
+  can_post: "Publicaciones",
+  can_send_media: "Envío de multimedia",
+  can_send_links: "Enlaces ordinarios",
+  bypass_antispam: "Exención de anti-spam",
+  bypass_promotion_filter: "Libertad promocional",
+  bypass_illegal_filter: "Exención de filtro de contenido ilegal",
+  bypass_automatic_deletion: "Exención de eliminación automática",
+};
+
+function escapeMarkdownV2(value: string): string {
+  return value.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
+}
+
+export function buildVerifiedUserPanel(
+  user: VerifiedUser,
+  groupTitle: string | undefined,
+  telegramStatus: string,
+  history?: VerifiedUserPanelHistory,
+): Panel {
+  const identity = history?.currentUsername
+    ? `@${escapeMarkdownV2(history.currentUsername)}`
+    : user.display_name ?? user.username ?? `ID ${user.user_id}`;
+  const memberStatus: Record<string, string> = {
+    member: "👤 Miembro; En el grupo",
+    administrator: "🛡️ Administrador; En el grupo",
+    creator: "👑 Creador; En el grupo",
+    restricted: "⚠️ Restringido",
+    left: "🚪 Fuera del grupo",
+    kicked: "⛔ Expulsado",
+    unknown: "❔ Desconocido",
+  };
+  const permissionLines = Object.entries(VERIFIED_PERMISSION_LABELS)
+    .map(([key, label]) => {
+      const enabled = user.permissions[key as keyof VerifiedUserPermissions];
+      const fixed = key === "can_send_links" || key === "bypass_promotion_filter";
+      if (fixed) {
+        if (key === "bypass_promotion_filter") {
+          return `${label} ${enabled ? "✅" : "❌"} fija`;
+        }
+        return `${label} ${enabled ? "✅" : "❌"} (no aplicado como permiso independiente)`;
+      }
+      return `${label}: ${enabled ? "✅ activado" : "❌ desactivado"}`;
+    });
+  const details = [
+    history?.muteState,
+    history?.banState,
+    ...(history?.warnings ?? []).map(
+      (warning) => `Advertencia ${warning.date}${warning.reason ? `: ${warning.reason}` : ""}`,
+    ),
+    ...(history?.events ?? []).map(
+    (event) => `Evento ${escapeMarkdownV2(event.eventType)} (${event.createdAt})`,
+    ),
+    ...(history?.commands ?? []).map(
+      (command) => `Orden ${command.action} [${command.resultState}]` +
+        (command.last_error ? `: ${command.last_error}` : ""),
+    ),
+  ].filter((line): line is string => Boolean(line));
+  const keyboard = new InlineKeyboard();
+  if (user.verified && user.revoked_at === null) {
+    keyboard.text("⛔ Revocar verificación", VerifiedAction.revokeConfirm(user.user_id));
+  } else {
+    keyboard.text(
+      "♻️ Reactivar verificación",
+      VerifiedAction.reactivateConfirm(
+        user.user_id,
+        verifiedPermissionsSnapshot(user.permissions),
+      ),
+    );
+  }
+  keyboard.row().add(...buildNavRow().inline_keyboard.flat());
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n👑 *PERFIL VERIFICADO*\n\n` +
+      `Usuario: ${identity}\nID: ${user.user_id}\n` +
+      (history ? `Grupo ID: ${history.groupId}\n` : "") +
+      `Estado Telegram: ${memberStatus[telegramStatus] ?? memberStatus.unknown}\n\n` +
+      `${permissionLines.join("\n")}\n\n` +
+      (details.length ? `Historial disponible:\n${details.join("\n")}` : "Sin historial adicional disponible."),
+    keyboard,
+  };
+}
+
+export function buildVerifiedActionConfirmPanel(
+  user: VerifiedUser,
+  action: "revoke" | "reactivate",
+  groupTitle?: string,
+): Panel {
+  const reactivating = action === "reactivate";
+  const snapshot = verifiedPermissionsSnapshot(user.permissions);
+  const keyboard = new InlineKeyboard().text(
+    "✅ Confirmar",
+    reactivating
+      ? VerifiedAction.reactivateApply(user.user_id, snapshot)
+      : VerifiedAction.revokeApply(user.user_id),
+  ).text("❌ Cancelar", `vu:user:${user.user_id}`);
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n⚠️ *CONFIRMAR ${reactivating ? "REACTIVACIÓN" : "REVOCACIÓN"}*\n\n` +
+      `Usuario ID: ${user.user_id}\n` +
+      (reactivating
+        ? `Permisos conservados: ${Object.entries(user.permissions).map(([key, value]) => `${key}=${value ? "sí" : "no"}`).join(", ")}.\n\n` +
+          "La acción reactivará el perfil; las sanciones no se eliminarán."
+        : "El perfil dejará de estar verificado."),
+    keyboard,
+  };
+}
+
+export function buildVerifiedPermissionConfirmPanel(
+  user: VerifiedUser,
+  permission: keyof VerifiedUserPermissions,
+  value: boolean,
+  groupTitle?: string,
+): Panel {
+  const keyboard = new InlineKeyboard()
+    .text(
+      "✅ Confirmar",
+      VerifiedAction.permissionApply(
+        user.user_id,
+        permission,
+        value,
+        user.permissions[permission],
+      ),
+    )
+    .text("❌ Cancelar", `vu:user:${user.user_id}`);
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n⚙️ *CONFIRMAR CAMBIO DE PERMISO*\n\n` +
+      `Usuario ID: ${user.user_id}\n${VERIFIED_PERMISSION_LABELS[permission]}\n` +
+      `Nuevo estado: ${value ? "activado" : "desactivado"}`,
+    keyboard,
+  };
+}
+
+export function buildRevokedVerifiedUsersPanel(
+  users: VerifiedUser[],
+  groupTitle: string | undefined,
+  page: number,
+): Panel {
+  const pageSize = 10;
+  const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
+  const current = Math.min(Math.max(0, page), pageCount - 1);
+  const visible = users.slice(current * pageSize, (current + 1) * pageSize);
+  const keyboard = new InlineKeyboard();
+  for (const user of visible) {
+    keyboard
+      .text(
+        `♻️ ${user.display_name ?? user.username ?? `ID ${user.user_id}`}`,
+        VerifiedAction.reactivateConfirm(
+          user.user_id,
+          verifiedPermissionsSnapshot(user.permissions),
+        ),
+      )
+      .row();
+  }
+  if (current > 0) keyboard.text("◀️ Anterior", `vu:revoked-list:${current - 1}`);
+  if (current < pageCount - 1) keyboard.text("Siguiente ▶️", `vu:revoked-list:${current + 1}`);
+  keyboard.row().text("⬅️ Volver", `vu:list`);
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n📋 *VERIFICACIONES REVOCADAS*\n\n` +
+      `Página ${current + 1} de ${pageCount}\n` +
+      (visible.length
+        ? visible.map((user) => `• ${user.display_name ?? user.username ?? `ID ${user.user_id}`} — ID ${user.user_id}`).join("\n")
+        : "No hay verificaciones revocadas."),
+    keyboard,
+  };
+}
+
+export function buildVerifiedTagCandidatesPanel(
+  reviews: VerifiedTagReview[],
+  page: number,
+  groupTitle?: string,
+): Panel {
+  const pageSize = 8;
+  const pageCount = Math.max(1, Math.ceil(reviews.length / pageSize));
+  const current = Math.min(Math.max(0, page), pageCount - 1);
+  const visible = reviews.slice(current * pageSize, (current + 1) * pageSize);
+  const keyboard = new InlineKeyboard();
+  for (const review of visible) {
+    const name = review.display_name ?? review.username ?? `ID ${review.user_id}`;
+    keyboard.text(`👤 ${name}`, `vu:review:${review.user_id}`).row();
+    if (review.status === "pending") {
+      keyboard
+        .text("✅ Aprobar", `vu:review-confirm:approve:${review.user_id}`)
+        .text("❌ Rechazar", `vu:review-confirm:reject:${review.user_id}`)
+        .row();
+    } else if (review.status === "revoked_tag") {
+      keyboard
+        .text("♻️ Aprobar reactivación", `vu:review-confirm:approve:${review.user_id}`)
+        .row();
+    }
+  }
+  if (current > 0) keyboard.text("◀️ Anterior", `vu:review-list:${current - 1}`);
+  if (current < pageCount - 1) keyboard.text("Siguiente ▶️", `vu:review-list:${current + 1}`);
+  keyboard.row().text("⬅️ Volver", MenuAction.sub("verificadas"));
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n🧾 *REVISIÓN DE ETIQUETAS VERIFICADAS*\n\n` +
+      (visible.length
+        ? visible.map((review) =>
+            `• ${review.display_name ?? review.username ?? `ID ${review.user_id}`} — ` +
+            `${review.status}; etiqueta: ${review.observed_tag ?? "ninguna"}`,
+          ).join("\n")
+        : "No hay candidatas ni discrepancias."),
+    keyboard,
+  };
+}
+
+export function buildVerifiedTagReviewConfirmPanel(
+  review: VerifiedTagReview,
+  action: "approve" | "reject",
+  groupTitle?: string,
+): Panel {
+  const reactivation = review.status === "revoked_tag" && action === "approve";
+  const message = reactivation
+    ? "La verificación se reactivará mediante la aprobación manual."
+    : action === "approve"
+      ? "La candidata se verificará únicamente tras volver a confirmar la etiqueta y la membresía en Telegram."
+      : "La candidata será rechazada; observar la etiqueta no modifica por sí solo la verificación.";
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n⚠️ *CONFIRMAR REVISIÓN*\n\n` +
+      `Usuario: ${review.display_name ?? review.username ?? `ID ${review.user_id}`}\n` +
+      `ID: ${review.user_id}\nEstado: ${review.status}\n\n${message}`,
+    keyboard: new InlineKeyboard()
+      .text(
+        "✅ Confirmar",
+        `vu:review:${action}:${review.user_id}:${review.status}`,
+      )
+      .text("❌ Cancelar", `vu:review:${review.user_id}`),
+  };
+}
+
+export function buildVerifiedTitleConfigPanel(
+  recognizedTitles: string[],
+  autoDetectTitles: boolean,
+  titleSyncEnabled: boolean,
+  groupTitle: string | undefined,
+  recognizedTags: string[],
+  tagSyncEnabled: boolean,
+  candidateCount: number,
+): Panel {
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n👑 *ETIQUETAS DE VERIFICACIÓN*\n\n` +
+      `Detección por etiquetas: ${tagSyncEnabled ? "activada" : "desactivada"}\n` +
+      `Sincronización de títulos de administradores: ${titleSyncEnabled ? "activada" : "desactivada"}\n` +
+      `Detección automática de títulos: ${autoDetectTitles ? "activada" : "desactivada"}\n` +
+      `Títulos reconocidos: ${recognizedTitles.join(", ") || "ninguno"}\n` +
+      `Etiquetas reconocidas: ${recognizedTags.join(", ") || "ninguna"}\n` +
+      `Candidatas pendientes: ${candidateCount}\n\n` +
+      "La detección por etiqueta es opcional y no concede ni revoca permisos; cada candidata requiere revisión manual.",
+    keyboard: new InlineKeyboard()
+      .text(
+        tagSyncEnabled ? "🔴 Desactivar detección" : "🟢 Activar detección",
+        "cfg:verified_tags_toggle",
+      )
+      .row()
+      .add(...buildNavRow().inline_keyboard.flat()),
+  };
 }

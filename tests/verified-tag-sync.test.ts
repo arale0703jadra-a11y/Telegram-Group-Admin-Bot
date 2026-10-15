@@ -30,6 +30,7 @@ import {
   VerifiedTagApprovalError,
 } from "../src/services/verified-tag-approval.js";
 import { initialGroupData } from "../src/storage/initial.js";
+import { buttonCallbackData } from "./helpers.js";
 
 const verifiedRows: VerifiedUser[] = [];
 const reviewRows: Array<Record<string, unknown>> = [];
@@ -251,7 +252,7 @@ test("review panels expose an empty state and only actionable review statuses", 
   assert.match(empty.text, /No hay candidatas ni discrepancias/);
   assert.equal(
     empty.keyboard.inline_keyboard.flat().some((button) =>
-      button.callback_data?.startsWith("vu:review:"),
+      buttonCallbackData(button)?.startsWith("vu:review:"),
     ),
     false,
   );
@@ -300,7 +301,7 @@ test("the group panel clearly marks tag detection as opt-in", () => {
   assert.match(panel.text, /Detección por etiquetas: desactivada/);
   assert.match(panel.text, /no concede ni revoca permisos/);
   assert.ok(panel.keyboard.inline_keyboard.flat().some((button) =>
-    button.callback_data === "cfg:verified_tags_toggle",
+    buttonCallbackData(button) === "cfg:verified_tags_toggle",
   ));
 });
 

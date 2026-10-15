@@ -12,6 +12,7 @@ import {
   DEFAULT_VERIFIED_PERMISSIONS,
   type VerifiedUser,
 } from "../src/services/verified-users.js";
+import { buttonCallbackData } from "./helpers.js";
 
 function verifiedUser(
   changes: Partial<VerifiedUser> = {},
@@ -73,7 +74,7 @@ test("verified profile shows IDs, Telegram membership, sanctions, and available 
   assert.match(panel.text, /\[completed\]/);
   assert.ok(
     panel.keyboard.inline_keyboard.flat().some(
-      (button) => button.callback_data === VerifiedAction.revokeConfirm(456),
+      (button) => buttonCallbackData(button) === VerifiedAction.revokeConfirm(456),
     ),
   );
 });
@@ -82,7 +83,7 @@ test("non-functional link and fixed promotion permissions are informative, not t
   const panel = buildVerifiedUserPanel(verifiedUser(), "Test group", "member");
   const callbacks = panel.keyboard.inline_keyboard
     .flat()
-    .map((button) => button.callback_data);
+    .map(buttonCallbackData);
 
   assert.match(panel.text, /Enlaces ordinarios ✅ \(no aplicado/);
   assert.match(panel.text, /Libertad promocional ✅ fija/);
@@ -107,7 +108,7 @@ test("reactivation confirmation binds explicit permissions and does not imply sa
   assert.match(panel.text, /las sanciones no se eliminarán/);
   assert.match(panel.text, /bypass_illegal_filter=sí/);
   assert.equal(
-    applyButton?.callback_data,
+    buttonCallbackData(applyButton),
     VerifiedAction.reactivateApply(
       456,
       verifiedPermissionsSnapshot(record.permissions),
@@ -125,9 +126,11 @@ test("permission changes require a confirmation naming the exact identity and va
   assert.match(panel.text, /Usuario ID: 456/);
   assert.match(panel.text, /Publicaciones/);
   assert.match(panel.text, /Nuevo estado: desactivado/);
+  const applyButton = panel.keyboard.inline_keyboard
+    .flat()
+    .find((button) => button.text.includes("Confirmar"));
   assert.equal(
-    panel.keyboard.inline_keyboard.flat().find((button) => button.text.includes("Confirmar"))
-      ?.callback_data,
+    buttonCallbackData(applyButton),
     VerifiedAction.permissionApply(456, "can_post", false, true),
   );
 });
@@ -146,9 +149,9 @@ test("revoked records are paged so the panel does not exceed Telegram keyboard l
 
   assert.match(page.text, /Página 2 de 3/);
   assert.equal(
-    buttons.filter((button) => button.callback_data?.startsWith("vu:reactivate-confirm:")).length,
+    buttons.filter((button) => buttonCallbackData(button)?.startsWith("vu:reactivate-confirm:")).length,
     10,
   );
-  assert.ok(buttons.some((button) => button.callback_data === "vu:revoked-list:0"));
-  assert.ok(buttons.some((button) => button.callback_data === "vu:revoked-list:2"));
+  assert.ok(buttons.some((button) => buttonCallbackData(button) === "vu:revoked-list:0"));
+  assert.ok(buttons.some((button) => buttonCallbackData(button) === "vu:revoked-list:2"));
 });

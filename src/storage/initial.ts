@@ -24,6 +24,16 @@ export const PROMOTION_DICTIONARY = [
   "promoción especial",
 ];
 
+export const DEFAULT_PROMOTION_MESSAGES = {
+  promotionWarning: "⚠️ Promoción no autorizada",
+  promotionRemoved:
+    "Tu mensaje fue eliminado por posible promoción no autorizada.",
+  promotionMuted: "Has sido silenciado temporalmente por promoción no autorizada.",
+  linkWarning: "⚠️ Los enlaces promocionales no están permitidos.",
+  verificationRequired:
+    "Las promociones están permitidas únicamente para creadoras verificadas.",
+};
+
 export const DEFAULT_PROMOTION_STATISTICS = {
   analyzed: 0,
   buying: 0,
@@ -41,6 +51,7 @@ export function initialPromotionConfig(): PromotionConfig {
     verificationContacts: ["@DanielRF25", "@ChrisUzca2406"],
     verifiedUsers: {},
     recurrenceMuteMinutes: [15, 60, 240, 1440],
+    messages: { ...DEFAULT_PROMOTION_MESSAGES },
     infractions: {},
     statistics: { ...DEFAULT_PROMOTION_STATISTICS },
   };
@@ -96,17 +107,17 @@ export function initialGroupData(): GroupData {
     recentMessages: [],
     indexedUsers: {},
     events: [],
-    newUsers: { enabled: false },
+    welcome: { enabled: true, message: "" },
     promotion: initialPromotionConfig(),
     illegalContent: initialIllegalContentConfig(),
     antiSpam: initialAntiSpamConfig(),
     inactivity: initialInactivityConfig(),
-    verifiedTitles: ["✅ Verificada", "Verificada"],
-    autoDetectVerifiedTitles: true,
-    autoRemoveVerifiedWhenTitleRemoved: true,
-    verifiedMemberTags: ["Verificada"],
-    verifiedTagSyncEnabled: false,
     activityMessages: [],
-    automaticMessage: undefined,
+    newUsers: { enabled: false },
+    verifiedTitles: [],
+    autoDetectVerifiedTitles: false,
+    autoRemoveVerifiedWhenTitleRemoved: false,
+    verifiedTagSyncEnabled: false,
+    verifiedMemberTags: ["Verificada"],
   };
 }
