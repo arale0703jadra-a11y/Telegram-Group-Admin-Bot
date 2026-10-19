@@ -95,6 +95,10 @@ export const FilterAction = {
   selling: `${FILTER_PREFIX}:selling`,
   links: `${FILTER_PREFIX}:links`,
   verified: `${FILTER_PREFIX}:verified`,
+  verifiedList: (page: number): string => `${FILTER_PREFIX}:verified_list:${page}`,
+  verifiedMute: (userId: number): string => `${FILTER_PREFIX}:verified_mute:${userId}`,
+  verifiedBan: (userId: number): string => `${FILTER_PREFIX}:verified_ban:${userId}`,
+  verifiedRevoke: (userId: number): string => `${FILTER_PREFIX}:verified_revoke:${userId}`,
   settings: `${FILTER_PREFIX}:settings`,
   deletePage: (page: number): string => `${FILTER_PREFIX}:deletepage:${page}`,
   delete: (index: number, page: number): string =>
@@ -541,6 +545,62 @@ export function buildPromotionInfoPanel(
       .row()
       .add(...buildNavRow().inline_keyboard.flat()),
   };
+}
+
+export function buildVerifiedModelsPanel(
+  users: VerifiedUser[],
+  page = 0,
+  groupTitle?: string,
+): Panel {
+  const pageSize = 5;
+  const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
+  const currentPage = Math.max(0, Math.min(page, pageCount - 1));
+  const pageUsers = users.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+  const keyboard = new InlineKeyboard();
+
+  for (const user of pageUsers) {
+    const userId = String(user.user_id);
+    keyboard
+      .text(`🔇 24 h · ${userId}`, FilterAction.verifiedMute(user.user_id))
+      .text(`⛔ · ${userId}`, FilterAction.verifiedBan(user.user_id))
+      .text(`❌ · ${userId}`, FilterAction.verifiedRevoke(user.user_id))
+      .row();
+  }
+
+  if (pageCount > 1) {
+    if (currentPage > 0) {
+      keyboard.text("⬅️ Anterior", FilterAction.verifiedList(currentPage - 1));
+    }
+    keyboard.text(`${currentPage + 1}/${pageCount}`, FilterAction.verifiedList(currentPage));
+    if (currentPage + 1 < pageCount) {
+      keyboard.text("Siguiente ➡️", FilterAction.verifiedList(currentPage + 1));
+    }
+    keyboard.row();
+  }
+  keyboard
+    .text("⬅️ Volver a promociones", FilterAction.home)
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+
+  const list = pageUsers.length
+    ? pageUsers.map((user) => {
+        const identity = user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
+        return `• ${escapeLegacyMarkdown(identity)} — ID ${user.user_id}`;
+      }).join("\n")
+    : "No hay usuarias verificadas activas en este grupo.";
+
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n` +
+      `${list}\n\n` +
+      "🔇 Silenciar durante 24 horas · ⛔ Banear · ❌ Quitar verificación" +
+      (pageCount > 1 ? `\n\nPágina ${currentPage + 1} de ${pageCount}` : ""),
+    keyboard,
+  };
+}
+
+function escapeLegacyMarkdown(value: string): string {
+  return value.replace(/([_*`\[\]\\])/g, "\\$1");
 }
 
 export function buildAntiSpamPanel(

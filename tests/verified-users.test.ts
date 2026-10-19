@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   addVerifiedUser,
   DEFAULT_VERIFIED_PERMISSIONS,
+  getVerifiedUserPermissions,
   isVerifiedUser,
   normalizeVerifiedPermissions,
   revokeVerifiedUser,
@@ -30,6 +31,8 @@ type MockVerifiedRow = {
   updated_at: string;
   created_by: number | null;
   revoked_at: string | null;
+  verification_method?: "manual" | "detected_custom_title";
+  detected_at?: string | null;
 };
 
 const mockRows: MockVerifiedRow[] = [];
@@ -324,4 +327,32 @@ test("verification remains readable from persistent storage after a simulated se
     await restartedService.isVerifiedUser(storedUser.group_id, storedUser.user_id),
     true,
   );
+});
+
+test("custom-title detection persists its provenance and timestamp", async () => {
+  const detectedAt = "2026-02-03T04:05:06.000Z";
+  const user = await addVerifiedUser({
+    groupId: -10002,
+    userId: 502,
+    createdBy: 700,
+    verificationMethod: "detected_custom_title",
+    detectedAt,
+  });
+
+  assert.equal(user.verification_method, "detected_custom_title");
+  assert.equal(user.detected_at, detectedAt);
+});
+
+test("verified permission cache is invalidated after revocation", async () => {
+  await addVerifiedUser({
+    groupId: -10003,
+    userId: 503,
+    createdBy: 700,
+  });
+  assert.equal(
+    (await getVerifiedUserPermissions(-10003, 503))?.can_send_links,
+    true,
+  );
+  await revokeVerifiedUser(-10003, 503);
+  assert.equal(await getVerifiedUserPermissions(-10003, 503), undefined);
 });

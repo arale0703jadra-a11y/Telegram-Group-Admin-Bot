@@ -23,6 +23,8 @@ export interface VerifiedUser {
   updated_at: string;
   created_by: number | null;
   revoked_at: string | null;
+  verification_method?: "manual" | "detected_custom_title";
+  detected_at?: string | null;
 }
 
 export const DEFAULT_VERIFIED_PERMISSIONS: VerifiedUserPermissions = {
@@ -36,6 +38,11 @@ export const DEFAULT_VERIFIED_PERMISSIONS: VerifiedUserPermissions = {
 };
 
 let client: SupabaseClient | undefined;
+const permissionsCache = new Map<
+  string,
+  { expiresAt: number; permissions: VerifiedUserPermissions | undefined }
+>();
+const PERMISSIONS_CACHE_TTL_MS = 10_000;
 
 function getClient(): SupabaseClient {
   if (client) return client;
@@ -54,12 +61,18 @@ export function normalizeVerifiedPermissions(
   return { ...DEFAULT_VERIFIED_PERMISSIONS, ...(permissions ?? {}) };
 }
 
+export function invalidateVerifiedUserCache(groupId: number, userId: number): void {
+  permissionsCache.delete(`${groupId}:${userId}`);
+}
+
 export async function addVerifiedUser(input: {
   groupId: number;
   userId: number;
   username?: string;
   displayName?: string;
   createdBy: number;
+  verificationMethod?: "manual" | "detected_custom_title";
+  detectedAt?: string;
   permissions?: Partial<VerifiedUserPermissions>;
 }): Promise<VerifiedUser> {
   const existing = await getStoredVerifiedUser(input.groupId, input.userId);
@@ -74,6 +87,10 @@ export async function addVerifiedUser(input: {
       ),
       created_by: input.createdBy,
       revoked_at: null,
+      ...(input.verificationMethod
+        ? { verification_method: input.verificationMethod }
+        : {}),
+      ...(input.detectedAt ? { detected_at: input.detectedAt } : {}),
       updated_at: new Date().toISOString(),
   };
   const query = existing
@@ -82,6 +99,7 @@ export async function addVerifiedUser(input: {
     : getClient().from("verified_users").insert(values);
   const { data, error } = await query.select("*").single();
   if (error) throw error;
+  invalidateVerifiedUserCache(input.groupId, input.userId);
   return data as VerifiedUser;
 }
 
@@ -182,6 +200,7 @@ export async function updateVerifiedUser(
     .select("*")
     .single();
   if (error) throw error;
+  invalidateVerifiedUserCache(groupId, userId);
   return data as VerifiedUser;
 }
 
@@ -197,6 +216,7 @@ export async function revokeVerifiedUser(groupId: number, userId: number): Promi
     .eq("user_id", userId)
     .is("revoked_at", null);
   if (error) throw error;
+  invalidateVerifiedUserCache(groupId, userId);
 }
 
 export async function isVerifiedUser(groupId: number, userId: number): Promise<boolean> {
@@ -210,8 +230,18 @@ export async function getVerifiedUserPermissions(
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return undefined;
   }
+  const key = `${groupId}:${userId}`;
+  const cached = permissionsCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.permissions;
+  }
   try {
-    return (await getVerifiedUser(groupId, userId))?.permissions;
+    const permissions = (await getVerifiedUser(groupId, userId))?.permissions;
+    permissionsCache.set(key, {
+      expiresAt: Date.now() + PERMISSIONS_CACHE_TTL_MS,
+      permissions,
+    });
+    return permissions;
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error
       ? String(error.code)

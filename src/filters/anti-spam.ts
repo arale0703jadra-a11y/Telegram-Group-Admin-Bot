@@ -20,6 +20,8 @@ import { mediaKey, similarToRecent } from "../utils/message-signals.js";
 import { inspectLinks } from "./link-filter.js";
 import type { MessageEntity } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
+import { getVerifiedUserPermissions } from "../services/verified-users.js";
+import { shouldSkipOrdinarySpamViolation } from "../services/verified-user-policy.js";
 
 interface UserSpamState {
   texts: string[];
@@ -169,6 +171,27 @@ antiSpam.on("message", async (ctx, next) => {
             : repeated
               ? "repeated"
               : undefined;
+
+  if (reason) {
+    const verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
+    const verifiedCanPostLinks =
+      (reason === "link" || reason === "invite") &&
+      verifiedPermissions?.can_send_links === true;
+    const verifiedSkipsSpam =
+      verifiedPermissions && reason !== "link" && reason !== "invite"
+      ? shouldSkipOrdinarySpamViolation(
+          verifiedPermissions.bypass_antispam,
+          reason === "repeated" ? "repeat_offender" : reason,
+        )
+      : false;
+    if (verifiedCanPostLinks || verifiedSkipsSpam) {
+      if (currentMediaKey) state.mediaKeys = [...state.mediaKeys.slice(-2), currentMediaKey];
+      if (text) state.texts = [...state.texts.slice(-2), text];
+      await saveGroupData(chatId, data);
+      await next();
+      return;
+    }
+  }
 
   if (!reason) {
     if (currentMediaKey) state.mediaKeys = [...state.mediaKeys.slice(-2), currentMediaKey];

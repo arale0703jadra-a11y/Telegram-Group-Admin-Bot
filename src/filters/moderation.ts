@@ -17,6 +17,7 @@ import {
   WARNING_AUTO_DELETE_SECONDS,
 } from "../utils/cleanup.js";
 import type { MyContext } from "../types.js";
+import { getVerifiedUserPermissions } from "../services/verified-users.js";
 
 export const promotionModeration = new Composer<MyContext>();
 
@@ -62,7 +63,8 @@ promotionModeration.on("message", async (ctx, next) => {
     return;
   }
 
-  const verified = data.promotion.verifiedUsers[String(userId)] === true;
+  const verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
+  const verified = verifiedPermissions?.bypass_promotion_filter === true;
   const detection = detectPromotion(text, data.promotion.dictionary, { verified });
   data.promotion.statistics.analyzed += 1;
   switch (detection.intent) {

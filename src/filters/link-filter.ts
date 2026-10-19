@@ -19,6 +19,7 @@ import { isExemptFromAutomaticSanction } from "./exemptions.js";
 import { isGroupChat } from "../utils/permissions.js";
 import { isEmergencyActive, expireEmergencyIfNeeded } from "./anti-raid-engine.js";
 import { getScannableMessageContent } from "./message-content.js";
+import { getVerifiedUserPermissions } from "../services/verified-users.js";
 import type { MyContext } from "../types.js";
 
 export interface LinkInspection {
@@ -249,6 +250,12 @@ linkFilter.on("message", async (ctx, next) => {
     !isVerifiableMember(member) ||
     isProtectedMember(member)
   ) {
+    await next();
+    return;
+  }
+
+  const verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
+  if (verifiedPermissions?.can_send_links) {
     await next();
     return;
   }

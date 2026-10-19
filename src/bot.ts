@@ -24,6 +24,8 @@ import {
 } from "./services/group-registry.js";
 import { MAX_ACTIVITY_MESSAGES, type ActivityMessage } from "./storage/types.js";
 import type { MyContext } from "./types.js";
+import { syncVerifiedAdministrators } from "./services/verified-title-sync.js";
+import { openPrivatePanel } from "./utils/private-panel.js";
 
 async function main(): Promise<void> {
   validateConfig();
@@ -74,13 +76,23 @@ async function main(): Promise<void> {
       try {
         const admins = await ctx.api.getChatAdministrators(ctx.chat.id);
         for (const admin of admins) {
-          if (admin.user.is_bot) {
-            continue;
+          if (!admin.user.is_bot) {
+            markUserAsAdmin(ctx.chat.id, admin.user.id);
           }
-          markUserAsAdmin(ctx.chat.id, admin.user.id);
         }
-      } catch {
-        // Sin permisos o fallo temporal: se ignora.
+      } catch (error) {
+        console.error(
+          `[GROUP_REGISTRY] No se pudieron registrar administradores groupId=${ctx.chat.id}`,
+          error,
+        );
+      }
+      try {
+        await syncVerifiedAdministrators(ctx.api, ctx.chat.id, ctx.from?.id ?? 0);
+      } catch (error) {
+        console.error(
+          `[VERIFIED_TITLE] No se pudo sincronizar administradores groupId=${ctx.chat.id}`,
+          error,
+        );
       }
 
       console.log(
@@ -90,6 +102,10 @@ async function main(): Promise<void> {
   });
 
   bot.command("admin", async (ctx) => {
+    if (ctx.chat.type === "private") {
+      await openPrivatePanel(ctx);
+      return;
+    }
     const esAdmin = await isUserAdmin(ctx);
     await replyWithAutoDelete(
       ctx,
@@ -97,6 +113,27 @@ async function main(): Promise<void> {
         ? "✅ Tienes permisos de administrador o creador en este grupo."
         : "⛔ No tienes permisos de administrador en este grupo.",
     );
+  });
+
+  bot.on("chat_member", async (ctx, next) => {
+    if (isGroupChat(ctx) && ctx.from) {
+      const member = ctx.chatMember.new_chat_member;
+      if (
+        member.status === "administrator" &&
+        "custom_title" in member &&
+        member.custom_title?.trim().toLocaleLowerCase("es") === "verificada"
+      ) {
+        try {
+          await syncVerifiedAdministrators(ctx.api, ctx.chat.id, ctx.from.id);
+        } catch (error) {
+          console.error(
+            `[VERIFIED_TITLE] No se pudo procesar chat_member groupId=${ctx.chat.id} userId=${member.user.id}`,
+            error,
+          );
+        }
+      }
+    }
+    await next();
   });
 
   // Indexa usuarios y mensajes recientes del grupo (en el almacén por chat_id)

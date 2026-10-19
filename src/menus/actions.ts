@@ -32,6 +32,7 @@ import {
   buildInactiveUsersPanel,
   buildInactivityCleanConfirmPanel,
   buildAntiSpamPanel,
+  buildVerifiedModelsPanel,
   buildMainPanel,
   buildMuteMenuPanel,
   buildPromptPanel,
@@ -50,6 +51,13 @@ import {
   getInactiveUsers,
   removeInactiveUser,
 } from "../services/inactivity.js";
+import {
+  getVerifiedUser,
+  getVerifiedUsers,
+  invalidateVerifiedUserCache,
+  revokeVerifiedUser,
+} from "../services/verified-users.js";
+import { unmarkUserVerified } from "../services/user-registry.js";
 
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
@@ -102,13 +110,80 @@ moderationActions.on("callback_query:data", async (ctx) => {
       );
       return;
     }
+    if (parts[0] === "fa" && (kind === "verified" || kind === "verified_list")) {
+      const page = kind === "verified_list" ? Number(parts[2] ?? 0) : 0;
+      if (!Number.isInteger(page) || page < 0) {
+        await ctx.answerCallbackQuery("Página no válida.");
+        return;
+      }
+      const users = await getVerifiedUsers(groupId);
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildVerifiedModelsPanel(users, page, title));
+      return;
+    }
+    if (
+      parts[0] === "fa" &&
+      (kind === "verified_mute" || kind === "verified_ban" || kind === "verified_revoke")
+    ) {
+      const userId = Number(parts[2]);
+      if (!Number.isSafeInteger(userId) || userId <= 0) {
+        await ctx.answerCallbackQuery("Usuario no válido.");
+        return;
+      }
+      const verifiedUser = await getVerifiedUser(groupId, userId);
+      if (!verifiedUser) {
+        await ctx.answerCallbackQuery("La verificación ya no está activa.");
+        return;
+      }
+
+      try {
+        let resultMessage: string;
+        if (kind === "verified_mute") {
+          const result = await muteUser(
+            ctx,
+            groupId,
+            userId,
+            24 * 60,
+            verifiedUser.display_name ?? verifiedUser.username ?? String(userId),
+          );
+          if (!result.ok) throw new Error(result.error ?? "No se pudo silenciar.");
+          resultMessage = "Silenciada durante 24 horas.";
+        } else if (kind === "verified_ban") {
+          const result = await banUser(
+            ctx,
+            groupId,
+            userId,
+            verifiedUser.display_name ?? verifiedUser.username ?? String(userId),
+          );
+          if (!result.ok) throw new Error(result.error ?? "No se pudo banear.");
+          await revokeVerifiedUser(groupId, userId);
+          await unmarkUserVerified(groupId, userId);
+          invalidateVerifiedUserCache(groupId, userId);
+          resultMessage = "Baneada y verificación retirada.";
+        } else {
+          await revokeVerifiedUser(groupId, userId);
+          await unmarkUserVerified(groupId, userId);
+          invalidateVerifiedUserCache(groupId, userId);
+          resultMessage = "Verificación retirada.";
+        }
+        await ctx.answerCallbackQuery(resultMessage);
+      } catch (error) {
+        console.error(
+          `[VERIFIED_ADMIN] Falló action=${kind} groupId=${groupId} userId=${userId}`,
+          error,
+        );
+        await ctx.answerCallbackQuery("No se pudo completar la acción.");
+      }
+      const users = await getVerifiedUsers(groupId);
+      await renderPanel(ctx, buildVerifiedModelsPanel(users, 0, title));
+      return;
+    }
     if (
       parts[0] === "fa" &&
       (kind === "stats" ||
         kind === "buying" ||
         kind === "selling" ||
-        kind === "links" ||
-        kind === "verified")
+        kind === "links")
     ) {
       const data = await getGroupData(groupId);
       await ctx.answerCallbackQuery();
