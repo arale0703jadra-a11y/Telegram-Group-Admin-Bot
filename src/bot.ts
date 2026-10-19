@@ -10,6 +10,9 @@ import { promotionModeration } from "./filters/moderation.js";
 import { illegalModeration } from "./filters/illegal-moderation.js";
 import { antiRaid } from "./filters/anti-raid.js";
 import { antiSpam } from "./filters/anti-spam.js";
+import { linkFilter } from "./filters/link-filter.js";
+import { profileChecker } from "./filters/profile-checker.js";
+import { replyWithAutoDelete } from "./utils/cleanup.js";
 import { runInactivityScan } from "./services/inactivity.js";
 import { getGroupData, saveGroupData, store } from "./storage/index.js";
 import {
@@ -37,6 +40,7 @@ async function main(): Promise<void> {
   });
 
   bot.use(cleanServiceMessages);
+  bot.use(profileChecker);
 
   bot.on("my_chat_member", async (ctx) => {
     if (!isGroupChat(ctx)) {
@@ -83,7 +87,8 @@ async function main(): Promise<void> {
 
   bot.command("admin", async (ctx) => {
     const esAdmin = await isUserAdmin(ctx);
-    await ctx.reply(
+    await replyWithAutoDelete(
+      ctx,
       esAdmin
         ? "✅ Tienes permisos de administrador o creador en este grupo."
         : "⛔ No tienes permisos de administrador en este grupo.",
@@ -215,6 +220,7 @@ async function main(): Promise<void> {
   });
 
   bot.use(antiRaid);
+  bot.use(linkFilter);
   bot.use(antiSpam);
   bot.use(illegalModeration);
   bot.use(promotionModeration);
@@ -254,7 +260,12 @@ async function main(): Promise<void> {
   await bot.start({
     // Fijar la lista evita conservar una configuración previa que excluya
     // mensajes normales de grupo del polling.
-    allowed_updates: ["message", "callback_query", "my_chat_member"],
+    allowed_updates: [
+      "message",
+      "chat_member",
+      "callback_query",
+      "my_chat_member",
+    ],
     onStart: (botInfo) => {
       console.log(`🤖 ${BOT_NAME} iniciado correctamente como @${botInfo.username}`);
     },

@@ -14,6 +14,7 @@ import {
   expireEmergencyIfNeeded,
 } from "./anti-raid-engine.js";
 import { isExemptFromAutomaticSanction } from "./exemptions.js";
+import { replyWithAutoDelete } from "../utils/cleanup.js";
 import type { MyContext } from "../types.js";
 
 const engine = new AntiRaidEngine();
@@ -71,7 +72,8 @@ antiRaid.on("message:new_chat_members", async (ctx) => {
       detail: `Oleada de entradas detectada (${joinsInWindow} en ${data.antiRaid.joinWindowSeconds}s). Modo de emergencia activado.`,
     });
     try {
-      await ctx.reply(
+      await replyWithAutoDelete(
+        ctx,
         "🚨 Posible oleada de entradas detectada. Se ha activado el modo de emergencia temporal.",
       );
     } catch {

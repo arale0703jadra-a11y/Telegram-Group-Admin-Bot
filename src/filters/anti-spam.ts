@@ -16,6 +16,9 @@ import {
 import { expireEmergencyIfNeeded, isEmergencyActive } from "./anti-raid-engine.js";
 import { isExemptFromAutomaticSanction } from "./exemptions.js";
 import { mediaKey, similarToRecent } from "../utils/message-signals.js";
+import { inspectLinks } from "./link-filter.js";
+import { replyWithAutoDelete } from "../utils/cleanup.js";
+import type { MessageEntity } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
 
 interface UserSpamState {
@@ -56,7 +59,7 @@ function getText(ctx: MyContext): string {
   return ctx.message?.text ?? ctx.message?.caption ?? "";
 }
 
-function getEntities(ctx: MyContext): Array<{ type: string }> {
+function getEntities(ctx: MyContext): MessageEntity[] {
   const message = ctx.message;
   if (!message) {
     return [];
@@ -65,18 +68,6 @@ function getEntities(ctx: MyContext): Array<{ type: string }> {
     ...(message.entities ?? []),
     ...(message.caption_entities ?? []),
   ];
-}
-
-function hasLink(ctx: MyContext, text: string): boolean {
-  return (
-    /(?:https?:\/\/|www\.|t\.me\/|telegram\.me\/)/iu.test(text) ||
-    getEntities(ctx).some((entity) => entity.type === "url" || entity.type === "text_link")
-  );
-}
-
-/** Invitaciones de un clic o de grupo (t.me/+…, joinchat). */
-function hasInviteLink(text: string): boolean {
-  return /(?:t\.me\/(?:\+|joinchat\/)|telegram\.me\/(?:\+|joinchat\/))/iu.test(text);
 }
 
 function mentionCount(ctx: MyContext): number {
@@ -144,15 +135,19 @@ antiSpam.on("message", async (ctx, next) => {
   const state = stateFor(chatId, userId);
   const rawText = getText(ctx);
   const text = normalizeMessage(rawText);
+  const links = inspectLinks(rawText, getEntities(ctx));
 
   const rateExceeded =
     data.antiSpam.rateLimitEnabled &&
     rateLimiter.record(`${chatId}:${userId}`, now, windowMs) >
       effectiveMaxMessages;
 
-  const inviteViolation = data.antiSpam.blockInvites && hasInviteLink(rawText);
+  const inviteViolation =
+    data.antiSpam.blockInvites && links.hasUnauthorizedInvite;
   const linkViolation =
-    effectiveBlockLinks && !inviteViolation && hasLink(ctx, rawText);
+    effectiveBlockLinks &&
+    links.hasUnauthorizedLink &&
+    !inviteViolation;
   const mentionViolation = mentionCount(ctx) > data.antiSpam.maxMentionsPerMessage;
   const currentMediaKey = mediaKey(ctx.message);
   const mediaViolation =
@@ -216,7 +211,7 @@ antiSpam.on("message", async (ctx, next) => {
       : outcome.deleted
         ? "⚠️ Spam detectado. Tu mensaje fue eliminado."
         : "⚠️ Spam detectado. No se pudo eliminar tu mensaje.";
-    await ctx.reply(status);
+    await replyWithAutoDelete(ctx, status);
   } catch (error) {
     console.error("[ANTI-SPAM] No se pudo enviar la notificación:", error);
   }

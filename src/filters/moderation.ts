@@ -12,6 +12,10 @@ import { OWNER_ID } from "../config.js";
 import { isGroupChat } from "../utils/permissions.js";
 import { buildPromotionMessage } from "./messages.js";
 import { detectPromotion } from "./detector.js";
+import {
+  scheduleMessageDeletion,
+  WARNING_AUTO_DELETE_SECONDS,
+} from "../utils/cleanup.js";
 import type { MyContext } from "../types.js";
 
 export const promotionModeration = new Composer<MyContext>();
@@ -116,7 +120,7 @@ promotionModeration.on("message", async (ctx, next) => {
   });
 
   if (deletion.ok) {
-    await ctx.reply(
+    const warningMessage = await ctx.reply(
       buildPromotionMessage(data.promotion, muted ? "muted" : "removed"),
       {
         reply_markup: new InlineKeyboard().url(
@@ -124,6 +128,12 @@ promotionModeration.on("message", async (ctx, next) => {
           `https://t.me/${ctx.me.username}`,
         ),
       },
+    );
+    scheduleMessageDeletion(
+      ctx,
+      chatId,
+      warningMessage.message_id,
+      WARNING_AUTO_DELETE_SECONDS,
     );
   }
   if (!warning.ok) {
