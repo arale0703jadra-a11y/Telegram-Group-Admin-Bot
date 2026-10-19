@@ -9,7 +9,7 @@
  * - `CooldownTracker`: evita repetir la misma sanción en un periodo corto.
  * - `sanitizeLogText`: minimiza datos personales y no guarda texto sensible
  *   completo en los registros.
- * - `callWithRetryAfter`: reintenta una vez ante un 429 de la API.
+ * - `callWithRetryAfter`: aplica backoff acotado ante respuestas 429.
  */
 
 /** Ejecuta `fn` excluyéndola respecto a otras tareas con la misma clave. */
@@ -42,6 +42,15 @@ export class KeyedMutex {
       }
     }
   }
+}
+
+const chatActionMutex = new KeyedMutex();
+
+export function runChatActionExclusive<T>(
+  chatId: number,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return chatActionMutex.runExclusive(String(chatId), operation);
 }
 
 /**
@@ -142,23 +151,30 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
- * Ejecuta una llamada a la API reintentando una sola vez cuando Telegram
- * responde 429 y proporciona `retry_after`. No amplía los reintentos para no
- * agravar el límite; si vuelve a fallar, propaga el error original.
+ * Reintenta hasta tres veces ante 429. Respeta el `retry_after` de Telegram;
+ * si no está disponible, aplica backoff exponencial. Otros errores se
+ * propagan sin reintento.
  */
 export async function callWithRetryAfter<T>(
   operation: () => Promise<T>,
   sleep: (ms: number) => Promise<void> = defaultSleep,
 ): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
-    const info = describeTelegramError(error);
-    if (info.code !== 429 || info.retryAfterSeconds === undefined) {
-      throw error;
+  const maxRetries = 3;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const info = describeTelegramError(error);
+      if (info.code !== 429 || attempt >= maxRetries) {
+        throw error;
+      }
+      const backoffMs = Math.min(1000 * 2 ** attempt, 10_000);
+      const delayMs = Math.max(
+        backoffMs,
+        (info.retryAfterSeconds ?? 0) * 1000,
+      );
+      await sleep(delayMs);
     }
-    await sleep(Math.min(info.retryAfterSeconds, 30) * 1000);
-    return await operation();
   }
 }
 

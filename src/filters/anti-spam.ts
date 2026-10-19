@@ -5,6 +5,7 @@ import {
   getMemberSafely,
   isVerifiableMember,
   muteUser,
+  deleteMessageById,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
 import { isGroupChat } from "../utils/permissions.js";
@@ -17,7 +18,6 @@ import { expireEmergencyIfNeeded, isEmergencyActive } from "./anti-raid-engine.j
 import { isExemptFromAutomaticSanction } from "./exemptions.js";
 import { mediaKey, similarToRecent } from "../utils/message-signals.js";
 import { inspectLinks } from "./link-filter.js";
-import { replyWithAutoDelete } from "../utils/cleanup.js";
 import type { MessageEntity } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
 
@@ -181,10 +181,7 @@ antiSpam.on("message", async (ctx, next) => {
   // Serializa la sanción por chat para no duplicar infractions/silencios.
   const outcome = await mutex.runExclusive(String(chatId), async () => {
     const deleted = rights.canDelete
-      ? await ctx.api.deleteMessage(chatId, messageId).then(
-          () => ({ ok: true }),
-          () => ({ ok: false }),
-        )
+      ? await deleteMessageById(ctx, chatId, messageId)
       : { ok: false };
     const key = String(userId);
     const infraction = (data.antiSpam.infractions[key] ?? 0) + 1;
@@ -203,18 +200,6 @@ antiSpam.on("message", async (ctx, next) => {
     return { deleted: deleted.ok, muted };
   });
 
-  try {
-    const status = outcome.muted
-      ? outcome.deleted
-        ? "⚠️ Spam detectado. Tu mensaje fue eliminado y has sido silenciado temporalmente."
-        : "⚠️ Spam detectado. Has sido silenciado temporalmente."
-      : outcome.deleted
-        ? "⚠️ Spam detectado. Tu mensaje fue eliminado."
-        : "⚠️ Spam detectado. No se pudo eliminar tu mensaje.";
-    await replyWithAutoDelete(ctx, status);
-  } catch (error) {
-    console.error("[ANTI-SPAM] No se pudo enviar la notificación:", error);
-  }
   await logEvent(ctx, chatId, "ANTISPAM", {
     targetId: userId,
     targetName: ctx.from.username ?? ctx.from.first_name,

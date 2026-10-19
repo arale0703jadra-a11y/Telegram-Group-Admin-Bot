@@ -107,9 +107,8 @@ promotionModeration.on("message", async (ctx, next) => {
     data.promotion.statistics.blocked += 1;
     await saveGroupData(chatId, data);
   }
-  let muted = false;
   if (infraction >= 2 && muteMinutes > 0) {
-    muted = (await muteUser(ctx, chatId, userId, muteMinutes, ctx.from.first_name)).ok;
+    await muteUser(ctx, chatId, userId, muteMinutes, ctx.from.first_name);
   }
 
   await logEvent(ctx, chatId, "DELETE", {
@@ -120,8 +119,8 @@ promotionModeration.on("message", async (ctx, next) => {
   });
 
   if (deletion.ok) {
-    const warningMessage = await ctx.reply(
-      buildPromotionMessage(data.promotion, muted ? "muted" : "removed"),
+    const verificationMessage = await ctx.reply(
+      buildPromotionMessage(data.promotion),
       {
         reply_markup: new InlineKeyboard().url(
           "🔐 Verifícate",
@@ -132,7 +131,7 @@ promotionModeration.on("message", async (ctx, next) => {
     scheduleMessageDeletion(
       ctx,
       chatId,
-      warningMessage.message_id,
+      verificationMessage.message_id,
       WARNING_AUTO_DELETE_SECONDS,
     );
   }

@@ -18,7 +18,7 @@ import { logEvent } from "../moderation/events.js";
 import { isExemptFromAutomaticSanction } from "./exemptions.js";
 import { isGroupChat } from "../utils/permissions.js";
 import { isEmergencyActive, expireEmergencyIfNeeded } from "./anti-raid-engine.js";
-import { replyWithAutoDelete } from "../utils/cleanup.js";
+import { getScannableMessageContent } from "./message-content.js";
 import type { MyContext } from "../types.js";
 
 export interface LinkInspection {
@@ -226,17 +226,6 @@ export function inspectLinks(
   };
 }
 
-function getMessageText(ctx: MyContext): string {
-  return ctx.message?.text ?? ctx.message?.caption ?? "";
-}
-
-function getMessageEntities(ctx: MyContext): MessageEntity[] {
-  return [
-    ...(ctx.message?.entities ?? []),
-    ...(ctx.message?.caption_entities ?? []),
-  ];
-}
-
 export const linkFilter = new Composer<MyContext>();
 
 linkFilter.on("message", async (ctx, next) => {
@@ -273,7 +262,8 @@ linkFilter.on("message", async (ctx, next) => {
   const now = Date.now();
   data.emergency = expireEmergencyIfNeeded(data.emergency, now);
   const emergency = isEmergencyActive(data.emergency, now);
-  const links = inspectLinks(getMessageText(ctx), getMessageEntities(ctx));
+  const content = getScannableMessageContent(ctx.message);
+  const links = inspectLinks(content.text, content.entities);
   const blockLinks = data.antiSpam.blockLinks || emergency;
   const violation =
     (data.antiSpam.blockInvites && links.hasUnauthorizedInvite) ||
@@ -305,18 +295,4 @@ linkFilter.on("message", async (ctx, next) => {
       `invite=${links.hasUnauthorizedInvite};mention=${Boolean(links.blockedMention)}`,
   });
 
-  try {
-    await replyWithAutoDelete(
-      ctx,
-      deletion.ok
-        ? warning.ok
-          ? "⚠️ Eliminé el enlace no autorizado y registré una advertencia."
-          : "⚠️ Eliminé el enlace no autorizado."
-        : "⚠️ Detecté un enlace no autorizado, pero no pude eliminar el mensaje.",
-    );
-  } catch (error) {
-    console.error(
-      `[LINK FILTER] No se pudo publicar el aviso (chatId=${chatId}, error=${error instanceof Error ? error.name : "unknown"}).`,
-    );
-  }
 });

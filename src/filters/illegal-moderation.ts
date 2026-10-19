@@ -13,6 +13,7 @@ import { OWNER_ID } from "../config.js";
 import { isGroupChat } from "../utils/permissions.js";
 import { CooldownTracker, KeyedMutex } from "../utils/safety.js";
 import { detectIllegalContent } from "./illegal-detector.js";
+import { getScannableMessageContent } from "./message-content.js";
 import type { MyContext } from "../types.js";
 
 export const illegalModeration = new Composer<MyContext>();
@@ -80,7 +81,7 @@ illegalModeration.on(["message", "edited_message"], async (ctx, next) => {
     await next();
     return;
   }
-  const text = message.text ?? message.caption ?? "";
+  const { text } = getScannableMessageContent(message);
   if (!text || text.startsWith("/")) {
     await next();
     return;

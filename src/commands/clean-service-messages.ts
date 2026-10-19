@@ -1,4 +1,5 @@
 import { Composer } from "grammy";
+import { callWithRetryAfter } from "../utils/safety.js";
 import type { MyContext } from "../types.js";
 
 interface JoinServiceContext {
@@ -44,6 +45,7 @@ export async function cleanMemberJoinServiceMessage(
       `[ZEUS] No se pudo borrar el mensaje de incorporación (groupId=${chatId}, messageId=${messageId}, error=${safeErrorCode(error)}).`,
     );
   },
+  sleep?: (ms: number) => Promise<void>,
 ): Promise<void> {
   const joinedMembers = ctx.message.new_chat_members;
   const joinedFromCommunity = ctx.message.community_chat_joined !== undefined;
@@ -57,7 +59,10 @@ export async function cleanMemberJoinServiceMessage(
       joinedFromCommunity)
   ) {
     try {
-      await ctx.api.deleteMessage(ctx.chat.id, ctx.message.message_id);
+      await callWithRetryAfter(
+        () => ctx.api.deleteMessage(ctx.chat.id, ctx.message.message_id),
+        sleep,
+      );
     } catch (error) {
       reportFailure(ctx.chat.id, ctx.message.message_id, error);
     }

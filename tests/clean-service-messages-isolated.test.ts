@@ -118,25 +118,37 @@ test("a failing deleteMessage does not break the chain and reports once without 
   assert.deepEqual(reports, [{ chatId: -1001, messageId: 13, code: 403 }]);
 });
 
-test("a 429 on deleteMessage is reported once and not retried", async () => {
+test("a 429 on deleteMessage is retried with backoff", async () => {
   let deleteCalls = 0;
   const reports: unknown[] = [];
+  const delays: number[] = [];
   const ctx: FakeCtx = {
     chat: { id: -1001, type: "supergroup" },
     message: { message_id: 14, new_chat_members: [{ id: 4, is_bot: false }] },
     api: {
       async deleteMessage() {
         deleteCalls += 1;
-        const error = new Error("Too Many Requests") as Error & Record<string, unknown>;
-        error.error_code = 429;
-        error.parameters = { retry_after: 17 };
-        throw error;
+        if (deleteCalls === 1) {
+          const error = new Error("Too Many Requests") as Error & Record<string, unknown>;
+          error.error_code = 429;
+          error.parameters = { retry_after: 17 };
+          throw error;
+        }
+        return true;
       },
     },
   };
-  await cleanMemberJoinServiceMessage(ctx as never, async () => undefined, (chatId, messageId, error) => {
-    reports.push([chatId, messageId, (error as { error_code?: number }).error_code]);
-  });
-  assert.equal(deleteCalls, 1);
-  assert.deepEqual(reports, [[-1001, 14, 429]]);
+  await cleanMemberJoinServiceMessage(
+    ctx as never,
+    async () => undefined,
+    (chatId, messageId, error) => {
+      reports.push([chatId, messageId, (error as { error_code?: number }).error_code]);
+    },
+    async (delay) => {
+      delays.push(delay);
+    },
+  );
+  assert.equal(deleteCalls, 2);
+  assert.deepEqual(delays, [17_000]);
+  assert.deepEqual(reports, []);
 });

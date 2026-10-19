@@ -14,7 +14,6 @@ import {
   expireEmergencyIfNeeded,
 } from "./anti-raid-engine.js";
 import { isExemptFromAutomaticSanction } from "./exemptions.js";
-import { replyWithAutoDelete } from "../utils/cleanup.js";
 import type { MyContext } from "../types.js";
 
 const engine = new AntiRaidEngine();
@@ -33,12 +32,14 @@ function getText(ctx: MyContext): string {
  * ventana para endurecer los límites. No se sanciona a nadie por el simple
  * hecho de haber entrado; solo se restringe la actividad sospechosa.
  */
-antiRaid.on("message:new_chat_members", async (ctx) => {
+antiRaid.on("message:new_chat_members", async (ctx, next) => {
   if (!isGroupChat(ctx) || !ctx.from || !ctx.message) {
+    await next();
     return;
   }
   const data = await getGroupData(ctx.chat.id);
   if (!data.antiRaid.enabled) {
+    await next();
     return;
   }
   const now = Date.now();
@@ -48,6 +49,7 @@ antiRaid.on("message:new_chat_members", async (ctx) => {
     (member) => !member.is_bot,
   );
   if (joined.length === 0) {
+    await next();
     return;
   }
 
@@ -71,18 +73,12 @@ antiRaid.on("message:new_chat_members", async (ctx) => {
       result: "ok",
       detail: `Oleada de entradas detectada (${joinsInWindow} en ${data.antiRaid.joinWindowSeconds}s). Modo de emergencia activado.`,
     });
-    try {
-      await replyWithAutoDelete(
-        ctx,
-        "🚨 Posible oleada de entradas detectada. Se ha activado el modo de emergencia temporal.",
-      );
-    } catch {
-      // Sin permisos de envío: se ignora.
-    }
+    await next();
     return;
   }
 
   await saveGroupData(ctx.chat.id, data);
+  await next();
 });
 
 /**

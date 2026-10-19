@@ -12,6 +12,8 @@ import { antiRaid } from "./filters/anti-raid.js";
 import { antiSpam } from "./filters/anti-spam.js";
 import { linkFilter } from "./filters/link-filter.js";
 import { profileChecker } from "./filters/profile-checker.js";
+import { adminImpersonation } from "./filters/admin-impersonation.js";
+import { botAdditionGuard } from "./filters/bot-addition-guard.js";
 import { replyWithAutoDelete } from "./utils/cleanup.js";
 import { runInactivityScan } from "./services/inactivity.js";
 import { getGroupData, saveGroupData, store } from "./storage/index.js";
@@ -40,7 +42,9 @@ async function main(): Promise<void> {
   });
 
   bot.use(cleanServiceMessages);
+  bot.use(botAdditionGuard);
   bot.use(profileChecker);
+  bot.use(adminImpersonation);
 
   bot.on("my_chat_member", async (ctx) => {
     if (!isGroupChat(ctx)) {

@@ -2,7 +2,7 @@ import type { ChatMember, ChatPermissions } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
 import { OWNER_ID } from "../config.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
-import { callWithRetryAfter } from "../utils/safety.js";
+import { callWithRetryAfter, runChatActionExclusive } from "../utils/safety.js";
 import { getCachedBotRights, getCachedChatMember } from "../utils/member-cache.js";
 import { logEvent } from "./events.js";
 
@@ -472,7 +472,9 @@ export async function banUser(
   }
 
   try {
-    await callWithRetryAfter(() => ctx.api.banChatMember(chatId, userId));
+    await runChatActionExclusive(chatId, () =>
+      callWithRetryAfter(() => ctx.api.banChatMember(chatId, userId)),
+    );
   } catch (error) {
     const technicalError =
       error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 300) : "unknown";
@@ -566,7 +568,9 @@ export async function deleteMessageById(
   messageId: number,
 ): Promise<ActionResult> {
   try {
-    await callWithRetryAfter(() => ctx.api.deleteMessage(chatId, messageId));
+    await runChatActionExclusive(chatId, () =>
+      callWithRetryAfter(() => ctx.api.deleteMessage(chatId, messageId)),
+    );
     return { ok: true };
   } catch {
     return {
@@ -594,11 +598,9 @@ export async function cleanRecentMessages(
 
   let deleted = 0;
   for (const messageId of ids) {
-    try {
-      await ctx.api.deleteMessage(chatId, messageId);
+    const result = await deleteMessageById(ctx, chatId, messageId);
+    if (result.ok) {
       deleted += 1;
-    } catch {
-      // Mensaje ya borrado, demasiado antiguo o sin permisos: se ignora.
     }
   }
   return { attempted: ids.length, deleted };
