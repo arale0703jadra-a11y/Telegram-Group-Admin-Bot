@@ -146,47 +146,74 @@ const INHERENTLY_EXPLICIT_CATEGORY_TERMS = [
   "explotacion sexual",
 ];
 
+const HOMOGLYPHS: Readonly<Record<string, string>> = {
+  а: "a",
+  в: "b",
+  е: "e",
+  ё: "e",
+  к: "k",
+  м: "m",
+  н: "h",
+  о: "o",
+  р: "p",
+  с: "c",
+  т: "t",
+  у: "y",
+  х: "x",
+  і: "i",
+  ї: "i",
+  ј: "j",
+  ѕ: "s",
+  ԁ: "d",
+  ԛ: "q",
+  һ: "h",
+  ӏ: "l",
+  α: "a",
+  β: "b",
+  ε: "e",
+  ι: "i",
+  κ: "k",
+  ο: "o",
+  ρ: "p",
+  τ: "t",
+  υ: "y",
+  χ: "x",
+};
+
 function hasTerm(text: string, term: string): boolean {
   const normalized = normalizeIllegalText(text);
-  const normalizedTerm = normalizeIllegalText(term);
-  const escaped = normalizedTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return (
-    new RegExp(
-      `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
-      "iu",
-    ).test(normalized) ||
-    (normalizedTerm.replace(/\s/g, "").length >= 5 &&
-      normalized
-        .replace(/[^\p{L}\p{N}]/gu, "")
-        .includes(normalizedTerm.replace(/\s/g, "")))
+  const characters = [...normalizeIllegalText(term)].filter((character) =>
+    /[\p{L}\p{N}]/u.test(character),
   );
+  if (characters.length === 0) {
+    return false;
+  }
+
+  const separator = "[\\p{P}\\p{Z}\\p{S}\\s_]*";
+  const pattern = characters
+    .map((character) => {
+      const escaped = character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return `${escaped}+`;
+    })
+    .join(separator);
+  return new RegExp(
+    `(^|[^\\p{L}\\p{N}])${pattern}(?=$|[^\\p{L}\\p{N}])`,
+    "iu",
+  ).test(normalized);
 }
 
 function normalizeIllegalText(value: string): string {
-  return normalizeFilterTerm(value)
+  return normalizeFilterTerm(value.normalize("NFKD"))
+    .replace(/\p{M}/gu, "")
+    .replace(/[\s\S]/gu, (character) => HOMOGLYPHS[character] ?? character)
     .replace(/[013457@]/g, (character) => ({ "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a" }[character] ?? character))
-    .replace(/([^\p{L}\p{N}])\1+/gu, "$1")
     .replace(/(.)\1{2,}/gu, "$1$1")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function hasCriticalPhrase(text: string, phrase: string): boolean {
-  const normalizedText = normalizeIllegalText(text);
-  const normalizedPhrase = normalizeIllegalText(phrase);
-  if (normalizedText.includes(normalizedPhrase)) {
-    return true;
-  }
-  // Permite separadores entre palabras ("abuso sexual infantil" y
-  // "abuso-sexual-infantil") sin cruzar letras o números.
-  const pattern = normalizedPhrase
-    .split(" ")
-    .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("[^\\p{L}\\p{N}]+");
-  return new RegExp(
-    `(^|[^\\p{L}\\p{N}])${pattern}(?=$|[^\\p{L}\\p{N}])`,
-    "iu",
-  ).test(normalizedText);
+  return hasTerm(text, phrase);
 }
 
 /**

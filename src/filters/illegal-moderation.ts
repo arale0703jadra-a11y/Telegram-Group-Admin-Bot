@@ -58,20 +58,21 @@ async function notifyAdminsForReview(
   }
 }
 
-illegalModeration.on("message", async (ctx, next) => {
+illegalModeration.on(["message", "edited_message"], async (ctx, next) => {
+  const message = ctx.msg;
   if (
     !isGroupChat(ctx) ||
     !ctx.from ||
     ctx.from.is_bot ||
     ctx.from.id === ctx.me.id ||
-    !ctx.message
+    !message
   ) {
     await next();
     return;
   }
   const chatId = ctx.chat.id;
   const userId = ctx.from.id;
-  const messageId = ctx.message.message_id;
+  const messageId = message.message_id;
   const now = Date.now();
 
   const data = await getGroupData(chatId);
@@ -79,7 +80,7 @@ illegalModeration.on("message", async (ctx, next) => {
     await next();
     return;
   }
-  const text = ctx.message.text ?? ctx.message.caption ?? "";
+  const text = message.text ?? message.caption ?? "";
   if (!text || text.startsWith("/")) {
     await next();
     return;
