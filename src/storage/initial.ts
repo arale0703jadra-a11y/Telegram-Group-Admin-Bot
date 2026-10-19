@@ -1,4 +1,4 @@
-import type { AntiSpamConfig, GroupData, IllegalContentConfig, InactivityConfig, PromotionConfig } from "./types.js";
+import type { AntiRaidConfig, AntiSpamConfig, EmergencyConfig, GroupData, IllegalContentConfig, InactivityConfig, PromotionConfig } from "./types.js";
 
 export const PROMOTION_DICTIONARY = [
   "vendo", "venta", "vender", "vendo contenido", "contenido",
@@ -71,10 +71,15 @@ export function initialIllegalContentConfig(): IllegalContentConfig {
   return {
     enabled: true,
     customTerms: [],
-    suspiciousDeletes: true,
+    suspiciousDeletes: false,
     highConfidenceBan: true,
     highConfidenceDelete: true,
     events: 0,
+    // Conservador: las detecciones ambiguas NO se sancionan solas; se
+    // revisan primero.
+    ambiguousAction: "review",
+    notifyAdminsOnAmbiguous: true,
+    reviewEvents: 0,
   };
 }
 
@@ -83,10 +88,33 @@ export function initialAntiSpamConfig(): AntiSpamConfig {
     enabled: true,
     maxMentionsPerMessage: 5,
     blockLinks: true,
+    blockInvites: true,
     detectRepeatedMessages: true,
     detectAutomatedBehavior: true,
+    rateLimitEnabled: true,
+    // Límite suave por defecto: suficiente para conversación normal, pero
+    // frena floods. Ajustable por grupo.
+    maxMessagesPerWindow: 8,
+    windowSeconds: 10,
     infractions: {},
   };
+}
+
+export function initialAntiRaidConfig(): AntiRaidConfig {
+  return {
+    enabled: true,
+    joinWindowSeconds: 60,
+    joinThreshold: 8,
+    coordinatedWindowSeconds: 15,
+    coordinatedThreshold: 4,
+    newAccountRestrictionMinutes: 30,
+    emergencyOnRaid: true,
+    emergencyMinutes: 10,
+  };
+}
+
+export function initialEmergencyConfig(): EmergencyConfig {
+  return { active: false };
 }
 
 export function initialInactivityConfig(): InactivityConfig {
@@ -111,6 +139,9 @@ export function initialGroupData(): GroupData {
     promotion: initialPromotionConfig(),
     illegalContent: initialIllegalContentConfig(),
     antiSpam: initialAntiSpamConfig(),
+    antiRaid: initialAntiRaidConfig(),
+    emergency: initialEmergencyConfig(),
+    trustedUsers: {},
     inactivity: initialInactivityConfig(),
     activityMessages: [],
     newUsers: { enabled: false },

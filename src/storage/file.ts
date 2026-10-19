@@ -19,7 +19,7 @@ import type {
 import { MAX_ACTIVITY_MESSAGES } from "./types.js";
 import type { PersistenceStore } from "./interface.js";
 import { DEFAULT_PROMOTION_STATISTICS, initialGroupData } from "./initial.js";
-import type { IllegalContentConfig, PromotionConfig } from "./types.js";
+import type { IllegalContentConfig, PromotionConfig, AntiRaidConfig, AntiSpamConfig, EmergencyConfig } from "./types.js";
 
 /**
  * Almacenamiento PERSISTENTE en disco, un archivo JSON por grupo:
@@ -190,6 +190,11 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
       base.illegalContent,
     ),
     antiSpam: normalizeAntiSpam(parsed.antiSpam, base.antiSpam),
+    antiRaid: normalizeAntiRaid(parsed.antiRaid, base.antiRaid),
+    emergency: normalizeEmergency(parsed.emergency, base.emergency),
+    trustedUsers: isRecord(parsed.trustedUsers)
+      ? (parsed.trustedUsers as Record<string, true>)
+      : {},
     inactivity: normalizeInactivity(parsed.inactivity, base.inactivity),
     activityMessages: normalizeActivityMessages(parsed.activityMessages),
     automaticMessage: normalizeAutomaticMessage(parsed.automaticMessage),
@@ -288,6 +293,8 @@ function normalizeAntiSpam(
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
     maxMentionsPerMessage: positive(raw.maxMentionsPerMessage, fallback.maxMentionsPerMessage),
     blockLinks: typeof raw.blockLinks === "boolean" ? raw.blockLinks : fallback.blockLinks,
+    blockInvites:
+      typeof raw.blockInvites === "boolean" ? raw.blockInvites : fallback.blockInvites,
     detectRepeatedMessages:
       typeof raw.detectRepeatedMessages === "boolean"
         ? raw.detectRepeatedMessages
@@ -296,9 +303,77 @@ function normalizeAntiSpam(
       typeof raw.detectAutomatedBehavior === "boolean"
         ? raw.detectAutomatedBehavior
         : fallback.detectAutomatedBehavior,
+    rateLimitEnabled:
+      typeof raw.rateLimitEnabled === "boolean"
+        ? raw.rateLimitEnabled
+        : fallback.rateLimitEnabled,
+    maxMessagesPerWindow: positive(
+      raw.maxMessagesPerWindow,
+      fallback.maxMessagesPerWindow,
+    ),
+    windowSeconds: positive(raw.windowSeconds, fallback.windowSeconds),
     infractions: isRecord(raw.infractions)
       ? (raw.infractions as Record<string, number>)
       : {},
+  };
+}
+
+function normalizeAntiRaid(
+  raw: unknown,
+  fallback: AntiRaidConfig,
+): AntiRaidConfig {
+  if (!isRecord(raw)) {
+    return fallback;
+  }
+  const positive = (value: unknown, defaultValue: number): number =>
+    typeof value === "number" && Number.isFinite(value) && value > 0
+      ? Math.floor(value)
+      : defaultValue;
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
+    joinWindowSeconds: positive(raw.joinWindowSeconds, fallback.joinWindowSeconds),
+    joinThreshold: positive(raw.joinThreshold, fallback.joinThreshold),
+    coordinatedWindowSeconds: positive(
+      raw.coordinatedWindowSeconds,
+      fallback.coordinatedWindowSeconds,
+    ),
+    coordinatedThreshold: positive(
+      raw.coordinatedThreshold,
+      fallback.coordinatedThreshold,
+    ),
+    newAccountRestrictionMinutes: positive(
+      raw.newAccountRestrictionMinutes,
+      fallback.newAccountRestrictionMinutes,
+    ),
+    emergencyOnRaid:
+      typeof raw.emergencyOnRaid === "boolean"
+        ? raw.emergencyOnRaid
+        : fallback.emergencyOnRaid,
+    emergencyMinutes: positive(raw.emergencyMinutes, fallback.emergencyMinutes),
+  };
+}
+
+function normalizeEmergency(
+  raw: unknown,
+  fallback: EmergencyConfig,
+): EmergencyConfig {
+  if (!isRecord(raw)) {
+    return fallback;
+  }
+  const numberOrUndefined = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? value
+      : undefined;
+  const expiresAt = numberOrUndefined(raw.expiresAt);
+  // Un modo de emergencia ya caducado no debe reactivarse al cargar.
+  const expired = expiresAt !== undefined && expiresAt <= Date.now();
+  return {
+    active: raw.active === true && !expired,
+    ...(typeof raw.reason === "string" ? { reason: raw.reason } : {}),
+    ...(numberOrUndefined(raw.activatedAt) !== undefined
+      ? { activatedAt: numberOrUndefined(raw.activatedAt) }
+      : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
   };
 }
 
@@ -330,6 +405,20 @@ function normalizeIllegalContent(
       typeof raw.events === "number" && raw.events >= 0
         ? raw.events
         : fallback.events,
+    ambiguousAction:
+      raw.ambiguousAction === "review" ||
+      raw.ambiguousAction === "delete" ||
+      raw.ambiguousAction === "none"
+        ? raw.ambiguousAction
+        : fallback.ambiguousAction,
+    notifyAdminsOnAmbiguous:
+      typeof raw.notifyAdminsOnAmbiguous === "boolean"
+        ? raw.notifyAdminsOnAmbiguous
+        : fallback.notifyAdminsOnAmbiguous,
+    reviewEvents:
+      typeof raw.reviewEvents === "number" && raw.reviewEvents >= 0
+        ? raw.reviewEvents
+        : fallback.reviewEvents,
   };
 }
 

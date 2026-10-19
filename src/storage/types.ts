@@ -22,6 +22,7 @@ export type ModerationType =
   | "CLEAN"
   | "ILLEGAL"
   | "ANTISPAM"
+  | "ANTIRAID"
   | "INACTIVITY_SCAN"
   | "INACTIVITY_REMOVE"
   | "INACTIVITY_REMOVE_ERROR";
@@ -176,6 +177,13 @@ export interface PromotionConfig {
 
 export type IllegalConfidence = "weak" | "suspicious" | "high";
 
+/**
+ * Acción automática ante una detección AMBIGUA (confianza "suspicious").
+ * Por defecto "review": no se sanciona automáticamente y se avisa a un
+ * administrador para que decida.
+ */
+export type IllegalAmbiguousAction = "review" | "delete" | "none";
+
 export interface IllegalContentConfig {
   enabled: boolean;
   customTerms: string[];
@@ -183,15 +191,62 @@ export interface IllegalContentConfig {
   highConfidenceBan: boolean;
   highConfidenceDelete: boolean;
   events: number;
+  /** Qué hacer con las detecciones ambiguas (confianza "suspicious"). */
+  ambiguousAction: IllegalAmbiguousAction;
+  /** Avisar a los administradores cuando hace falta revisión humana. */
+  notifyAdminsOnAmbiguous: boolean;
+  /** Contador de detecciones ambiguas encoladas para revisión. */
+  reviewEvents: number;
 }
 
 export interface AntiSpamConfig {
   enabled: boolean;
   maxMentionsPerMessage: number;
   blockLinks: boolean;
+  /** Restringe también invitaciones de un clic (t.me/+ y joinchat). */
+  blockInvites: boolean;
   detectRepeatedMessages: boolean;
   detectAutomatedBehavior: boolean;
+  /** Límite de frecuencia: mensajes máximos por usuario en la ventana. */
+  rateLimitEnabled: boolean;
+  maxMessagesPerWindow: number;
+  windowSeconds: number;
   infractions: Record<string, number>;
+}
+
+/**
+ * Detección de oleadas de entradas (raids) y actividad coordinada.
+ * La API de Bots de Telegram NO expone la fecha de creación de una cuenta,
+ * por lo que la "novedad" se mide por el tiempo transcurrido desde que el
+ * usuario entró al grupo (observable vía `new_chat_members` o el primer
+ * mensaje visto), nunca por la antigüedad de la cuenta.
+ */
+export interface AntiRaidConfig {
+  enabled: boolean;
+  /** Ventana (s) en la que se cuentan entradas para detectar una oleada. */
+  joinWindowSeconds: number;
+  /** Entradas mínimas en la ventana para considerar oleada. */
+  joinThreshold: number;
+  /** Ventana (s) para detectar mensajes coordinados idénticos. */
+  coordinatedWindowSeconds: number;
+  /** Usuarios distintos que deben enviar texto idéntico para coordinación. */
+  coordinatedThreshold: number;
+  /** Minutos durante los que se aplica restricción a cuentas recién llegadas. */
+  newAccountRestrictionMinutes: number;
+  /** Activar automáticamente el modo de emergencia al detectar oleada. */
+  emergencyOnRaid: boolean;
+  /** Duración (min) del modo de emergencia automático. */
+  emergencyMinutes: number;
+}
+
+/** Modo de emergencia: límites temporales más estrictos para no exentos. */
+export interface EmergencyConfig {
+  active: boolean;
+  reason?: string;
+  /** Epoch ms en que se activó. */
+  activatedAt?: number;
+  /** Epoch ms en que expira (y se desactiva solo). */
+  expiresAt?: number;
 }
 
 export interface InactivityConfig {
@@ -216,6 +271,10 @@ export interface GroupData {
   promotion: PromotionConfig;
   illegalContent: IllegalContentConfig;
   antiSpam: AntiSpamConfig;
+  antiRaid: AntiRaidConfig;
+  emergency: EmergencyConfig;
+  /** IDs (como texto) exentos de sanciones automáticas por spam/raid. */
+  trustedUsers: Record<string, true>;
   inactivity: InactivityConfig;
   activityMessages: ActivityMessage[];
   automaticMessage?: AutomaticMessageConfig;

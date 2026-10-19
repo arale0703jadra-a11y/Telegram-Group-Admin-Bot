@@ -1,6 +1,7 @@
 import type { Context } from "grammy";
 import type { ChatMember } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
+import { getCachedChatMember } from "./member-cache.js";
 
 /**
  * Tipos de estado de miembro de Telegram que se consideran administradores.
@@ -58,7 +59,16 @@ export async function checkUserAdminOf(
     return { isAdmin: false, error: "invalid-identifiers" };
   }
   try {
-    const member = await ctx.api.getChatMember(chatId, userId);
+    // Caché corta (10 s) + cooldown ante 429: la autorización se deniega ante
+    // cualquier fallo (nunca se concede permiso por defecto).
+    const member = await getCachedChatMember(ctx.api, chatId, userId);
+    if (!member) {
+      console.error(
+        `[AUTH] userId=${userId} groupId=${chatId} ` +
+          "telegramError=unavailable access=error",
+      );
+      return { isAdmin: false, error: "member-lookup-unavailable" };
+    }
     const status = String(member.status).trim().toLowerCase();
     const isAdmin = isAdminStatus(status);
     console.log(
@@ -67,13 +77,13 @@ export async function checkUserAdminOf(
     );
     return { isAdmin, status: member.status };
   } catch (error) {
-    const description =
-      error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 160) : "unknown";
+    // Defensa en profundidad: getCachedChatMember no lanza, pero si algo
+    // inesperado falla, se deniega sin volcar contenido del error.
     console.error(
       `[AUTH] userId=${userId} groupId=${chatId} ` +
-        `telegramError=${description} access=error`,
+        `telegramError=${error instanceof Error ? error.name : "unknown"} access=error`,
     );
-    return { isAdmin: false, error: description };
+    return { isAdmin: false, error: "unexpected-error" };
   }
 }
 

@@ -3,12 +3,19 @@ import { getGroupData, saveGroupData } from "../storage/index.js";
 import {
   getBotRights,
   getMemberSafely,
-  isProtectedMember,
   isVerifiableMember,
   muteUser,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
 import { isGroupChat } from "../utils/permissions.js";
+import {
+  CooldownTracker,
+  KeyedMutex,
+  SlidingWindowCounter,
+} from "../utils/safety.js";
+import { expireEmergencyIfNeeded, isEmergencyActive } from "./anti-raid-engine.js";
+import { isExemptFromAutomaticSanction } from "./exemptions.js";
+import { mediaKey, similarToRecent } from "../utils/message-signals.js";
 import type { MyContext } from "../types.js";
 
 interface UserSpamState {
@@ -17,6 +24,12 @@ interface UserSpamState {
 }
 
 const states = new Map<string, UserSpamState>();
+const rateLimiter = new SlidingWindowCounter();
+const muteCooldown = new CooldownTracker();
+const mutex = new KeyedMutex();
+
+/** Cooldown para no repetir el mismo silencio automático seguido. */
+const MUTE_COOLDOWN_MS = 60 * 1000;
 
 function stateFor(groupId: number, userId: number): UserSpamState {
   const key = `${groupId}:${userId}`;
@@ -61,6 +74,11 @@ function hasLink(ctx: MyContext, text: string): boolean {
   );
 }
 
+/** Invitaciones de un clic o de grupo (t.me/+…, joinchat). */
+function hasInviteLink(text: string): boolean {
+  return /(?:t\.me\/(?:\+|joinchat\/)|telegram\.me\/(?:\+|joinchat\/))/iu.test(text);
+}
+
 function mentionCount(ctx: MyContext): number {
   const entityMentions = getEntities(ctx).filter(
     (entity) => entity.type === "mention" || entity.type === "text_mention",
@@ -68,37 +86,6 @@ function mentionCount(ctx: MyContext): number {
   const text = getText(ctx);
   const textualMentions = text.match(/(^|\s)@[a-z0-9_]{4,}/giu)?.length ?? 0;
   return Math.max(entityMentions, textualMentions);
-}
-
-function mediaKey(ctx: MyContext): string | undefined {
-  const message = ctx.message;
-  if (!message) return undefined;
-  if ("sticker" in message && message.sticker) return `sticker:${message.sticker.file_id}`;
-  if ("animation" in message && message.animation) return `animation:${message.animation.file_id}`;
-  if ("video" in message && message.video) return `video:${message.video.file_id}`;
-  if ("document" in message && message.document) return `document:${message.document.file_id}`;
-  if ("audio" in message && message.audio) return `audio:${message.audio.file_id}`;
-  if ("voice" in message && message.voice) return `voice:${message.voice.file_id}`;
-  if ("video_note" in message && message.video_note) return `video_note:${message.video_note.file_id}`;
-  if ("photo" in message && message.photo && message.photo.length > 0) {
-    return `photo:${message.photo[message.photo.length - 1].file_id}`;
-  }
-  return undefined;
-}
-
-function similarToRecent(text: string, recent: string[]): boolean {
-  if (!text) {
-    return false;
-  }
-  return recent.some((previous) => {
-    if (previous === text) {
-      return true;
-    }
-    const left = new Set(text.split(" "));
-    const right = new Set(previous.split(" "));
-    const intersection = [...left].filter((word) => right.has(word)).length;
-    return intersection >= 3 && intersection / Math.max(left.size, right.size) >= 0.8;
-  });
 }
 
 function resetState(state: UserSpamState): void {
@@ -122,53 +109,84 @@ antiSpam.on("message", async (ctx, next) => {
 
   const chatId = ctx.chat.id;
   const userId = ctx.from.id;
-  const data = await getGroupData(chatId);
-  if (!data.antiSpam.enabled) {
+  const messageId = ctx.message.message_id;
+  const now = Date.now();
+
+  const member = await getMemberSafely(ctx, chatId, userId);
+  if (!member || member.user.is_bot || !isVerifiableMember(member)) {
     await next();
     return;
   }
 
-  const member = await getMemberSafely(ctx, chatId, userId);
-  if (
-    !member ||
-    member.user.is_bot ||
-    !isVerifiableMember(member) ||
-    isProtectedMember(member)
-  ) {
+  const data = await getGroupData(chatId);
+  data.emergency = expireEmergencyIfNeeded(data.emergency, now);
+  if (!data.antiSpam.enabled || isExemptFromAutomaticSanction(data, userId, member)) {
+    await saveGroupData(chatId, data);
     await next();
     return;
   }
 
   const rights = await getBotRights(ctx, chatId);
   if (!rights.canDelete && !rights.canRestrict) {
+    await saveGroupData(chatId, data);
     await next();
     return;
   }
 
-  const state = stateFor(chatId, userId);
+  // En modo de emergencia los límites se endurecen para no exentos.
+  const emergency = isEmergencyActive(data.emergency, now);
+  const effectiveBlockLinks = data.antiSpam.blockLinks || emergency;
+  const effectiveMaxMessages = emergency
+    ? Math.max(3, Math.floor(data.antiSpam.maxMessagesPerWindow / 2))
+    : data.antiSpam.maxMessagesPerWindow;
+  const windowMs = data.antiSpam.windowSeconds * 1000;
 
-  const text = normalizeMessage(getText(ctx));
-  const repeated =
-    data.antiSpam.detectRepeatedMessages && similarToRecent(text, state.texts);
-  const linkViolation = data.antiSpam.blockLinks && hasLink(ctx, getText(ctx));
+  const state = stateFor(chatId, userId);
+  const rawText = getText(ctx);
+  const text = normalizeMessage(rawText);
+
+  const rateExceeded =
+    data.antiSpam.rateLimitEnabled &&
+    rateLimiter.record(`${chatId}:${userId}`, now, windowMs) >
+      effectiveMaxMessages;
+
+  const inviteViolation = data.antiSpam.blockInvites && hasInviteLink(rawText);
+  const linkViolation =
+    effectiveBlockLinks && !inviteViolation && hasLink(ctx, rawText);
   const mentionViolation = mentionCount(ctx) > data.antiSpam.maxMentionsPerMessage;
-  const currentMediaKey = mediaKey(ctx);
+  const currentMediaKey = mediaKey(ctx.message);
   const mediaViolation =
     data.antiSpam.detectAutomatedBehavior &&
     Boolean(currentMediaKey && state.mediaKeys.includes(currentMediaKey));
-  const reason = linkViolation
-    ? "link"
-    : mentionViolation
-      ? "mentions"
-      : mediaViolation
-        ? "media-repeated"
-        : repeated
-          ? "repeated"
-          : undefined;
+  const repeated =
+    data.antiSpam.detectRepeatedMessages && similarToRecent(text, state.texts);
 
-  if (reason) {
+  const reason = rateExceeded
+    ? "rate"
+    : inviteViolation
+      ? "invite"
+      : linkViolation
+        ? "link"
+        : mentionViolation
+          ? "mentions"
+          : mediaViolation
+            ? "media-repeated"
+            : repeated
+              ? "repeated"
+              : undefined;
+
+  if (!reason) {
+    if (currentMediaKey) state.mediaKeys = [...state.mediaKeys.slice(-2), currentMediaKey];
+    if (text) state.texts = [...state.texts.slice(-2), text];
+    await saveGroupData(chatId, data);
+    await next();
+    return;
+  }
+
+  // Serializa la sanción por chat para no duplicar infractions/silencios.
+  const outcome = await mutex.runExclusive(String(chatId), async () => {
     const deleted = rights.canDelete
-      ? await ctx.api.deleteMessage(chatId, ctx.message.message_id).then(
+      ? await ctx.api.deleteMessage(chatId, messageId).then(
           () => ({ ok: true }),
           () => ({ ok: false }),
         )
@@ -179,37 +197,35 @@ antiSpam.on("message", async (ctx, next) => {
     await saveGroupData(chatId, data);
 
     let muted = false;
-    if (infraction >= 2 && rights.canRestrict) {
+    const canMuteNow =
+      infraction >= 2 &&
+      rights.canRestrict &&
+      muteCooldown.shouldApply(`${chatId}:${userId}:spam`, now, MUTE_COOLDOWN_MS);
+    if (canMuteNow) {
       const minutes = [15, 60, 240, 1440][Math.min(infraction - 2, 3)] ?? 1440;
-      muted = (await muteUser(ctx, chatId, userId, minutes, ctx.from.first_name)).ok;
+      muted = (await muteUser(ctx, chatId, userId, minutes, ctx.from!.first_name)).ok;
     }
-    try {
-      const status = muted
-        ? deleted.ok
-          ? "⚠️ Spam detectado. Tu mensaje fue eliminado y has sido silenciado temporalmente."
-          : "⚠️ Spam detectado. No se pudo eliminar tu mensaje, pero has sido silenciado temporalmente."
-        : deleted.ok
-          ? "⚠️ Spam detectado. Tu mensaje fue eliminado."
-          : "⚠️ Spam detectado. No se pudo eliminar tu mensaje.";
-      await ctx.reply(
-        status,
-      );
-    } catch (error) {
-      console.error("[ANTI-SPAM] No se pudo enviar la notificación:", error);
-    }
-    await logEvent(ctx, chatId, "ANTISPAM", {
-      targetId: userId,
-      targetName: ctx.from.username ?? ctx.from.first_name,
-      result: deleted.ok ? "ok" : "error",
-      detail: `ANTI_SPAM:${reason};delete=${deleted.ok};mute=${muted}`,
-    });
-    resetState(state);
-    return;
-  }
+    return { deleted: deleted.ok, muted };
+  });
 
-  if (currentMediaKey) state.mediaKeys = [...state.mediaKeys.slice(-2), currentMediaKey];
-  if (text) {
-    state.texts = [...state.texts.slice(-2), text];
+  try {
+    const status = outcome.muted
+      ? outcome.deleted
+        ? "⚠️ Spam detectado. Tu mensaje fue eliminado y has sido silenciado temporalmente."
+        : "⚠️ Spam detectado. Has sido silenciado temporalmente."
+      : outcome.deleted
+        ? "⚠️ Spam detectado. Tu mensaje fue eliminado."
+        : "⚠️ Spam detectado. No se pudo eliminar tu mensaje.";
+    await ctx.reply(status);
+  } catch (error) {
+    console.error("[ANTI-SPAM] No se pudo enviar la notificación:", error);
   }
-  await next();
+  await logEvent(ctx, chatId, "ANTISPAM", {
+    targetId: userId,
+    targetName: ctx.from.username ?? ctx.from.first_name,
+    result: outcome.deleted ? "ok" : "error",
+    detail: `ANTI_SPAM:${reason};delete=${outcome.deleted};mute=${outcome.muted};emergency=${emergency}`,
+  });
+  resetState(state);
+  return;
 });

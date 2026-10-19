@@ -2,11 +2,13 @@ import { Bot, Context } from "grammy";
 import { validateConfig, BOT_NAME } from "./config.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import { registerCommands } from "./commands/index.js";
+import { cleanServiceMessages } from "./commands/clean-service-messages.js";
 import { menuNavigation } from "./menus/index.js";
 import { moderationActions } from "./menus/actions.js";
 import { isGroupChat, isUserAdmin } from "./utils/permissions.js";
 import { promotionModeration } from "./filters/moderation.js";
 import { illegalModeration } from "./filters/illegal-moderation.js";
+import { antiRaid } from "./filters/anti-raid.js";
 import { antiSpam } from "./filters/anti-spam.js";
 import { runInactivityScan } from "./services/inactivity.js";
 import { getGroupData, saveGroupData, store } from "./storage/index.js";
@@ -33,6 +35,8 @@ async function main(): Promise<void> {
   bot.catch((err) => {
     console.error(`[ERROR] ${err.message}`);
   });
+
+  bot.use(cleanServiceMessages);
 
   bot.on("my_chat_member", async (ctx) => {
     if (!isGroupChat(ctx)) {
@@ -210,6 +214,7 @@ async function main(): Promise<void> {
     await next();
   });
 
+  bot.use(antiRaid);
   bot.use(antiSpam);
   bot.use(illegalModeration);
   bot.use(promotionModeration);

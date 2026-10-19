@@ -2,6 +2,8 @@ import type { ChatMember, ChatPermissions } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
 import { OWNER_ID } from "../config.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
+import { callWithRetryAfter } from "../utils/safety.js";
+import { getCachedBotRights, getCachedChatMember } from "../utils/member-cache.js";
 import { logEvent } from "./events.js";
 
 export interface ActionResult {
@@ -56,40 +58,30 @@ export interface BotRights {
 
 /**
  * Consulta los permisos del propio bot dentro del grupo.
+ * Usa caché con caducidad (60 s) y cooldown ante 429 (ver utils/member-cache).
+ * Sin respuesta verificable se deniegan los permisos; nunca se conceden
+ * permisos por defecto.
  */
 export async function getBotRights(
   ctx: MyContext,
   chatId: number,
 ): Promise<BotRights> {
-  try {
-    const member = await ctx.api.getChatMember(chatId, ctx.me.id);
-    if (member.status !== "administrator") {
-      return { canRestrict: false, canDelete: false };
-    }
-    return {
-      canRestrict:
-        "can_restrict_members" in member ? member.can_restrict_members : false,
-      canDelete:
-        "can_delete_messages" in member ? member.can_delete_messages : false,
-    };
-  } catch {
-    return { canRestrict: false, canDelete: false };
-  }
+  return getCachedBotRights(ctx.api, chatId, ctx.me.id);
 }
 
 /**
  * Obtiene el miembro objetivo de forma segura (no lanza).
+ * Usa caché corta (10 s) y cooldown ante 429 para que una oleada de spam no
+ * convierta cada mensaje en una llamada a la API. Devuelve `undefined` cuando
+ * no hay respuesta verificable: los filtros deben OMITIR la sanción en ese
+ * caso (nunca sancionar sin verificar).
  */
 export async function getMemberSafely(
   ctx: MyContext,
   chatId: number,
   userId: number,
 ): Promise<ChatMember | undefined> {
-  try {
-    return await ctx.api.getChatMember(chatId, userId);
-  } catch {
-    return undefined;
-  }
+  return getCachedChatMember(ctx.api, chatId, userId);
 }
 
 /**
@@ -310,9 +302,11 @@ export async function muteUser(
 
   const until = isEpochNowSeconds() + minutes * 60;
   try {
-    await ctx.api.restrictChatMember(chatId, userId, MUTE_PERMISSIONS, {
-      until_date: until,
-    });
+    await callWithRetryAfter(() =>
+      ctx.api.restrictChatMember(chatId, userId, MUTE_PERMISSIONS, {
+        until_date: until,
+      }),
+    );
   } catch {
     await logEvent(ctx, chatId, "MUTE", {
       targetId: userId,
@@ -478,7 +472,7 @@ export async function banUser(
   }
 
   try {
-    await ctx.api.banChatMember(chatId, userId);
+    await callWithRetryAfter(() => ctx.api.banChatMember(chatId, userId));
   } catch (error) {
     const technicalError =
       error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 300) : "unknown";
@@ -572,7 +566,7 @@ export async function deleteMessageById(
   messageId: number,
 ): Promise<ActionResult> {
   try {
-    await ctx.api.deleteMessage(chatId, messageId);
+    await callWithRetryAfter(() => ctx.api.deleteMessage(chatId, messageId));
     return { ok: true };
   } catch {
     return {
