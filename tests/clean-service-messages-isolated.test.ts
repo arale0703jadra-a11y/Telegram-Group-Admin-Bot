@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cleanMemberJoinServiceMessage } from "../src/commands/clean-service-messages.js";
+import { cleanTelegramServiceMessage } from "../src/commands/clean-service-messages.js";
 
 /**
  * Pruebas aisladas del limpiador de mensajes de servicio (sin datos reales,
@@ -13,8 +13,13 @@ interface FakeCtx {
   message: {
     message_id: number;
     new_chat_members?: unknown[];
+    user_shared?: unknown;
+    users_shared?: unknown;
+    connected_website?: string;
     community_chat_joined?: unknown;
+    new_chat_title?: string;
     text?: string;
+    photo?: unknown[];
   };
   api: { deleteMessage(chatId: number | string, messageId: number): Promise<unknown> };
 }
@@ -41,7 +46,7 @@ test("deletes the join service message in groups and continues the chain", async
     message: { message_id: 55, new_chat_members: [{ id: 1, is_bot: false }] },
   });
   let nextCalls = 0;
-  await cleanMemberJoinServiceMessage(ctx as never, async () => {
+  await cleanTelegramServiceMessage(ctx as never, async () => {
     nextCalls += 1;
   });
   assert.deepEqual(ctx.deletions, [[-1001, 55]]);
@@ -53,7 +58,7 @@ test("deletes community join service messages in groups", async () => {
     chat: { id: -1001, type: "group" },
     message: { message_id: 56, community_chat_joined: { user_id: 9 } },
   });
-  await cleanMemberJoinServiceMessage(ctx as never, async () => undefined);
+  await cleanTelegramServiceMessage(ctx as never, async () => undefined);
   assert.deepEqual(ctx.deletions, [[-1001, 56]]);
 });
 
@@ -63,7 +68,7 @@ test("never deletes in private chats and always continues the chain", async () =
     message: { message_id: 10, new_chat_members: [{ id: 2, is_bot: false }] },
   });
   let nextCalls = 0;
-  await cleanMemberJoinServiceMessage(ctx as never, async () => {
+  await cleanTelegramServiceMessage(ctx as never, async () => {
     nextCalls += 1;
   });
   assert.deepEqual(ctx.deletions, []);
@@ -75,7 +80,7 @@ test("does not delete normal messages that only carry text", async () => {
     chat: { id: -1001, type: "supergroup" },
     message: { message_id: 11, text: "hola a todos" },
   });
-  await cleanMemberJoinServiceMessage(ctx as never, async () => undefined);
+  await cleanTelegramServiceMessage(ctx as never, async () => undefined);
   assert.deepEqual(ctx.deletions, []);
 });
 
@@ -84,7 +89,7 @@ test("does not delete service messages with an empty member list", async () => {
     chat: { id: -1001, type: "supergroup" },
     message: { message_id: 12, new_chat_members: [] },
   });
-  await cleanMemberJoinServiceMessage(ctx as never, async () => undefined);
+  await cleanTelegramServiceMessage(ctx as never, async () => undefined);
   assert.deepEqual(ctx.deletions, []);
 });
 
@@ -104,7 +109,7 @@ test("a failing deleteMessage does not break the chain and reports once without 
     },
   };
   let nextCalls = 0;
-  await cleanMemberJoinServiceMessage(
+  await cleanTelegramServiceMessage(
     ctx as never,
     async () => {
       nextCalls += 1;
@@ -138,7 +143,7 @@ test("a 429 on deleteMessage is retried with backoff", async () => {
       },
     },
   };
-  await cleanMemberJoinServiceMessage(
+  await cleanTelegramServiceMessage(
     ctx as never,
     async () => undefined,
     (chatId, messageId, error) => {

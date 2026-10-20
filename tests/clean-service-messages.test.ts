@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cleanMemberJoinServiceMessage } from "../src/commands/clean-service-messages.js";
+import { cleanTelegramServiceMessage } from "../src/commands/clean-service-messages.js";
 
 function context(
   message: {
     message_id: number;
     new_chat_members?: unknown[];
+    user_shared?: unknown;
+    users_shared?: unknown;
+    connected_website?: string;
     community_chat_joined?: unknown;
+    new_chat_title?: string;
     text?: string;
+    photo?: unknown[];
   },
   overrides: {
     chatType?: string;
@@ -40,7 +45,7 @@ test("deletes a member-join service message without relying on its displayed tex
   });
   let continued = false;
 
-  await cleanMemberJoinServiceMessage(fixture.value, async () => {
+  await cleanTelegramServiceMessage(fixture.value, async () => {
     continued = true;
   });
 
@@ -54,7 +59,7 @@ test("Unicode and bidirectional control characters in member names do not affect
       message_id: 79,
       new_chat_members: [{ id: 457, first_name: firstName }],
     });
-    await cleanMemberJoinServiceMessage(fixture.value, async () => {});
+    await cleanTelegramServiceMessage(fixture.value, async () => {});
     assert.deepEqual(fixture.deletions, [[-100123, 79]]);
   }
 });
@@ -65,7 +70,7 @@ test("deletes the service message for a user joining from a linked community", a
     community_chat_joined: { chat: { id: -100999, title: "Community" } },
   });
   let continued = false;
-  await cleanMemberJoinServiceMessage(fixture.value, async () => {
+  await cleanTelegramServiceMessage(fixture.value, async () => {
     continued = true;
   });
   assert.deepEqual(fixture.deletions, [[-100123, 84]]);
@@ -75,16 +80,35 @@ test("deletes the service message for a user joining from a linked community", a
 test("normal messages and unrelated service messages are not deleted", async () => {
   const ordinary = context({ message_id: 80, text: "Se aceptó a alguien en el grupo." });
   let ordinaryContinued = false;
-  await cleanMemberJoinServiceMessage(ordinary.value, async () => {
+  await cleanTelegramServiceMessage(ordinary.value, async () => {
     ordinaryContinued = true;
   });
 
   const titleChange = context({ message_id: 81, new_chat_members: [] });
-  await cleanMemberJoinServiceMessage(titleChange.value, async () => {});
+  const plainMedia = context({ message_id: 85, photo: [{ file_id: "photo" }] });
+  await cleanTelegramServiceMessage(titleChange.value, async () => {});
+  await cleanTelegramServiceMessage(plainMedia.value, async () => {});
 
   assert.deepEqual(ordinary.deletions, []);
   assert.equal(ordinaryContinued, true);
   assert.deepEqual(titleChange.deletions, []);
+  assert.deepEqual(plainMedia.deletions, []);
+});
+
+test("deletes service messages from approved joins, user sharing, and connected websites", async () => {
+  const messages = [
+    { message_id: 86, new_chat_members: [{ id: 460, first_name: "Lee" }] },
+    { message_id: 87, user_shared: { request_id: 1, user_id: 461 } },
+    { message_id: 88, users_shared: { request_id: 2, users: [] } },
+    { message_id: 89, connected_website: "example.com" },
+    { message_id: 90, new_chat_title: "Nuevo nombre" },
+  ];
+
+  for (const message of messages) {
+    const fixture = context(message);
+    await cleanTelegramServiceMessage(fixture.value, async () => {});
+    assert.deepEqual(fixture.deletions, [[-100123, message.message_id]]);
+  }
 });
 
 test("failed deletions are logged safely and do not block later handlers", async () => {
@@ -105,7 +129,7 @@ test("failed deletions are logged safely and do not block later handlers", async
   console.error = (message?: unknown) => logs.push(String(message));
   let continued = false;
   try {
-    await cleanMemberJoinServiceMessage(fixture.value, async () => {
+    await cleanTelegramServiceMessage(fixture.value, async () => {
       continued = true;
     });
   } finally {
@@ -129,6 +153,6 @@ test("messages outside groups are left alone", async () => {
     },
     { chatType: "private" },
   );
-  await cleanMemberJoinServiceMessage(fixture.value, async () => {});
+  await cleanTelegramServiceMessage(fixture.value, async () => {});
   assert.deepEqual(fixture.deletions, []);
 });
