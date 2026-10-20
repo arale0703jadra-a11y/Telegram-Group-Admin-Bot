@@ -29,7 +29,9 @@ import {
   approveVerifiedTagCandidate,
   VerifiedTagApprovalError,
 } from "../src/services/verified-tag-approval.js";
+import { approveVerifiedMarkerCandidate } from "../src/services/verified-marker-approval.js";
 import { initialGroupData } from "../src/storage/initial.js";
+import { flushStorage } from "../src/storage/index.js";
 import { buttonCallbackData } from "./helpers.js";
 
 const verifiedRows: VerifiedUser[] = [];
@@ -263,7 +265,7 @@ test("review panels expose an empty state and only actionable review statuses", 
     username: "test_user",
     display_name: "Test",
     observed_tag: "Verificada",
-    status: "revoked_tag" as const,
+    status: "pending" as const,
     first_seen_at: new Date(0).toISOString(),
     last_seen_at: new Date(0).toISOString(),
     reviewed_at: null,
@@ -274,17 +276,14 @@ test("review panels expose an empty state and only actionable review statuses", 
   };
   const panel = buildVerifiedTagCandidatesPanel([review], 0, "Grupo");
   assert.ok(panel.keyboard.inline_keyboard.flat().some((button) =>
-    button.text.startsWith("♻️ Aprobar reactivación"),
+    buttonCallbackData(button) === "vu:review:approve:501",
   ));
-  assert.equal(
-    panel.keyboard.inline_keyboard.flat().some((button) =>
-      button.text.startsWith("❌ Rechazar"),
-    ),
-    false,
-  );
+  assert.ok(panel.keyboard.inline_keyboard.flat().some((button) =>
+    buttonCallbackData(button) === "vu:review:reject:501",
+  ));
   assert.match(
     buildVerifiedTagReviewConfirmPanel(review, "approve", "Grupo").text,
-    /reactivará mediante la aprobación manual/,
+    /confirmar que la cuenta sigue en el grupo/,
   );
 });
 
@@ -299,7 +298,7 @@ test("the group panel clearly marks tag detection as opt-in", () => {
     0,
   );
   assert.match(panel.text, /Detección por etiquetas: desactivada/);
-  assert.match(panel.text, /no concede ni revoca permisos/);
+  assert.match(panel.text, /Una coincidencia solo crea una candidata/);
   assert.ok(panel.keyboard.inline_keyboard.flat().some((button) =>
     buttonCallbackData(button) === "cfg:verified_tags_toggle",
   ));
@@ -676,4 +675,43 @@ test("Telegram errors return an uncertain result and do not imply missing tags",
         event.failure_code === "TELEGRAM_ERROR",
     ),
   );
+});
+
+test("text-marker approval requires authorization and confirms current membership", async () => {
+  const originalDirectory = process.cwd();
+  const testDirectory = mkdtempSync(join(tmpdir(), "zeus-marker-approval-"));
+  try {
+    process.chdir(testDirectory);
+    await recordVerifiedTagObservation({
+      groupId: -100,
+      userId: 501,
+      username: "test_user",
+      displayName: "Test",
+      observedTag: "#verificada (mensaje)",
+      status: "pending",
+    });
+
+    await approveVerifiedMarkerCandidate({
+      api: mockMemberApi(makeMember("member")),
+      groupId: -100,
+      userId: 501,
+      actorUserId: 100,
+      authorize: async () => true,
+    });
+
+    assert.equal(verifiedRows.length, 1);
+    assert.equal(verifiedRows[0]?.verified, true);
+    assert.equal(reviewRows[0]?.status, "approved");
+    assert.equal(reviewRows[0]?.reviewed_by, 100);
+    assert.ok(
+      Array.from(auditRows.values()).some(
+        (event) => event.event_type === "APPROVED" && event.actor_user_id === 100,
+      ),
+    );
+    await flushStorage();
+    assert.equal((await new FileStore().loadGroup(-100)).indexedUsers["501"]?.verified, true);
+  } finally {
+    process.chdir(originalDirectory);
+    rmSync(resolve(testDirectory), { recursive: true, force: true });
+  }
 });

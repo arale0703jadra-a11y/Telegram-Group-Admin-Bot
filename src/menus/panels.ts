@@ -1687,12 +1687,13 @@ export function buildVerifiedTagCandidatesPanel(
     keyboard.text(`👤 ${name}`, `vu:review:${review.user_id}`).row();
     if (review.status === "pending") {
       keyboard
-        .text("✅ Aprobar", `vu:review-confirm:approve:${review.user_id}`)
-        .text("❌ Rechazar", `vu:review-confirm:reject:${review.user_id}`)
+        .text("✅ Aprobar", `vu:review:approve:${review.user_id}`)
+        .text("❌ Rechazar", `vu:review:reject:${review.user_id}`)
         .row();
     } else if (review.status === "revoked_tag") {
       keyboard
-        .text("♻️ Aprobar reactivación", `vu:review-confirm:approve:${review.user_id}`)
+        .text("♻️ Revisar reactivación", `vu:review:approve:${review.user_id}`)
+        .text("❌ Rechazar", `vu:review:reject:${review.user_id}`)
         .row();
     }
   }
@@ -1717,23 +1718,23 @@ export function buildVerifiedTagReviewConfirmPanel(
   action: "approve" | "reject",
   groupTitle?: string,
 ): Panel {
-  const reactivation = review.status === "revoked_tag" && action === "approve";
-  const message = reactivation
-    ? "La verificación se reactivará mediante la aprobación manual."
-    : action === "approve"
-      ? "La candidata se verificará únicamente tras volver a confirmar la etiqueta y la membresía en Telegram."
-      : "La candidata será rechazada; observar la etiqueta no modifica por sí solo la verificación.";
+  const message = action === "approve"
+    ? review.status === "revoked_tag"
+      ? "Para reactivar esta verificación, ZEUS volverá a comprobar que la etiqueta nativa actual de Telegram coincide con la configuración."
+      : "La aprobación manual activará la verificación después de confirmar que la cuenta sigue en el grupo."
+    : "La candidata será rechazada y la coincidencia observada no concederá permisos.";
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n⚠️ *CONFIRMAR REVISIÓN*\n\n` +
       `Usuario: ${review.display_name ?? review.username ?? `ID ${review.user_id}`}\n` +
-      `ID: ${review.user_id}\nEstado: ${review.status}\n\n${message}`,
+      `ID: ${review.user_id}\nEstado: ${review.status}\n` +
+      `Señal observada: ${review.observed_tag ?? "ninguna"}\n\n${message}`,
     keyboard: new InlineKeyboard()
       .text(
         "✅ Confirmar",
-        `vu:review:${action}:${review.user_id}:${review.status}`,
+        `vu:apply:${action}:${review.user_id}`,
       )
-      .text("❌ Cancelar", `vu:review:${review.user_id}`),
+      .text("❌ Cancelar", "vu:candidates:0"),
   };
 }
 
@@ -1755,12 +1756,19 @@ export function buildVerifiedTitleConfigPanel(
       `Títulos reconocidos: ${recognizedTitles.join(", ") || "ninguno"}\n` +
       `Etiquetas reconocidas: ${recognizedTags.join(", ") || "ninguna"}\n` +
       `Candidatas pendientes: ${candidateCount}\n\n` +
-      "La detección por etiqueta es opcional y no concede ni revoca permisos; cada candidata requiere revisión manual.",
+      "ZEUS compara estas etiquetas con mensajes, captions y nombre/usuario visibles. " +
+      "Las biografías no están disponibles mediante Bot API. Una coincidencia solo crea una candidata; " +
+      "la aprobación manual confirma la membresía y concede permisos.",
     keyboard: new InlineKeyboard()
       .text(
         tagSyncEnabled ? "🔴 Desactivar detección" : "🟢 Activar detección",
         "cfg:verified_tags_toggle",
       )
+      .row()
+      .text("✏️ Editar etiquetas", "vu:edit")
+      .text("🧾 Revisar candidatas", "vu:candidates:0")
+      .row()
+      .text("👑 Verificadas actuales", FilterAction.verifiedList(0))
       .row()
       .add(...buildNavRow().inline_keyboard.flat()),
   };

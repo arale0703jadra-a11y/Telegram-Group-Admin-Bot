@@ -15,6 +15,7 @@ import { antiRaid } from "./filters/anti-raid.js";
 import { antiSpam } from "./filters/anti-spam.js";
 import { linkFilter } from "./filters/link-filter.js";
 import { profileChecker } from "./filters/profile-checker.js";
+import { verifiedMarkerDetection } from "./filters/verified-marker-detection.js";
 import { adminImpersonation } from "./filters/admin-impersonation.js";
 import { botAdditionGuard } from "./filters/bot-addition-guard.js";
 import { deletedAccounts } from "./filters/deleted-accounts.js";
@@ -64,6 +65,7 @@ async function main(): Promise<void> {
   bot.use(deletedAccounts);
   bot.use(adminGuardian);
   bot.use(botAdditionGuard);
+  bot.use(verifiedMarkerDetection);
   bot.use(profileChecker);
   bot.use(adminImpersonation);
 
@@ -391,6 +393,7 @@ async function main(): Promise<void> {
     allowed_updates: [
       "message",
       "chat_member",
+      "chat_join_request",
       "callback_query",
       "my_chat_member",
     ],

@@ -36,6 +36,9 @@ import {
   buildAntiSpamPanel,
   buildProtectionCenterPanel,
   buildVerifiedModelsPanel,
+  buildVerifiedTagCandidatesPanel,
+  buildVerifiedTagReviewConfirmPanel,
+  buildVerifiedTitleConfigPanel,
   buildMainPanel,
   buildMuteMenuPanel,
   buildPromptPanel,
@@ -62,6 +65,13 @@ import {
   invalidateVerifiedUserCache,
   revokeVerifiedUser,
 } from "../services/verified-users.js";
+import {
+  decideVerifiedTagReview,
+  getVerifiedTagReview,
+  listVerifiedTagReviews,
+} from "../services/verified-tag-reviews.js";
+import { approveVerifiedMarkerCandidate } from "../services/verified-marker-approval.js";
+import { approveVerifiedTagCandidate } from "../services/verified-tag-approval.js";
 import { unmarkUserVerified } from "../services/user-registry.js";
 import {
   activateEmergency,
@@ -95,7 +105,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
     parts[0] !== "ia" &&
     parts[0] !== "cl" &&
     parts[0] !== "am" &&
-    parts[0] !== "ep"
+    parts[0] !== "ep" &&
+    parts[0] !== "vu" &&
+    parts[0] !== "cfg"
   ) {
     return; // Callback ajeno: lo gestiona otro controlador.
   }
@@ -113,6 +125,203 @@ moderationActions.on("callback_query:data", async (ctx) => {
   const isAdmin = await isUserAdminOf(ctx, groupId);
   if (!isAdmin) {
     await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
+    return;
+  }
+
+  if (parts[0] === "cfg" && kind === "verified_tags_toggle") {
+    const data = await getGroupData(groupId);
+    data.verifiedTagSyncEnabled = !data.verifiedTagSyncEnabled;
+    await saveGroupData(groupId, data);
+    const reviews = await listVerifiedTagReviews(groupId);
+    await ctx.answerCallbackQuery(
+      data.verifiedTagSyncEnabled
+        ? "Detección de candidatas activada."
+        : "Detección de candidatas desactivada.",
+    );
+    await renderPanel(
+      ctx,
+      buildVerifiedTitleConfigPanel(
+        data.verifiedTitles,
+        data.autoDetectVerifiedTitles,
+        data.verifiedTagSyncEnabled,
+        ctx.session.user.selectedGroupTitle,
+        data.verifiedMemberTags,
+        data.verifiedTagSyncEnabled,
+        reviews.filter((review) => review.status === "pending").length,
+      ),
+    );
+    return;
+  }
+
+  if (parts[0] === "vu") {
+    if (ctx.chat?.type !== "private" || !ctx.from) {
+      await ctx.answerCallbackQuery("⛔ Disponible solo en el chat privado del bot.");
+      return;
+    }
+    const title = ctx.session.user.selectedGroupTitle;
+    if (kind === "toggle") {
+      const data = await getGroupData(groupId);
+      data.verifiedTagSyncEnabled = !data.verifiedTagSyncEnabled;
+      await saveGroupData(groupId, data);
+      await ctx.answerCallbackQuery(
+        data.verifiedTagSyncEnabled
+          ? "Detección de candidatas activada."
+          : "Detección de candidatas desactivada.",
+      );
+      const reviews = await listVerifiedTagReviews(groupId);
+      await renderPanel(
+        ctx,
+        buildVerifiedTitleConfigPanel(
+          data.verifiedTitles,
+          data.autoDetectVerifiedTitles,
+          data.verifiedTagSyncEnabled,
+          title,
+          data.verifiedMemberTags,
+          data.verifiedTagSyncEnabled,
+          reviews.filter((review) => review.status === "pending").length,
+        ),
+      );
+      return;
+    }
+    if (kind === "edit") {
+      ctx.session.user.pendingAction = { kind: "verifiedMarkers", groupId };
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildPromptPanel(
+          "✏️ Envía las etiquetas que ZEUS debe detectar, separadas por comas o líneas nuevas. " +
+            "Se aceptan hasta 20 etiquetas de 64 caracteres. Coincidir solo crea candidatas pendientes.",
+        ),
+      );
+      return;
+    }
+    if (kind === "candidates") {
+      const page = Number(parts[2] ?? 0);
+      if (!Number.isInteger(page) || page < 0) {
+        await ctx.answerCallbackQuery("Página no válida.");
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildVerifiedTagCandidatesPanel(
+          await listVerifiedTagReviews(groupId),
+          page,
+          title,
+        ),
+      );
+      return;
+    }
+    if (kind === "review") {
+      const action = parts[2];
+      const userId = Number(parts[3]);
+      if (
+        (action !== "approve" && action !== "reject") ||
+        !Number.isSafeInteger(userId) ||
+        userId <= 0
+      ) {
+        await ctx.answerCallbackQuery("Candidata no válida.");
+        return;
+      }
+      const review = await getVerifiedTagReview(groupId, userId);
+      if (
+        !review ||
+        (review.status !== "pending" && review.status !== "revoked_tag")
+      ) {
+        await ctx.answerCallbackQuery("La candidata ya no está pendiente.");
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildVerifiedTagReviewConfirmPanel(review, action, title),
+      );
+      return;
+    }
+    if (kind === "apply") {
+      const action = parts[2];
+      const userId = Number(parts[3]);
+      if (
+        (action !== "approve" && action !== "reject") ||
+        !Number.isSafeInteger(userId) ||
+        userId <= 0
+      ) {
+        await ctx.answerCallbackQuery("Candidata no válida.");
+        return;
+      }
+      try {
+        if (action === "approve") {
+          const review = await getVerifiedTagReview(groupId, userId);
+          if (review?.status === "revoked_tag") {
+            const data = await getGroupData(groupId);
+            const result = await approveVerifiedTagCandidate({
+              api: ctx.api,
+              groupId,
+              userId,
+              actorUserId: ctx.from.id,
+              recognizedTags: data.verifiedMemberTags,
+              authorize: () => isUserAdminOf(ctx, groupId, ctx.from?.id),
+            });
+            if (result.status === "uncertain") {
+              await ctx.answerCallbackQuery(result.message);
+              await renderPanel(
+                ctx,
+                buildVerifiedTagCandidatesPanel(
+                  await listVerifiedTagReviews(groupId),
+                  0,
+                  title,
+                ),
+              );
+              return;
+            }
+          } else {
+            await approveVerifiedMarkerCandidate({
+              api: ctx.api,
+              groupId,
+              userId,
+              actorUserId: ctx.from.id,
+              authorize: () => isUserAdminOf(ctx, groupId, ctx.from?.id),
+            });
+          }
+        } else {
+          const review = await getVerifiedTagReview(groupId, userId);
+          if (!review || (review.status !== "pending" && review.status !== "revoked_tag")) {
+            throw new Error("La candidata ya no está pendiente de revisión.");
+          }
+          const rejected = await decideVerifiedTagReview({
+            groupId,
+            userId,
+            decision: "rejected",
+            expectedStatus: review.status,
+            actorUserId: ctx.from.id,
+          });
+          if (!rejected) {
+            throw new Error("La candidata ya no está pendiente de revisión.");
+          }
+        }
+        await ctx.answerCallbackQuery(
+          action === "approve" ? "✅ Candidata verificada." : "Candidata rechazada.",
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_MARKER] No se pudo ${action} groupId=${groupId} userId=${userId}:`,
+          error,
+        );
+        await ctx.answerCallbackQuery(
+          error instanceof Error ? error.message : "No se pudo completar la revisión.",
+        );
+      }
+      await renderPanel(
+        ctx,
+        buildVerifiedTagCandidatesPanel(
+          await listVerifiedTagReviews(groupId),
+          0,
+          title,
+        ),
+      );
+      return;
+    }
+    await ctx.answerCallbackQuery("Acción de Verificadas no reconocida.");
     return;
   }
 
@@ -357,8 +566,26 @@ moderationActions.on("callback_query:data", async (ctx) => {
       );
       return;
     }
-    if (parts[0] === "fa" && (kind === "verified" || kind === "verified_list")) {
-      const page = kind === "verified_list" ? Number(parts[2] ?? 0) : 0;
+    if (parts[0] === "fa" && kind === "verified") {
+      const data = await getGroupData(groupId);
+      const reviews = await listVerifiedTagReviews(groupId);
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildVerifiedTitleConfigPanel(
+          data.verifiedTitles,
+          data.autoDetectVerifiedTitles,
+          data.verifiedTagSyncEnabled,
+          title,
+          data.verifiedMemberTags,
+          data.verifiedTagSyncEnabled,
+          reviews.filter((review) => review.status === "pending").length,
+        ),
+      );
+      return;
+    }
+    if (parts[0] === "fa" && kind === "verified_list") {
+      const page = Number(parts[2] ?? 0);
       if (!Number.isInteger(page) || page < 0) {
         await ctx.answerCallbackQuery("Página no válida.");
         return;

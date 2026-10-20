@@ -15,6 +15,7 @@ import {
   buildIllegalPanel,
   buildMuteMenuPanel,
   buildAutomaticMessagePanel,
+  buildVerifiedTitleConfigPanel,
   buildUserCardPanel,
   buildUserSearchResultsPanel,
   buildWarningsPanel,
@@ -24,6 +25,8 @@ import { muteUser, unmuteUser, warnUser } from "../moderation/actions.js";
 import type { MyContext, PickAction } from "../types.js";
 import { consumeRecoveryKey } from "../services/system-owner.js";
 import { automaticMessageScheduler } from "../services/automatic-messages.js";
+import { listVerifiedTagReviews } from "../services/verified-tag-reviews.js";
+import { normalizeConfiguredVerifiedMarkers } from "../services/verified-marker-detection.js";
 
 const MAX_MUTE_MINUTES = 527040;
 
@@ -118,6 +121,35 @@ privateInput.on("message:text", async (ctx) => {
       await sendPanel(
         ctx,
         buildFiltersPanel(panelData.promotion, ctx.session.user.selectedGroupTitle),
+      );
+      return;
+    }
+    if (pending.kind === "verifiedMarkers") {
+      const markers = normalizeConfiguredVerifiedMarkers(text);
+      if (!markers) {
+        await ctx.reply(
+          "❌ Configuración no válida. Envía entre 1 y 20 etiquetas distintas, " +
+            "separadas por comas o líneas nuevas; cada una puede tener hasta 64 caracteres.",
+        );
+        return;
+      }
+      const data = await getGroupData(pending.groupId);
+      data.verifiedMemberTags = markers;
+      await saveGroupData(pending.groupId, data);
+      ctx.session.user.pendingAction = undefined;
+      await ctx.reply("✅ Etiquetas de detección guardadas.");
+      const reviews = await listVerifiedTagReviews(pending.groupId);
+      await sendPanel(
+        ctx,
+        buildVerifiedTitleConfigPanel(
+          data.verifiedTitles,
+          data.autoDetectVerifiedTitles,
+          data.verifiedTagSyncEnabled,
+          ctx.session.user.selectedGroupTitle,
+          data.verifiedMemberTags,
+          data.verifiedTagSyncEnabled,
+          reviews.filter((review) => review.status === "pending").length,
+        ),
       );
       return;
     }

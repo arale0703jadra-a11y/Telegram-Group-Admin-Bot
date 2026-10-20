@@ -24,6 +24,7 @@ export type PendingAction =
   | { kind: "search"; groupId: number; messageId?: number }
   | { kind: "promotionTest"; groupId: number }
   | { kind: "automaticMessage"; groupId: number }
+  | { kind: "verifiedMarkers"; groupId: number }
   | { kind: "filterAdd"; groupId: number; messageId?: number }
   | { kind: "illegalAdd"; groupId: number; messageId?: number }
   | {
