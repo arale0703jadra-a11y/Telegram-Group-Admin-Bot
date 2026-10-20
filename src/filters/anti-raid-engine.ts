@@ -25,6 +25,24 @@ export interface CoordinatedResult {
   distinctUsers: number;
 }
 
+export const EMERGENCY_MEMBER_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** `joinedAt` in storage is epoch seconds; unknown or invalid dates are not recent. */
+export function isRecentEmergencyMember(
+  joinedAt: number | undefined,
+  now: number,
+): boolean {
+  if (
+    joinedAt === undefined ||
+    !Number.isSafeInteger(joinedAt) ||
+    joinedAt <= 0
+  ) {
+    return false;
+  }
+  const joinedAtMs = joinedAt * 1000;
+  return joinedAtMs <= now && now - joinedAtMs < EMERGENCY_MEMBER_AGE_MS;
+}
+
 export function normalizeCoordinationText(text: string): string {
   return text
     .toLocaleLowerCase("es")

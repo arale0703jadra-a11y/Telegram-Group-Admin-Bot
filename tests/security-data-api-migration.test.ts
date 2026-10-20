@@ -58,3 +58,26 @@ test("Supabase local Data API does not auto-expose future public tables", async 
   const config = await readFile(resolve(root, "supabase/config.toml"), "utf8");
   assert.match(config, /^\s*auto_expose_new_tables\s*=\s*false\s*$/mu);
 });
+
+test("user activity migration restricts its table to service_role", async () => {
+  const sql = await readFile(
+    resolve(root, "supabase/migrations/013_security_user_activity.sql"),
+    "utf8",
+  );
+  assert.match(sql, /create table if not exists public\.security_user_activity/iu);
+  assert.match(sql, /last_active_at timestamptz not null/iu);
+  assert.match(sql, /is_deleted boolean not null default false/iu);
+  assert.match(sql, /alter table public\.security_user_activity enable row level security/iu);
+  assert.match(
+    sql,
+    /revoke all privileges on table public\.security_user_activity\s+from public, anon, authenticated/iu,
+  );
+  assert.match(
+    sql,
+    /grant all privileges on table public\.security_user_activity to service_role/iu,
+  );
+  assert.match(
+    sql,
+    /create policy security_user_activity_service_role_access\s+on public\.security_user_activity\s+for all to service_role\s+using \(true\)\s+with check \(true\)/iu,
+  );
+});

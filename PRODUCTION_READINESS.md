@@ -9,12 +9,16 @@
 - El consumo de Recovery Key es de un solo uso y usa bloqueo transaccional.
 - Los RPC sensibles están diseñados para `service_role`.
 - La limpieza de challenges se ejecuta desde el ciclo de vida de Zeus y evita intervalos duplicados.
-- El panel tiene rutas para Usuarios, Seguridad Cerbero, Filtros, Bienvenida, Actividad, Inactividad, Verificadas, Configuración, Mensajes automáticos, Limpieza y Ayuda.
+- El panel tiene rutas para Usuarios, Centro de Protección, Seguridad Cerbero, Filtros, Bienvenida, Actividad, Inactividad, Verificadas, Configuración, Mensajes automáticos, Limpieza y Ayuda.
+- El Centro de Protección activa el modo de emergencia por 10 minutos por defecto; miembros con entrada registrada hace menos de 24 horas reciben restricciones temporales de enlaces, invitaciones y multimedia.
+- La depuración de inactividad es opt-in por grupo, usa el umbral de 21 días y limita cada ciclo a 50 expulsiones secuenciales con pausas y reintentos ante 429.
+- La actividad se registra en `security_user_activity`; administradores, propietario y verificadas se excluyen, y los accesos de Data API quedan restringidos a `service_role`.
 - `/ayuda` ya no muestra una sección “Próximamente” ni comandos inexistentes.
 - Existe checklist funcional en `TESTING_CHECKLIST.md`.
 - No se modificó Supabase remoto.
 - No se modificó `.env`.
 - No se modificó Cerbero.
+- La migración `013_security_user_activity.sql` todavía debe aplicarse y validarse en Supabase antes de activar la depuración; las cuentas eliminadas se identifican mediante el indicador limitado `first_name === "Deleted Account"` sin username ni apellido, no mediante un estado autoritativo de Telegram.
 
 ## WARN
 
@@ -55,6 +59,10 @@ Los callbacks están cableados, pero la suite automatizada no recorre todos los 
 ### Comandos de emergencia
 
 Los comandos independientes implementados incluyen `/menu` y `/borrar`. Mute, unmute, ban, unban, kick y warn están disponibles desde el panel, no como comandos independientes. No deben documentarse como comandos slash hasta que exista una implementación explícita.
+
+### Modo de emergencia
+
+El modo se puede activar manualmente desde `/admin` → **Centro de Protección** o automáticamente al detectar una oleada de entradas. La duración usa `antiRaid.emergencyMinutes` (10 minutos por defecto); Telegram restaura las restricciones temporales al vencer su `until_date`. Solo se aplican restricciones nativas a miembros con fecha de entrada observada por ZEUS; las fechas desconocidas no se interpretan como recientes. Para la aplicación completa, ZEUS necesita `can_restrict_members` y `can_delete_messages`.
 
 ## BLOCK
 

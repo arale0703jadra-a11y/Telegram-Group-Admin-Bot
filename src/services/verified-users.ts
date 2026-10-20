@@ -42,6 +42,10 @@ const permissionsCache = new Map<
   string,
   { expiresAt: number; permissions: VerifiedUserPermissions | undefined }
 >();
+const verificationStatusCache = new Map<
+  string,
+  { expiresAt: number; verified: boolean }
+>();
 const PERMISSIONS_CACHE_TTL_MS = 10_000;
 
 function getClient(): SupabaseClient {
@@ -62,7 +66,9 @@ export function normalizeVerifiedPermissions(
 }
 
 export function invalidateVerifiedUserCache(groupId: number, userId: number): void {
-  permissionsCache.delete(`${groupId}:${userId}`);
+  const key = `${groupId}:${userId}`;
+  permissionsCache.delete(key);
+  verificationStatusCache.delete(key);
 }
 
 export async function addVerifiedUser(input: {
@@ -220,7 +226,15 @@ export async function revokeVerifiedUser(groupId: number, userId: number): Promi
 }
 
 export async function isVerifiedUser(groupId: number, userId: number): Promise<boolean> {
-  return isActiveVerifiedRecord(await getVerifiedUser(groupId, userId));
+  const key = `${groupId}:${userId}`;
+  const cached = verificationStatusCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.verified;
+  const verified = isActiveVerifiedRecord(await getVerifiedUser(groupId, userId));
+  verificationStatusCache.set(key, {
+    expiresAt: Date.now() + PERMISSIONS_CACHE_TTL_MS,
+    verified,
+  });
+  return verified;
 }
 
 export async function getVerifiedUserPermissions(

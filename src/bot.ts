@@ -14,8 +14,13 @@ import { linkFilter } from "./filters/link-filter.js";
 import { profileChecker } from "./filters/profile-checker.js";
 import { adminImpersonation } from "./filters/admin-impersonation.js";
 import { botAdditionGuard } from "./filters/bot-addition-guard.js";
+import { deletedAccounts } from "./filters/deleted-accounts.js";
 import { replyWithAutoDelete } from "./utils/cleanup.js";
-import { runInactivityScan } from "./services/inactivity.js";
+import {
+  INACTIVITY_CLEANER_INTERVAL_MS,
+  runInactivityCleaner,
+} from "./services/inactivity-cleaner.js";
+import { recordUserActivity } from "./services/user-activity.js";
 import { getGroupData, saveGroupData, store } from "./storage/index.js";
 import {
   markUserAsAdmin,
@@ -26,6 +31,11 @@ import { MAX_ACTIVITY_MESSAGES, type ActivityMessage } from "./storage/types.js"
 import type { MyContext } from "./types.js";
 import { syncVerifiedAdministrators } from "./services/verified-title-sync.js";
 import { openPrivatePanel } from "./utils/private-panel.js";
+import {
+  expireEmergencyIfNeeded,
+  isEmergencyActive,
+} from "./filters/anti-raid-engine.js";
+import { restrictRecentMembers } from "./services/emergency-mode.js";
 
 async function main(): Promise<void> {
   validateConfig();
@@ -43,6 +53,7 @@ async function main(): Promise<void> {
     console.error(`[ERROR] ${err.message}`);
   });
 
+  bot.use(deletedAccounts);
   bot.use(cleanServiceMessages);
   bot.use(botAdditionGuard);
   bot.use(profileChecker);
@@ -118,6 +129,60 @@ async function main(): Promise<void> {
   bot.on("chat_member", async (ctx, next) => {
     if (isGroupChat(ctx) && ctx.from) {
       const member = ctx.chatMember.new_chat_member;
+      const previousStatus = ctx.chatMember.old_chat_member.status;
+      const hasJoined =
+        member.status === "member" ||
+        (member.status === "restricted" && member.is_member);
+      if (
+        !member.user.is_bot &&
+        (previousStatus === "left" || previousStatus === "kicked") &&
+        hasJoined
+      ) {
+        try {
+          const data = await getGroupData(ctx.chat.id);
+          const key = String(member.user.id);
+          const joinedAt = ctx.chatMember.date;
+          const name = [
+            member.user.first_name,
+            member.user.last_name,
+          ].filter(Boolean).join(" ");
+          const existing = data.indexedUsers[key];
+          data.indexedUsers[key] = {
+            ...existing,
+            id: member.user.id,
+            groupId: ctx.chat.id,
+            firstName: member.user.first_name,
+            lastName: member.user.last_name,
+            name,
+            displayName: name,
+            username: member.user.username ?? "",
+            firstSeen: existing?.firstSeen ?? joinedAt,
+            joinedAt,
+            lastActivityType: "join",
+          };
+          const now = Date.now();
+          data.emergency = expireEmergencyIfNeeded(data.emergency, now);
+          if (isEmergencyActive(data.emergency, now)) {
+            const result = await restrictRecentMembers(
+              ctx,
+              ctx.chat.id,
+              data,
+              now,
+            );
+            if (result.failed > 0) {
+              console.error(
+                `[ANTI_RAID] Fallaron ${result.failed} restricciones para la entrada groupId=${ctx.chat.id} userId=${member.user.id}.`,
+              );
+            }
+          }
+          await saveGroupData(ctx.chat.id, data);
+        } catch (error) {
+          console.error(
+            `[ANTI_RAID] No se pudo registrar la entrada groupId=${ctx.chat.id} userId=${member.user.id}:`,
+            error,
+          );
+        }
+      }
       if (
         member.status === "administrator" &&
         "custom_title" in member &&
@@ -222,7 +287,7 @@ async function main(): Promise<void> {
         if (existing) {
           existing.groupId = chatId;
           existing.firstSeen ??= now;
-          existing.joinedAt ??= now;
+          existing.joinedAt = now;
           existing.lastActivityType = "join";
           existing.firstName = member.first_name;
           existing.lastName = member.last_name;
@@ -257,6 +322,16 @@ async function main(): Promise<void> {
     } catch (error) {
       console.error("[INDEXADO] No se pudo registrar el mensaje:", error);
     }
+    if (!ctx.from.is_bot) {
+      try {
+        await recordUserActivity(ctx, chatId, ctx.from.id, ctx.message.date);
+      } catch (error) {
+        console.error(
+          `[USER_ACTIVITY] No se pudo guardar actividad groupId=${chatId} userId=${ctx.from.id}:`,
+          error,
+        );
+      }
+    }
     await next();
   });
 
@@ -271,9 +346,9 @@ async function main(): Promise<void> {
   bot.use(moderationActions);
 
   const inactivityTimer = setInterval(() => {
-    void runInactivityScan(inactivityContext);
-  }, 60 * 60 * 1000);
-  void runInactivityScan(inactivityContext);
+    void runInactivityCleaner(inactivityContext);
+  }, INACTIVITY_CLEANER_INTERVAL_MS);
+  void runInactivityCleaner(inactivityContext);
 
   // Graceful shutdown: forzar flush de datos antes de cerrar
   const shutdown = async (signal: string): Promise<void> => {

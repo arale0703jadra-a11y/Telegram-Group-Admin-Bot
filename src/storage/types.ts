@@ -247,6 +247,8 @@ export interface EmergencyConfig {
   activatedAt?: number;
   /** Epoch ms en que expira (y se desactiva solo). */
   expiresAt?: number;
+  /** IDs con restricción temporal aplicada por el modo de emergencia. */
+  restrictedUsers?: Record<string, number>;
 }
 
 export interface InactivityConfig {

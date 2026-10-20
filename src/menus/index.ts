@@ -11,6 +11,7 @@ import {
   buildMainPanel,
   buildSubmenuPanel,
   buildAntiSpamPanel,
+  buildProtectionCenterPanel,
   buildInactivityPanel,
   buildUsersPanel,
 } from "./panels.js";
@@ -173,6 +174,13 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
       `[USERS PANEL] groupId=${selectedGroupId} observedUsers=${users.length}`,
     );
     panel = buildUsersPanel(users, 0, title);
+  } else if (action.kind === "sub" && action.section === "proteccion") {
+    const data = await getGroupData(selectedGroupId);
+    panel = buildProtectionCenterPanel(
+      data.emergency,
+      data.antiRaid.emergencyMinutes,
+      title,
+    );
   } else if (action.kind === "sub" && action.section === "antispam") {
     panel = buildAntiSpamPanel(
       (await getGroupData(selectedGroupId)).antiSpam,

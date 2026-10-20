@@ -14,7 +14,11 @@ import {
   KeyedMutex,
   SlidingWindowCounter,
 } from "../utils/safety.js";
-import { expireEmergencyIfNeeded, isEmergencyActive } from "./anti-raid-engine.js";
+import {
+  expireEmergencyIfNeeded,
+  isEmergencyActive,
+  isRecentEmergencyMember,
+} from "./anti-raid-engine.js";
 import { isExemptFromAutomaticSanction } from "./exemptions.js";
 import { mediaKey, similarToRecent } from "../utils/message-signals.js";
 import { inspectLinks } from "./link-filter.js";
@@ -128,7 +132,11 @@ antiSpam.on("message", async (ctx, next) => {
 
   // En modo de emergencia los límites se endurecen para no exentos.
   const emergency = isEmergencyActive(data.emergency, now);
-  const effectiveBlockLinks = data.antiSpam.blockLinks || emergency;
+  const emergencyRestriction =
+    emergency &&
+    isRecentEmergencyMember(data.indexedUsers[String(userId)]?.joinedAt, now);
+  const effectiveBlockLinks =
+    data.antiSpam.blockLinks || emergencyRestriction;
   const effectiveMaxMessages = emergency
     ? Math.max(3, Math.floor(data.antiSpam.maxMessagesPerWindow / 2))
     : data.antiSpam.maxMessagesPerWindow;
@@ -145,7 +153,8 @@ antiSpam.on("message", async (ctx, next) => {
       effectiveMaxMessages;
 
   const inviteViolation =
-    data.antiSpam.blockInvites && links.hasUnauthorizedInvite;
+    (data.antiSpam.blockInvites || emergencyRestriction) &&
+    links.hasUnauthorizedInvite;
   const linkViolation =
     effectiveBlockLinks &&
     links.hasUnauthorizedLink &&

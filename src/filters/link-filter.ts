@@ -17,7 +17,11 @@ import {
 import { logEvent } from "../moderation/events.js";
 import { isExemptFromAutomaticSanction } from "./exemptions.js";
 import { isGroupChat } from "../utils/permissions.js";
-import { isEmergencyActive, expireEmergencyIfNeeded } from "./anti-raid-engine.js";
+import {
+  isEmergencyActive,
+  expireEmergencyIfNeeded,
+  isRecentEmergencyMember,
+} from "./anti-raid-engine.js";
 import { getScannableMessageContent } from "./message-content.js";
 import { getVerifiedUserPermissions } from "../services/verified-users.js";
 import type { MyContext } from "../types.js";
@@ -254,26 +258,33 @@ linkFilter.on("message", async (ctx, next) => {
     return;
   }
 
-  const verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
-  if (verifiedPermissions?.can_send_links) {
-    await next();
-    return;
-  }
-
   const data = await getGroupData(chatId);
-  if (!data.antiSpam.enabled || isExemptFromAutomaticSanction(data, userId, member)) {
-    await next();
-    return;
-  }
-
   const now = Date.now();
   data.emergency = expireEmergencyIfNeeded(data.emergency, now);
   const emergency = isEmergencyActive(data.emergency, now);
+  const emergencyRestriction =
+    emergency &&
+    isRecentEmergencyMember(data.indexedUsers[String(userId)]?.joinedAt, now);
+  const verifiedPermissions = await getVerifiedUserPermissions(chatId, userId);
+  if (verifiedPermissions?.can_send_links && !emergencyRestriction) {
+    await next();
+    return;
+  }
+
+  if (
+    (!data.antiSpam.enabled && !emergencyRestriction) ||
+    isExemptFromAutomaticSanction(data, userId, member)
+  ) {
+    await next();
+    return;
+  }
+
   const content = getScannableMessageContent(ctx.message);
   const links = inspectLinks(content.text, content.entities);
-  const blockLinks = data.antiSpam.blockLinks || emergency;
+  const blockLinks = data.antiSpam.blockLinks || emergencyRestriction;
   const violation =
-    (data.antiSpam.blockInvites && links.hasUnauthorizedInvite) ||
+    ((data.antiSpam.blockInvites || emergencyRestriction) &&
+      links.hasUnauthorizedInvite) ||
     (blockLinks && links.hasUnauthorizedLink) ||
     Boolean(links.blockedMention);
   if (!violation) {

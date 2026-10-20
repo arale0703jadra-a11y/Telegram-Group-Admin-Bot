@@ -6,6 +6,7 @@ import {
 import type {
   IllegalContentConfig,
   AntiSpamConfig,
+  EmergencyConfig,
   InactivityConfig,
   IndexedUser,
   PromotionConfig,
@@ -82,6 +83,10 @@ export const ModAction = {
   ban: (userId: number): string => `${MA}:ban:${userId}`,
   unban: (userId: number): string => `${MA}:unban:${userId}`,
   cleanup: (count: number): string => `${MA}:cleanup:${count}`,
+};
+
+export const EmergencyAction = {
+  toggle: "ep:toggle",
 };
 
 const FILTER_PREFIX = "fa";
@@ -170,6 +175,7 @@ interface MenuItem {
  * Categorías del panel principal, en el orden solicitado.
  */
 const CATEGORIES: MenuItem[] = [
+  { id: "proteccion", label: "🛡️ Centro de Protección" },
   { id: "usuarios", label: "👥 Usuarios" },
   { id: "filtros", label: "🚫 Filtros" },
   { id: "antispam", label: "🛡️ Anti-spam" },
@@ -338,6 +344,42 @@ export function buildMainPanel(groupTitle?: string): Panel {
       `${formatGroupHeader(groupTitle)}\n\n` +
       "Selecciona una categoría para gestionar el grupo:\n\n" +
       "ℹ️ Solo los administradores del grupo pueden usar este panel.",
+    keyboard,
+  };
+}
+
+export function buildProtectionCenterPanel(
+  emergency: EmergencyConfig,
+  durationMinutes: number,
+  groupTitle?: string,
+): Panel {
+  const active =
+    emergency.active &&
+    (emergency.expiresAt === undefined || emergency.expiresAt > Date.now());
+  const expiry = active && emergency.expiresAt
+    ? new Date(emergency.expiresAt).toLocaleString("es-ES")
+    : undefined;
+  const keyboard = new InlineKeyboard()
+    .text(
+      active ? "🔴 Desactivar modo de emergencia" : "🟢 Activar modo de emergencia",
+      EmergencyAction.toggle,
+    )
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🛡️ *Centro de Protección Avanzada*\n\n" +
+      `Modo de emergencia: *${active ? "ACTIVO" : "inactivo"}*\n` +
+      (expiry ? `Caduca automáticamente: ${expiry}\n` : "") +
+      `Duración al activarlo: ${durationMinutes} minutos.\n\n` +
+      "Durante una emergencia, los miembros con menos de 24 horas de antigüedad " +
+      "tendrán restringidos los enlaces, invitaciones y multimedia. Las restricciones " +
+      "de Telegram caducan junto con el modo; la activación también se produce " +
+      "automáticamente al detectar una oleada si Anti-Raid está habilitado.\n\n" +
+      "ZEUS necesita permisos para restringir miembros y borrar mensajes para " +
+      "aplicar todas las medidas.",
     keyboard,
   };
 }
@@ -653,7 +695,8 @@ export function buildInactivityPanel(config: InactivityConfig, groupTitle?: stri
     text:
       `${formatGroupHeader(groupTitle)}\n\n⏰ *INACTIVIDAD*\n\n` +
       `Estado: ${config.enabled ? "🟢 Activado" : "🔴 Desactivado"}\n` +
-      `Período: ${config.customDays ?? config.inactivityDays} días`,
+      `Candidatos manuales: ${config.customDays ?? config.inactivityDays} días\n` +
+      `Depuración automática: ${config.enabled ? "21 días, diaria" : "desactivada"}`,
     keyboard,
   };
 }

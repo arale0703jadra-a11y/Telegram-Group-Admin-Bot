@@ -32,6 +32,7 @@ import {
   buildInactiveUsersPanel,
   buildInactivityCleanConfirmPanel,
   buildAntiSpamPanel,
+  buildProtectionCenterPanel,
   buildVerifiedModelsPanel,
   buildMainPanel,
   buildMuteMenuPanel,
@@ -42,6 +43,7 @@ import {
   buildUsersPanel,
   buildViewWarningsPanel,
   FilterAction,
+  EmergencyAction,
   buildWarningsPanel,
   ModAction,
 } from "./panels.js";
@@ -58,6 +60,15 @@ import {
   revokeVerifiedUser,
 } from "../services/verified-users.js";
 import { unmarkUserVerified } from "../services/user-registry.js";
+import {
+  activateEmergency,
+  expireEmergencyIfNeeded,
+  isEmergencyActive,
+} from "../filters/anti-raid-engine.js";
+import {
+  restrictRecentMembers,
+  restoreEmergencyRestrictions,
+} from "../services/emergency-mode.js";
 
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
@@ -71,7 +82,13 @@ export const moderationActions = new Composer<MyContext>();
 
 moderationActions.on("callback_query:data", async (ctx) => {
   const parts = ctx.callbackQuery.data.split(":");
-  if (parts[0] !== "ma" && parts[0] !== "fa" && parts[0] !== "sa" && parts[0] !== "ia") {
+  if (
+    parts[0] !== "ma" &&
+    parts[0] !== "fa" &&
+    parts[0] !== "sa" &&
+    parts[0] !== "ia" &&
+    parts[0] !== "ep"
+  ) {
     return; // Callback ajeno: lo gestiona otro controlador.
   }
 
@@ -88,6 +105,75 @@ moderationActions.on("callback_query:data", async (ctx) => {
   const isAdmin = await isUserAdminOf(ctx, groupId);
   if (!isAdmin) {
     await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
+    return;
+  }
+
+  if (parts[0] === "ep") {
+    if (kind !== "toggle" || ctx.chat?.type !== "private") {
+      await ctx.answerCallbackQuery("Acción del Centro de Protección no válida.");
+      return;
+    }
+    const data = await getGroupData(groupId);
+    const now = Date.now();
+    data.emergency = expireEmergencyIfNeeded(data.emergency, now);
+
+    if (isEmergencyActive(data.emergency, now)) {
+      const restored = await restoreEmergencyRestrictions(ctx, groupId, data);
+      if (!restored) {
+        await saveGroupData(groupId, data);
+        await ctx.answerCallbackQuery(
+          "No se pudieron restaurar todos los permisos. El modo sigue activo.",
+        );
+        await renderPanel(
+          ctx,
+          buildProtectionCenterPanel(
+            data.emergency,
+            data.antiRaid.emergencyMinutes,
+            ctx.session.user.selectedGroupTitle,
+          ),
+        );
+        return;
+      }
+      data.emergency = { active: false };
+      await logEvent(ctx, groupId, "ANTIRAID", {
+        result: "ok",
+        detail: "Modo de emergencia desactivado manualmente.",
+      });
+    } else {
+      data.emergency = activateEmergency(
+        data.emergency,
+        "activacion-manual",
+        now,
+        data.antiRaid.emergencyMinutes,
+      );
+      const restrictionResult = await restrictRecentMembers(
+        ctx,
+        groupId,
+        data,
+        now,
+      );
+      await logEvent(ctx, groupId, "ANTIRAID", {
+        result: restrictionResult.failed > 0 ? "error" : "ok",
+        detail:
+          `Modo de emergencia activado manualmente; restringidos=${restrictionResult.restricted}; ` +
+          `fallidos=${restrictionResult.failed}.`,
+      });
+    }
+
+    await saveGroupData(groupId, data);
+    await ctx.answerCallbackQuery(
+      isEmergencyActive(data.emergency, Date.now())
+        ? "Modo de emergencia activado."
+        : "Modo de emergencia desactivado.",
+    );
+    await renderPanel(
+      ctx,
+      buildProtectionCenterPanel(
+        data.emergency,
+        data.antiRaid.emergencyMinutes,
+        ctx.session.user.selectedGroupTitle,
+      ),
+    );
     return;
   }
 

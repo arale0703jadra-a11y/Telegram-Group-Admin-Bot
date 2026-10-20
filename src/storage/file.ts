@@ -374,6 +374,18 @@ function normalizeEmergency(
       ? { activatedAt: numberOrUndefined(raw.activatedAt) }
       : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(isRecord(raw.restrictedUsers)
+      ? {
+          restrictedUsers: Object.fromEntries(
+            Object.entries(raw.restrictedUsers).filter(
+              ([, until]) =>
+                typeof until === "number" &&
+                Number.isSafeInteger(until) &&
+                until > 0,
+            ),
+          ) as Record<string, number>,
+        }
+      : {}),
   };
 }
 
