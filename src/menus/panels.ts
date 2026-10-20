@@ -1699,7 +1699,7 @@ export function buildVerifiedTagCandidatesPanel(
   }
   if (current > 0) keyboard.text("◀️ Anterior", `vu:review-list:${current - 1}`);
   if (current < pageCount - 1) keyboard.text("Siguiente ▶️", `vu:review-list:${current + 1}`);
-  keyboard.row().text("⬅️ Volver", MenuAction.sub("verificadas"));
+  keyboard.row().text("⬅️ Volver", FilterAction.verified);
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n🧾 *REVISIÓN DE ETIQUETAS VERIFICADAS*\n\n` +

@@ -143,7 +143,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
       buildVerifiedTitleConfigPanel(
         data.verifiedTitles,
         data.autoDetectVerifiedTitles,
-        data.verifiedTagSyncEnabled,
+        true, // sincronización de títulos: automática (eventos en bot.ts)
         ctx.session.user.selectedGroupTitle,
         data.verifiedMemberTags,
         data.verifiedTagSyncEnabled,
@@ -174,7 +174,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
         buildVerifiedTitleConfigPanel(
           data.verifiedTitles,
           data.autoDetectVerifiedTitles,
-          data.verifiedTagSyncEnabled,
+          true, // sincronización de títulos: automática (eventos en bot.ts)
           title,
           data.verifiedMemberTags,
           data.verifiedTagSyncEnabled,
@@ -212,14 +212,42 @@ moderationActions.on("callback_query:data", async (ctx) => {
       );
       return;
     }
+    if (kind === "review-list") {
+      const page = Number(parts[2] ?? 0);
+      if (!Number.isInteger(page) || page < 0) {
+        await ctx.answerCallbackQuery("Página no válida.");
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildVerifiedTagCandidatesPanel(
+          await listVerifiedTagReviews(groupId),
+          page,
+          title,
+        ),
+      );
+      return;
+    }
     if (kind === "review") {
       const action = parts[2];
+      // Fila `vu:review:<userId>`: informa sin entrar en el flujo de aprobación.
+      if (action !== "approve" && action !== "reject") {
+        const rowUserId = Number(action);
+        if (!Number.isSafeInteger(rowUserId) || rowUserId <= 0) {
+          await ctx.answerCallbackQuery("Candidata no válida.");
+          return;
+        }
+        const rowReview = await getVerifiedTagReview(groupId, rowUserId);
+        await ctx.answerCallbackQuery(
+          rowReview
+            ? `Etiqueta: ${rowReview.observed_tag ?? "ninguna"} · Estado: ${rowReview.status}`
+            : "La candidata ya no existe.",
+        );
+        return;
+      }
       const userId = Number(parts[3]);
-      if (
-        (action !== "approve" && action !== "reject") ||
-        !Number.isSafeInteger(userId) ||
-        userId <= 0
-      ) {
+      if (!Number.isSafeInteger(userId) || userId <= 0) {
         await ctx.answerCallbackQuery("Candidata no válida.");
         return;
       }
@@ -575,7 +603,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
         buildVerifiedTitleConfigPanel(
           data.verifiedTitles,
           data.autoDetectVerifiedTitles,
-          data.verifiedTagSyncEnabled,
+          true, // sincronización de títulos: automática (eventos en bot.ts)
           title,
           data.verifiedMemberTags,
           data.verifiedTagSyncEnabled,

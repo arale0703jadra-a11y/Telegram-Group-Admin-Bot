@@ -1,7 +1,7 @@
 import { Composer } from "grammy";
 import { isUserAdminOf } from "../utils/permissions.js";
 import { getAdministrableGroups } from "../utils/groups.js";
-import { getGroupData } from "../storage/index.js";
+import { getActivityGroupData, getGroupData } from "../storage/index.js";
 import {
   generateRecoveryKey,
   isSystemOwner,
@@ -18,6 +18,12 @@ import {
   buildUsersPanel,
 } from "./panels.js";
 import { renderPanel } from "./render.js";
+import { recordObservedUser } from "../services/user-registry.js";
+import {
+  handleActivitySummary,
+  isActivityPanelAction,
+  presentActivityPanel,
+} from "./activity-summary.js";
 import type { MyContext } from "../types.js";
 
 const DEVELOPMENT_MESSAGE = "🚧 Esta función está en desarrollo.";
@@ -147,6 +153,64 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
   if (!selectedGroupId) {
     await ctx.answerCallbackQuery(NO_GROUP_SELECTED_MESSAGE);
     await showGroupPicker(ctx);
+    return;
+  }
+
+  // Resumen de actividad: módulo completo (paneles + tests) que antes caía
+  // en el aviso de "en desarrollo" porque no estaba conectado al router.
+  if (isActivityPanelAction(action)) {
+    await handleActivitySummary({
+      groupId: selectedGroupId,
+      groupTitle: ctx.session.user.selectedGroupTitle,
+      authorize: () => isUserAdminOf(ctx, selectedGroupId),
+      answerCallback: async (message) => {
+        await ctx.answerCallbackQuery(message);
+      },
+      recordUser: async () => {
+        if (ctx.from) {
+          await recordObservedUser(selectedGroupId, ctx.from, { activity: true });
+        }
+      },
+      loadGroupData: () => getActivityGroupData(selectedGroupId),
+      presentPanel: (panel) =>
+        presentActivityPanel(panel, {
+          edit: async (activityPanel) => {
+            const message = ctx.callbackQuery.message;
+            const chatId = ctx.chat?.id;
+            if (!message || !chatId) {
+              return false;
+            }
+            await ctx.api.editMessageText(
+              chatId,
+              message.message_id,
+              activityPanel.text,
+              {
+                reply_markup: activityPanel.keyboard,
+                parse_mode: "Markdown",
+              },
+            );
+            return true;
+          },
+          reply: async (activityPanel) => {
+            await ctx.reply(activityPanel.text, {
+              reply_markup: activityPanel.keyboard,
+              parse_mode: "Markdown",
+            });
+          },
+          logError: (message, error) => {
+            console.error(`[ACTIVITY PANEL] ${message}`, error);
+          },
+        }),
+      sendError: async (message) => {
+        await ctx.reply(message);
+      },
+      logError: (message, error) => {
+        console.error(
+          `[ACTIVITY PANEL] ${message} groupId=${selectedGroupId}`,
+          error,
+        );
+      },
+    });
     return;
   }
 

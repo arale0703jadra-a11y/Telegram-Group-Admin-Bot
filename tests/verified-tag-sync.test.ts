@@ -287,6 +287,38 @@ test("review panels expose an empty state and only actionable review statuses", 
   );
 });
 
+test("candidates panel navigation stays within the verified module", () => {
+  const template = {
+    group_id: -100,
+    username: "test_user",
+    display_name: "Test",
+    observed_tag: "Verificada",
+    status: "pending" as const,
+    first_seen_at: new Date(0).toISOString(),
+    last_seen_at: new Date(0).toISOString(),
+    reviewed_at: null,
+    reviewed_by: null,
+    review_claim_token: null,
+    review_claim_expires_at: null,
+    review_claim_previous_status: null,
+  };
+  const reviews = Array.from({ length: 9 }, (_, index) => ({
+    ...template,
+    user_id: 500 + index,
+  }));
+  const panel = buildVerifiedTagCandidatesPanel(reviews, 1, "Grupo");
+  const callbacks = panel.keyboard.inline_keyboard
+    .flat()
+    .map(buttonCallbackData);
+
+  // "Volver" regresa al panel real de configuración de Verificadas
+  // (fa:verified), no a un submenú inexistente.
+  assert.ok(callbacks.includes("fa:verified"));
+  assert.ok(!callbacks.includes("menu:sub:verificadas"));
+  // La paginación usa callbacks con manejador registrado en actions.ts.
+  assert.ok(callbacks.includes("vu:review-list:0"));
+});
+
 test("the group panel clearly marks tag detection as opt-in", () => {
   const panel = buildVerifiedTitleConfigPanel(
     ["legacy"],
