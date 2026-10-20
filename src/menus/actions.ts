@@ -36,6 +36,7 @@ import {
   buildAntiSpamPanel,
   buildProtectionCenterPanel,
   buildVerifiedModelsPanel,
+  buildVerifiedLoadErrorPanel,
   buildVerifiedTagCandidatesPanel,
   buildVerifiedTagReviewConfirmPanel,
   buildVerifiedTitleConfigPanel,
@@ -89,6 +90,24 @@ const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
   "Primero selecciona el grupo que quieres administrar.";
 const EMERGENCY_DURATION_OPTIONS = [15, 30, 60, 120, 360, 720, 1440] as const;
+const VERIFIED_PANEL_TIMEOUT_MS = 4_000;
+
+async function withVerifiedPanelTimeout<T>(operation: Promise<T>): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("Tiempo de espera agotado al cargar Verificadas.")),
+          VERIFIED_PANEL_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 /**
  * Acciones reales del panel (Usuarios + Moderación).
@@ -117,14 +136,33 @@ moderationActions.on("callback_query:data", async (ctx) => {
     return;
   }
 
+  const verifiedPanelCallback =
+    parts[0] === "fa" && (kind === "verified" || kind === "verified_list");
+  const verifiedSubAction =
+    parts[0] === "vu" ||
+    (parts[0] === "cfg" && kind === "verified_tags_toggle");
+  let verifiedCallbackAnswered = false;
+  const answerVerifiedCallback = async (text?: string): Promise<void> => {
+    if (verifiedCallbackAnswered) return;
+    verifiedCallbackAnswered = true;
+    await ctx.answerCallbackQuery(text).catch(() => {});
+  };
+  if (verifiedPanelCallback || verifiedSubAction) {
+    await answerVerifiedCallback();
+  }
+
   const groupId = ctx.session.user.selectedGroupId;
   if (typeof groupId !== "number" || !Number.isInteger(groupId)) {
-    await ctx.answerCallbackQuery(NO_GROUP_SELECTED_MESSAGE);
+    if (!verifiedPanelCallback && !verifiedSubAction) {
+      await ctx.answerCallbackQuery(NO_GROUP_SELECTED_MESSAGE);
+    }
     return;
   }
   const isAdmin = await isUserAdminOf(ctx, groupId);
   if (!isAdmin) {
-    await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
+    if (!verifiedPanelCallback && !verifiedSubAction) {
+      await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
+    }
     return;
   }
 
@@ -133,7 +171,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
     data.verifiedTagSyncEnabled = !data.verifiedTagSyncEnabled;
     await saveGroupData(groupId, data);
     const reviews = await listVerifiedTagReviews(groupId);
-    await ctx.answerCallbackQuery(
+    await answerVerifiedCallback(
       data.verifiedTagSyncEnabled
         ? "Detección de candidatas activada."
         : "Detección de candidatas desactivada.",
@@ -155,7 +193,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
 
   if (parts[0] === "vu") {
     if (ctx.chat?.type !== "private" || !ctx.from) {
-      await ctx.answerCallbackQuery("⛔ Disponible solo en el chat privado del bot.");
+      await answerVerifiedCallback("⛔ Disponible solo en el chat privado del bot.");
       return;
     }
     const title = ctx.session.user.selectedGroupTitle;
@@ -163,7 +201,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
       const data = await getGroupData(groupId);
       data.verifiedTagSyncEnabled = !data.verifiedTagSyncEnabled;
       await saveGroupData(groupId, data);
-      await ctx.answerCallbackQuery(
+      await answerVerifiedCallback(
         data.verifiedTagSyncEnabled
           ? "Detección de candidatas activada."
           : "Detección de candidatas desactivada.",
@@ -185,7 +223,6 @@ moderationActions.on("callback_query:data", async (ctx) => {
     }
     if (kind === "edit") {
       ctx.session.user.pendingAction = { kind: "verifiedMarkers", groupId };
-      await ctx.answerCallbackQuery();
       await renderPanel(
         ctx,
         buildPromptPanel(
@@ -198,10 +235,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
     if (kind === "candidates") {
       const page = Number(parts[2] ?? 0);
       if (!Number.isInteger(page) || page < 0) {
-        await ctx.answerCallbackQuery("Página no válida.");
+        await answerVerifiedCallback("Página no válida.");
         return;
       }
-      await ctx.answerCallbackQuery();
       await renderPanel(
         ctx,
         buildVerifiedTagCandidatesPanel(
@@ -215,10 +251,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
     if (kind === "review-list") {
       const page = Number(parts[2] ?? 0);
       if (!Number.isInteger(page) || page < 0) {
-        await ctx.answerCallbackQuery("Página no válida.");
+        await answerVerifiedCallback("Página no válida.");
         return;
       }
-      await ctx.answerCallbackQuery();
       await renderPanel(
         ctx,
         buildVerifiedTagCandidatesPanel(
@@ -235,11 +270,11 @@ moderationActions.on("callback_query:data", async (ctx) => {
       if (action !== "approve" && action !== "reject") {
         const rowUserId = Number(action);
         if (!Number.isSafeInteger(rowUserId) || rowUserId <= 0) {
-          await ctx.answerCallbackQuery("Candidata no válida.");
+          await answerVerifiedCallback("Candidata no válida.");
           return;
         }
         const rowReview = await getVerifiedTagReview(groupId, rowUserId);
-        await ctx.answerCallbackQuery(
+        await answerVerifiedCallback(
           rowReview
             ? `Etiqueta: ${rowReview.observed_tag ?? "ninguna"} · Estado: ${rowReview.status}`
             : "La candidata ya no existe.",
@@ -248,7 +283,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
       }
       const userId = Number(parts[3]);
       if (!Number.isSafeInteger(userId) || userId <= 0) {
-        await ctx.answerCallbackQuery("Candidata no válida.");
+        await answerVerifiedCallback("Candidata no válida.");
         return;
       }
       const review = await getVerifiedTagReview(groupId, userId);
@@ -256,10 +291,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
         !review ||
         (review.status !== "pending" && review.status !== "revoked_tag")
       ) {
-        await ctx.answerCallbackQuery("La candidata ya no está pendiente.");
+        await answerVerifiedCallback("La candidata ya no está pendiente.");
         return;
       }
-      await ctx.answerCallbackQuery();
       await renderPanel(
         ctx,
         buildVerifiedTagReviewConfirmPanel(review, action, title),
@@ -274,7 +308,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
         !Number.isSafeInteger(userId) ||
         userId <= 0
       ) {
-        await ctx.answerCallbackQuery("Candidata no válida.");
+        await answerVerifiedCallback("Candidata no válida.");
         return;
       }
       try {
@@ -291,7 +325,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
               authorize: () => isUserAdminOf(ctx, groupId, ctx.from?.id),
             });
             if (result.status === "uncertain") {
-              await ctx.answerCallbackQuery(result.message);
+              await answerVerifiedCallback(result.message);
               await renderPanel(
                 ctx,
                 buildVerifiedTagCandidatesPanel(
@@ -327,7 +361,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
             throw new Error("La candidata ya no está pendiente de revisión.");
           }
         }
-        await ctx.answerCallbackQuery(
+        await answerVerifiedCallback(
           action === "approve" ? "✅ Candidata verificada." : "Candidata rechazada.",
         );
       } catch (error) {
@@ -335,7 +369,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
           `[VERIFIED_MARKER] No se pudo ${action} groupId=${groupId} userId=${userId}:`,
           error,
         );
-        await ctx.answerCallbackQuery(
+        await answerVerifiedCallback(
           error instanceof Error ? error.message : "No se pudo completar la revisión.",
         );
       }
@@ -349,7 +383,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
       );
       return;
     }
-    await ctx.answerCallbackQuery("Acción de Verificadas no reconocida.");
+    await answerVerifiedCallback("Acción de Verificadas no reconocida.");
     return;
   }
 
@@ -595,21 +629,24 @@ moderationActions.on("callback_query:data", async (ctx) => {
       return;
     }
     if (parts[0] === "fa" && kind === "verified") {
-      const data = await getGroupData(groupId);
-      const reviews = await listVerifiedTagReviews(groupId);
-      await ctx.answerCallbackQuery();
-      await renderPanel(
-        ctx,
-        buildVerifiedTitleConfigPanel(
-          data.verifiedTitles,
-          data.autoDetectVerifiedTitles,
-          true, // sincronización de títulos: automática (eventos en bot.ts)
-          title,
-          data.verifiedMemberTags,
-          data.verifiedTagSyncEnabled,
-          reviews.filter((review) => review.status === "pending").length,
-        ),
-      );
+      try {
+        const [data, users] = await withVerifiedPanelTimeout(
+          Promise.all([getGroupData(groupId), getVerifiedUsers(groupId)]),
+        );
+        await renderPanel(
+          ctx,
+          buildVerifiedModelsPanel(
+            users,
+            0,
+            title,
+            data.verifiedMemberTags,
+            data.verifiedTagSyncEnabled,
+          ),
+        );
+      } catch (error) {
+        console.error(`[VERIFIED_PANEL] No se pudo cargar groupId=${groupId}:`, error);
+        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title));
+      }
       return;
     }
     if (parts[0] === "fa" && kind === "verified_list") {
@@ -618,9 +655,27 @@ moderationActions.on("callback_query:data", async (ctx) => {
         await ctx.answerCallbackQuery("Página no válida.");
         return;
       }
-      const users = await getVerifiedUsers(groupId);
-      await ctx.answerCallbackQuery();
-      await renderPanel(ctx, buildVerifiedModelsPanel(users, page, title));
+      try {
+        const [data, users] = await withVerifiedPanelTimeout(
+          Promise.all([getGroupData(groupId), getVerifiedUsers(groupId)]),
+        );
+        await renderPanel(
+          ctx,
+          buildVerifiedModelsPanel(
+            users,
+            page,
+            title,
+            data.verifiedMemberTags,
+            data.verifiedTagSyncEnabled,
+          ),
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_PANEL] No se pudo cargar lista groupId=${groupId} page=${page}:`,
+          error,
+        );
+        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title));
+      }
       return;
     }
     if (

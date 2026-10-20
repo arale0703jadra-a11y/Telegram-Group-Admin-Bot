@@ -32,13 +32,23 @@ test("custom title detection is trimmed and case-insensitive", () => {
 });
 
 test("verified management panel displays private actions for the listed IDs", () => {
-  const panel = buildVerifiedModelsPanel([verifiedUser(456)], 0, "Test group");
+  const panel = buildVerifiedModelsPanel(
+    [verifiedUser(456)],
+    0,
+    "Test group",
+    ["Verificada", "#verified"],
+    true,
+  );
   const callbacks = panel.keyboard.inline_keyboard.flat().map(buttonCallbackData);
 
   assert.match(panel.text, /User 456 — ID 456/);
+  assert.match(panel.text, /Detección de marcas: activa/);
+  assert.match(panel.text, /Marcas configuradas: Verificada, #verified/);
   assert.ok(callbacks.includes(FilterAction.verifiedMute(456)));
   assert.ok(callbacks.includes(FilterAction.verifiedBan(456)));
   assert.ok(callbacks.includes(FilterAction.verifiedRevoke(456)));
+  assert.ok(callbacks.includes("cfg:verified_tags_toggle"));
+  assert.ok(callbacks.includes("vu:edit"));
 });
 
 test("verified management panel paginates action buttons", () => {

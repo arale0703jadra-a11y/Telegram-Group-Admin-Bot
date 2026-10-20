@@ -662,6 +662,8 @@ export function buildVerifiedModelsPanel(
   users: VerifiedUser[],
   page = 0,
   groupTitle?: string,
+  recognizedTags: string[] = [],
+  tagDetectionEnabled = false,
 ): Panel {
   const pageSize = 5;
   const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
@@ -689,6 +691,12 @@ export function buildVerifiedModelsPanel(
     keyboard.row();
   }
   keyboard
+    .text(
+      tagDetectionEnabled ? "🔴 Pausar detección" : "🟢 Activar detección",
+      "cfg:verified_tags_toggle",
+    )
+    .text("✏️ Etiquetas", "vu:edit")
+    .row()
     .text("⬅️ Volver a promociones", FilterAction.home)
     .row()
     .add(...buildNavRow().inline_keyboard.flat());
@@ -703,6 +711,8 @@ export function buildVerifiedModelsPanel(
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n` +
+      `Detección de marcas: ${tagDetectionEnabled ? "activa" : "inactiva"}\n` +
+      `Marcas configuradas: ${recognizedTags.join(", ") || "ninguna"}\n\n` +
       `${list}\n\n` +
       "🔇 Silenciar durante 24 horas · ⛔ Banear · ❌ Quitar verificación" +
       (pageCount > 1 ? `\n\nPágina ${currentPage + 1} de ${pageCount}` : ""),
@@ -1472,7 +1482,19 @@ export const VerifiedAction = {
     userId: number,
     permission: keyof VerifiedUserPermissions,
   ): string => `vu:toggle:${userId}:${permission}`,
-};
+}
+
+export function buildVerifiedLoadErrorPanel(groupTitle?: string): Panel {
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n` +
+      "No se pudo cargar la lista ahora. Inténtalo de nuevo en unos segundos.",
+    keyboard: new InlineKeyboard()
+      .text("🔄 Reintentar", FilterAction.verified)
+      .row()
+      .add(...buildNavRow().inline_keyboard.flat()),
+  };
+}
 
 export function verifiedPermissionsSnapshot(
   permissions: VerifiedUserPermissions,
