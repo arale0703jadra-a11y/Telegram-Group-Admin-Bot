@@ -33,7 +33,7 @@ const MUTE_PERMISSIONS: ChatPermissions = {
   can_react_to_messages: false,
 };
 
-const RESTORE_PERMISSIONS: ChatPermissions = {
+const DEFAULT_MEMBER_PERMISSIONS: ChatPermissions = {
   can_send_messages: true,
   can_send_audios: true,
   can_send_documents: true,
@@ -45,11 +45,41 @@ const RESTORE_PERMISSIONS: ChatPermissions = {
   can_send_other_messages: true,
   can_add_web_page_previews: true,
   can_react_to_messages: true,
-  can_change_info: true,
-  can_invite_users: true,
-  can_pin_messages: true,
-  can_manage_topics: true,
+  can_change_info: false,
+  can_invite_users: false,
+  can_edit_tag: false,
+  can_pin_messages: false,
+  can_manage_topics: false,
 };
+
+const PERMISSION_SNAPSHOT_KEYS: readonly (keyof ChatPermissions)[] = [
+  "can_send_messages",
+  "can_send_audios",
+  "can_send_documents",
+  "can_send_photos",
+  "can_send_videos",
+  "can_send_video_notes",
+  "can_send_voice_notes",
+  "can_send_polls",
+  "can_send_other_messages",
+  "can_add_web_page_previews",
+  "can_react_to_messages",
+  "can_change_info",
+  "can_invite_users",
+  "can_edit_tag",
+  "can_pin_messages",
+  "can_manage_topics",
+];
+
+function isValidPermissionSnapshot(value: unknown): value is ChatPermissions {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const snapshot = value as Record<string, unknown>;
+  return PERMISSION_SNAPSHOT_KEYS.every(
+    (key) => typeof snapshot[key] === "boolean",
+  );
+}
 
 export interface BotRights {
   canRestrict: boolean;
@@ -385,15 +415,15 @@ export async function unmuteUser(
     return { ok: false, error: "No encuentro al usuario en el grupo." };
   }
 
-  let permissions = RESTORE_PERMISSIONS;
+  let permissions = DEFAULT_MEMBER_PERMISSIONS;
   try {
     const data = await getGroupData(chatId);
     const previous = data.mutedUsers[String(userId)]?.previousPermissions;
-    if (previous) {
+    if (isValidPermissionSnapshot(previous)) {
       permissions = previous;
     }
   } catch {
-    // Se usa la política segura de restauración si no hay datos previos.
+    // Si no se puede verificar el snapshot, se aplican permisos básicos.
   }
 
   try {
