@@ -153,7 +153,8 @@ export function initialGroupData(): GroupData {
     verifiedTitles: [],
     autoDetectVerifiedTitles: false,
     autoRemoveVerifiedWhenTitleRemoved: false,
-    verifiedTagSyncEnabled: false,
+    verifiedTagSyncEnabled: true,
+    verifiedTagSyncConfigured: false,
     verifiedMemberTags: ["Verificada"],
   };
 }

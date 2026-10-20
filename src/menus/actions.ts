@@ -169,8 +169,8 @@ moderationActions.on("callback_query:data", async (ctx) => {
   if (parts[0] === "cfg" && kind === "verified_tags_toggle") {
     const data = await getGroupData(groupId);
     data.verifiedTagSyncEnabled = !data.verifiedTagSyncEnabled;
+    data.verifiedTagSyncConfigured = true;
     await saveGroupData(groupId, data);
-    const reviews = await listVerifiedTagReviews(groupId);
     await answerVerifiedCallback(
       data.verifiedTagSyncEnabled
         ? "Detección de candidatas activada."
@@ -179,13 +179,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
     await renderPanel(
       ctx,
       buildVerifiedTitleConfigPanel(
-        data.verifiedTitles,
-        data.autoDetectVerifiedTitles,
-        true, // sincronización de títulos: automática (eventos en bot.ts)
         ctx.session.user.selectedGroupTitle,
         data.verifiedMemberTags,
         data.verifiedTagSyncEnabled,
-        reviews.filter((review) => review.status === "pending").length,
       ),
     );
     return;
@@ -200,23 +196,19 @@ moderationActions.on("callback_query:data", async (ctx) => {
     if (kind === "toggle") {
       const data = await getGroupData(groupId);
       data.verifiedTagSyncEnabled = !data.verifiedTagSyncEnabled;
+      data.verifiedTagSyncConfigured = true;
       await saveGroupData(groupId, data);
       await answerVerifiedCallback(
         data.verifiedTagSyncEnabled
           ? "Detección de candidatas activada."
           : "Detección de candidatas desactivada.",
       );
-      const reviews = await listVerifiedTagReviews(groupId);
       await renderPanel(
         ctx,
         buildVerifiedTitleConfigPanel(
-          data.verifiedTitles,
-          data.autoDetectVerifiedTitles,
-          true, // sincronización de títulos: automática (eventos en bot.ts)
           title,
           data.verifiedMemberTags,
           data.verifiedTagSyncEnabled,
-          reviews.filter((review) => review.status === "pending").length,
         ),
       );
       return;
@@ -629,24 +621,15 @@ moderationActions.on("callback_query:data", async (ctx) => {
       return;
     }
     if (parts[0] === "fa" && kind === "verified") {
-      try {
-        const [data, users] = await withVerifiedPanelTimeout(
-          Promise.all([getGroupData(groupId), getVerifiedUsers(groupId)]),
-        );
-        await renderPanel(
-          ctx,
-          buildVerifiedModelsPanel(
-            users,
-            0,
-            title,
-            data.verifiedMemberTags,
-            data.verifiedTagSyncEnabled,
-          ),
-        );
-      } catch (error) {
-        console.error(`[VERIFIED_PANEL] No se pudo cargar groupId=${groupId}:`, error);
-        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title));
-      }
+      const data = await getGroupData(groupId);
+      await renderPanel(
+        ctx,
+        buildVerifiedTitleConfigPanel(
+          title,
+          data.verifiedMemberTags,
+          data.verifiedTagSyncEnabled,
+        ),
+      );
       return;
     }
     if (parts[0] === "fa" && kind === "verified_list") {

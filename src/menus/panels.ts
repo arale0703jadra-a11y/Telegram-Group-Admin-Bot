@@ -1761,37 +1761,30 @@ export function buildVerifiedTagReviewConfirmPanel(
 }
 
 export function buildVerifiedTitleConfigPanel(
-  recognizedTitles: string[],
-  autoDetectTitles: boolean,
-  titleSyncEnabled: boolean,
   groupTitle: string | undefined,
   recognizedTags: string[],
   tagSyncEnabled: boolean,
-  candidateCount: number,
 ): Panel {
+  const currentTag = recognizedTags[0] ?? "Verificada";
   return {
     text:
-      `${formatGroupHeader(groupTitle)}\n\n👑 *ETIQUETAS DE VERIFICACIÓN*\n\n` +
-      `Detección por etiquetas: ${tagSyncEnabled ? "activada" : "desactivada"}\n` +
-      `Sincronización de títulos de administradores: ${titleSyncEnabled ? "activada" : "desactivada"}\n` +
-      `Detección automática de títulos: ${autoDetectTitles ? "activada" : "desactivada"}\n` +
-      `Títulos reconocidos: ${recognizedTitles.join(", ") || "ninguno"}\n` +
-      `Etiquetas reconocidas: ${recognizedTags.join(", ") || "ninguna"}\n` +
-      `Candidatas pendientes: ${candidateCount}\n\n` +
-      "ZEUS compara estas etiquetas con mensajes, captions y nombre/usuario visibles. " +
-      "Las biografías no están disponibles mediante Bot API. Una coincidencia solo crea una candidata; " +
-      "la aprobación manual confirma la membresía y concede permisos.",
+      `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n` +
+      `Detección automática: ${tagSyncEnabled ? "🟢 Activada" : "🔴 Desactivada"}\n` +
+      `Etiqueta actual: "${currentTag}"\n\n` +
+      "Las coincidencias en mensajes o perfil generan candidatas para revisión; " +
+      "no conceden permisos automáticamente.",
     keyboard: new InlineKeyboard()
       .text(
-        tagSyncEnabled ? "🔴 Desactivar detección" : "🟢 Activar detección",
+        tagSyncEnabled
+          ? "🟢 Detección: ACTIVADA"
+          : "🔴 Detección: DESACTIVADA",
         "cfg:verified_tags_toggle",
       )
       .row()
-      .text("✏️ Editar etiquetas", "vu:edit")
-      .text("🧾 Revisar candidatas", "vu:candidates:0")
+      .text("👥 Lista de Verificadas", FilterAction.verifiedList(0))
       .row()
-      .text("👑 Verificadas actuales", FilterAction.verifiedList(0))
+      .text(`🏷️ Etiqueta actual: "${currentTag}"`, "vu:edit")
       .row()
-      .add(...buildNavRow().inline_keyboard.flat()),
+      .text("⬅️ Volver al Menú Principal", MenuAction.main),
   };
 }

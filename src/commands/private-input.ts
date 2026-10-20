@@ -25,7 +25,6 @@ import { muteUser, unmuteUser, warnUser } from "../moderation/actions.js";
 import type { MyContext, PickAction } from "../types.js";
 import { consumeRecoveryKey } from "../services/system-owner.js";
 import { automaticMessageScheduler } from "../services/automatic-messages.js";
-import { listVerifiedTagReviews } from "../services/verified-tag-reviews.js";
 import { normalizeConfiguredVerifiedMarkers } from "../services/verified-marker-detection.js";
 
 const MAX_MUTE_MINUTES = 527040;
@@ -138,17 +137,12 @@ privateInput.on("message:text", async (ctx) => {
       await saveGroupData(pending.groupId, data);
       ctx.session.user.pendingAction = undefined;
       await ctx.reply("✅ Etiquetas de detección guardadas.");
-      const reviews = await listVerifiedTagReviews(pending.groupId);
       await sendPanel(
         ctx,
         buildVerifiedTitleConfigPanel(
-          data.verifiedTitles,
-          data.autoDetectVerifiedTitles,
-          data.verifiedTagSyncEnabled,
           ctx.session.user.selectedGroupTitle,
           data.verifiedMemberTags,
           data.verifiedTagSyncEnabled,
-          reviews.filter((review) => review.status === "pending").length,
         ),
       );
       return;

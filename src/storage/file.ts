@@ -224,9 +224,11 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
         ? parsed.autoRemoveVerifiedWhenTitleRemoved
         : base.autoRemoveVerifiedWhenTitleRemoved,
     verifiedTagSyncEnabled:
+      parsed.verifiedTagSyncConfigured === true &&
       typeof parsed.verifiedTagSyncEnabled === "boolean"
         ? parsed.verifiedTagSyncEnabled
         : base.verifiedTagSyncEnabled,
+    verifiedTagSyncConfigured: parsed.verifiedTagSyncConfigured === true,
     verifiedMemberTags: Array.isArray(parsed.verifiedMemberTags)
       ? parsed.verifiedMemberTags.filter((tag): tag is string => typeof tag === "string")
       : base.verifiedMemberTags,

@@ -217,13 +217,14 @@ function mockMemberApi(
   };
 }
 
-test("tag synchronization is disabled by default for new groups", () => {
+test("tag detection is enabled by default for new groups", () => {
   const data = initialGroupData();
-  assert.equal(data.verifiedTagSyncEnabled, false);
+  assert.equal(data.verifiedTagSyncEnabled, true);
+  assert.equal(data.verifiedTagSyncConfigured, false);
   assert.deepEqual(data.verifiedMemberTags, ["Verificada"]);
 });
 
-test("legacy group files remain readable and do not enable tag synchronization", async () => {
+test("legacy group files default to enabled tag detection until explicitly configured", async () => {
   const originalDirectory = process.cwd();
   const testDirectory = mkdtempSync(join(tmpdir(), "zeus-tag-sync-"));
   try {
@@ -241,8 +242,32 @@ test("legacy group files remain readable and do not enable tag synchronization",
 
     assert.deepEqual(data.verifiedTitles, ["Modelo antigua"]);
     assert.equal(data.autoDetectVerifiedTitles, true);
-    assert.equal(data.verifiedTagSyncEnabled, false);
+    assert.equal(data.verifiedTagSyncEnabled, true);
+    assert.equal(data.verifiedTagSyncConfigured, false);
     assert.deepEqual(data.verifiedMemberTags, ["Verificada"]);
+  } finally {
+    process.chdir(originalDirectory);
+    rmSync(resolve(testDirectory), { recursive: true, force: true });
+  }
+});
+
+test("an explicit tag-detection opt-out remains disabled after loading", async () => {
+  const originalDirectory = process.cwd();
+  const testDirectory = mkdtempSync(join(tmpdir(), "zeus-tag-sync-optout-"));
+  try {
+    process.chdir(testDirectory);
+    mkdirSync(join(testDirectory, "data", "storage"), { recursive: true });
+    writeFileSync(
+      join(testDirectory, "data", "storage", "-100.json"),
+      JSON.stringify({
+        verifiedTagSyncEnabled: false,
+        verifiedTagSyncConfigured: true,
+      }),
+    );
+    const data = await new FileStore().loadGroup(-100);
+
+    assert.equal(data.verifiedTagSyncEnabled, false);
+    assert.equal(data.verifiedTagSyncConfigured, true);
   } finally {
     process.chdir(originalDirectory);
     rmSync(resolve(testDirectory), { recursive: true, force: true });
@@ -319,21 +344,27 @@ test("candidates panel navigation stays within the verified module", () => {
   assert.ok(callbacks.includes("vu:review-list:0"));
 });
 
-test("the group panel clearly marks tag detection as opt-in", () => {
+test("the verified panel has a compact detection, list, label, and back layout", () => {
   const panel = buildVerifiedTitleConfigPanel(
-    ["legacy"],
-    true,
-    true,
     "Grupo",
     ["Verificada"],
-    false,
-    0,
+    true,
   );
-  assert.match(panel.text, /Detección por etiquetas: desactivada/);
-  assert.match(panel.text, /Una coincidencia solo crea una candidata/);
-  assert.ok(panel.keyboard.inline_keyboard.flat().some((button) =>
-    buttonCallbackData(button) === "cfg:verified_tags_toggle",
-  ));
+  assert.match(panel.text, /Detección automática: 🟢 Activada/);
+  assert.match(panel.text, /Etiqueta actual: "Verificada"/);
+  assert.match(panel.text, /generan candidatas para revisión/);
+  const buttons = panel.keyboard.inline_keyboard.flat();
+  assert.equal(buttons.length, 4);
+  assert.deepEqual(
+    buttons.map((button) => button.text),
+    [
+      "🟢 Detección: ACTIVADA",
+      "👥 Lista de Verificadas",
+      '🏷️ Etiqueta actual: "Verificada"',
+      "⬅️ Volver al Menú Principal",
+    ],
+  );
+  assert.ok(buttons.some((button) => buttonCallbackData(button) === "cfg:verified_tags_toggle"));
 });
 
 test("a recognized tag creates one review candidate and never a verified record", async () => {

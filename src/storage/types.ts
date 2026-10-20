@@ -291,5 +291,6 @@ export interface GroupData {
   autoDetectVerifiedTitles: boolean;
   autoRemoveVerifiedWhenTitleRemoved: boolean;
   verifiedTagSyncEnabled: boolean;
+  verifiedTagSyncConfigured: boolean;
   verifiedMemberTags: string[];
 }
