@@ -18,7 +18,6 @@ import { deletedAccounts } from "./filters/deleted-accounts.js";
 import { emergencyLockdown } from "./filters/emergency-lockdown.js";
 import { newMemberQuarantine } from "./filters/new-member-quarantine.js";
 import { adminGuardian } from "./security/admin-guardian.js";
-import { honeypot } from "./filters/honeypot.js";
 import { replyWithAutoDelete } from "./utils/cleanup.js";
 import {
   INACTIVITY_CLEANER_INTERVAL_MS,
@@ -59,7 +58,6 @@ async function main(): Promise<void> {
 
   bot.use(deletedAccounts);
   bot.use(adminGuardian);
-  bot.use(honeypot);
   bot.use(cleanServiceMessages);
   bot.use(botAdditionGuard);
   bot.use(profileChecker);

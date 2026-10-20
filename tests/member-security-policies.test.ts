@@ -11,7 +11,6 @@ import {
   NEW_MEMBER_QUARANTINE_MS,
 } from "../src/filters/new-member-quarantine.js";
 import { assessAdminChange } from "../src/security/admin-guardian.js";
-import { isHoneypotChallengeOwner } from "../src/filters/honeypot.js";
 
 const now = Date.now();
 
@@ -99,25 +98,6 @@ test("admin guardian flags unauthorized promotion and suspicious privilege escal
       targetId: 20,
       actorAuthorized: true,
     }).suspicious,
-    false,
-  );
-});
-
-test("honeypot challenge is accepted only for its intended member and before expiry", () => {
-  assert.equal(
-    isHoneypotChallengeOwner(20, 20, "secret", "secret", now + 1000, now),
-    true,
-  );
-  assert.equal(
-    isHoneypotChallengeOwner(20, 21, "secret", "secret", now + 1000, now),
-    false,
-  );
-  assert.equal(
-    isHoneypotChallengeOwner(20, 20, "secret", "wrong", now + 1000, now),
-    false,
-  );
-  assert.equal(
-    isHoneypotChallengeOwner(20, 20, "secret", "secret", now, now),
     false,
   );
 });
