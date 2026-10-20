@@ -7,6 +7,8 @@ import type {
   IllegalContentConfig,
   AntiSpamConfig,
   EmergencyConfig,
+  CleanupConfig,
+  AutomaticMessageConfig,
   InactivityConfig,
   IndexedUser,
   PromotionConfig,
@@ -142,6 +144,18 @@ export const InactivityAction = {
   cancel: "ia:cancel",
 };
 
+export const CleanupAction = {
+  toggle: "cl:toggle",
+};
+
+export const AutomaticMessageAction = {
+  home: "am:home",
+  configure: "am:configure",
+  toggle: "am:toggle",
+  interval: "am:interval",
+  sendNow: "am:send-now",
+};
+
 const PANEL_TITLE = "🛡️ *PANEL DE ADMINISTRACIÓN*";
 
 /**
@@ -177,6 +191,8 @@ interface MenuItem {
  */
 const CATEGORIES: MenuItem[] = [
   { id: "proteccion", label: "🛡️ Centro de Protección" },
+  { id: "verificadas", label: "👑 Verificadas", cb: FilterAction.verified },
+  { id: "mensajes-recurrentes", label: "🔁 Mensajes Recurrentes", cb: AutomaticMessageAction.home },
   { id: "usuarios", label: "👥 Usuarios" },
   { id: "filtros", label: "🚫 Filtros" },
   { id: "antispam", label: "🛡️ Anti-spam" },
@@ -254,11 +270,9 @@ const SUBMENUS: Record<string, SubmenuDef> = {
   limpieza: {
     icon: "👻",
     title: "Limpieza",
-    description: "Detección y limpieza de cuentas eliminadas y sin actividad.",
+    description: "Borra avisos de servicio automáticamente y purga mensajes recientes.",
     items: [
-      { id: "detectar", label: "👻 Detectar cuentas eliminadas" },
-      { id: "limpiar", label: "🧹 Limpiar cuentas eliminadas" },
-      { id: "auto", label: "⚙️ Configuración automática" },
+      { id: "configuracion", label: "⚙️ Configurar limpieza" },
     ],
   },
   actividad: {
@@ -324,7 +338,7 @@ function buildNavRow(): InlineKeyboard {
 export function buildMainPanel(groupTitle?: string): Panel {
   const keyboard = new InlineKeyboard();
   for (const category of CATEGORIES) {
-    keyboard.text(category.label, MenuAction.sub(category.id));
+    keyboard.text(category.label, category.cb ?? MenuAction.sub(category.id));
     keyboard.row();
   }
   keyboard.text("🔄 Cambiar grupo", MenuAction.groups);
@@ -372,6 +386,69 @@ export function buildProtectionCenterPanel(
       "automáticamente al detectar una oleada si Anti-Raid está habilitado.\n\n" +
       "ZEUS necesita permisos para restringir miembros y borrar mensajes para " +
       "aplicar todas las medidas.",
+    keyboard,
+  };
+}
+
+export function buildCleanupSettingsPanel(
+  cleanup: CleanupConfig,
+  groupTitle?: string,
+  note?: string,
+): Panel {
+  const keyboard = new InlineKeyboard()
+    .text(
+      cleanup.autoDeleteServiceMessages
+        ? "🔔 Auto-eliminación de avisos: activada"
+        : "🔕 Auto-eliminación de avisos: desactivada",
+      CleanupAction.toggle,
+    )
+    .row()
+    .text("🧹 Purgar últimos 10", ModAction.cleanup(10))
+    .text("🧹 Purgar últimos 25", ModAction.cleanup(25))
+    .row()
+    .text("🧹 Purgar últimos 50", ModAction.cleanup(50))
+    .text("🧹 Purgar últimos 100", ModAction.cleanup(100))
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "👻 *LIMPIEZA*\n\n" +
+      "Los mensajes de servicio detectables (incorporaciones, salidas y otros avisos de Telegram) " +
+      "se eliminan automáticamente cuando el bot tiene permiso.\n\n" +
+      "La purga manual solo puede borrar los mensajes recientes que ZEUS haya registrado y que " +
+      "Telegram todavía permita eliminar." +
+      (note ? `\n\n${note}` : ""),
+    keyboard,
+  };
+}
+
+export function buildAutomaticMessagePanel(
+  config: AutomaticMessageConfig | undefined,
+  groupTitle?: string,
+  note?: string,
+): Panel {
+  const enabled = config?.enabled === true;
+  const intervalMinutes = config?.intervalMinutes ?? 60;
+  const message = config?.message || "No hay mensaje configurado.";
+  const preview = message.length > 300 ? `${message.slice(0, 297)}…` : message;
+  const keyboard = new InlineKeyboard()
+    .text(enabled ? "⏸️ Desactivar" : "▶️ Activar", AutomaticMessageAction.toggle)
+    .text(`⏱️ Cada ${intervalMinutes} min`, AutomaticMessageAction.interval)
+    .row()
+    .text("✏️ Configurar texto", AutomaticMessageAction.configure)
+    .text("📨 Enviar ahora", AutomaticMessageAction.sendNow)
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🔁 *MENSAJES RECURRENTES*\n\n" +
+      `Estado: *${enabled ? "activo" : "inactivo"}*\n` +
+      `Intervalo: ${intervalMinutes} minutos\n` +
+      `Mensaje: ${preview}` +
+      (note ? `\n\n${note}` : ""),
     keyboard,
   };
 }

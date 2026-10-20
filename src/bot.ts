@@ -2,7 +2,10 @@ import { Bot, Context } from "grammy";
 import { validateConfig, BOT_NAME } from "./config.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import { registerCommands } from "./commands/index.js";
-import { cleanServiceMessages } from "./commands/clean-service-messages.js";
+import {
+  cleanServiceMessages,
+  initializeServiceMessageCleanup,
+} from "./commands/clean-service-messages.js";
 import { menuNavigation } from "./menus/index.js";
 import { moderationActions } from "./menus/actions.js";
 import { isGroupChat, isUserAdmin } from "./utils/permissions.js";
@@ -39,26 +42,27 @@ import {
   isEmergencyActive,
 } from "./filters/anti-raid-engine.js";
 import { restrictRecentMembers } from "./services/emergency-mode.js";
+import { automaticMessageScheduler } from "./services/automatic-messages.js";
 
 async function main(): Promise<void> {
   validateConfig();
 
   const bot = new Bot<MyContext>(process.env.BOT_TOKEN as string);
   await bot.init();
+  await initializeServiceMessageCleanup();
   const inactivityContext = Object.assign(
     new Context({ update_id: 0 }, bot.api, bot.botInfo),
     { session: { group: {}, user: {} } },
   ) as MyContext;
 
-  bot.use(sessionMiddleware);
-
   bot.catch((err) => {
     console.error(`[ERROR] ${err.message}`);
   });
 
+  bot.use(cleanServiceMessages);
+  bot.use(sessionMiddleware);
   bot.use(deletedAccounts);
   bot.use(adminGuardian);
-  bot.use(cleanServiceMessages);
   bot.use(botAdditionGuard);
   bot.use(profileChecker);
   bot.use(adminImpersonation);
@@ -355,6 +359,7 @@ async function main(): Promise<void> {
     void runInactivityCleaner(inactivityContext);
   }, INACTIVITY_CLEANER_INTERVAL_MS);
   void runInactivityCleaner(inactivityContext);
+  automaticMessageScheduler.start(bot.api);
 
   // Graceful shutdown: forzar flush de datos antes de cerrar
   const shutdown = async (signal: string): Promise<void> => {
@@ -368,6 +373,7 @@ async function main(): Promise<void> {
     }
     try {
       await bot.stop();
+      automaticMessageScheduler.stop();
       clearInterval(inactivityTimer);
       console.log("🤖 Bot detenido correctamente.");
     } catch (error) {

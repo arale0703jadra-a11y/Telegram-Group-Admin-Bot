@@ -258,6 +258,10 @@ export interface InactivityConfig {
   customDays?: number;
 }
 
+export interface CleanupConfig {
+  autoDeleteServiceMessages: boolean;
+}
+
 /**
  * Datos persistidos de moderación de un grupo (key = chat_id).
  */
@@ -279,6 +283,7 @@ export interface GroupData {
   /** IDs (como texto) exentos de sanciones automáticas por spam/raid. */
   trustedUsers: Record<string, true>;
   inactivity: InactivityConfig;
+  cleanup: CleanupConfig;
   activityMessages: ActivityMessage[];
   automaticMessage?: AutomaticMessageConfig;
   newUsers: NewUsersConfig;

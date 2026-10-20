@@ -17,6 +17,7 @@ test("group configuration persists independently across groups", async () => {
     dataA.antiSpam.blockLinks = false;
     dataA.antiSpam.detectAutomatedBehavior = false;
     dataA.newUsers.enabled = true;
+    dataA.cleanup.autoDeleteServiceMessages = false;
     dataA.promotion.recurrenceMuteMinutes = [60, 240];
     dataA.promotion.statistics.analyzed = 17;
     dataA.promotion.statistics.buying = 4;
@@ -37,6 +38,7 @@ test("group configuration persists independently across groups", async () => {
     assert.equal(restoredA.antiSpam.blockLinks, false);
     assert.equal(restoredA.antiSpam.detectAutomatedBehavior, false);
     assert.equal(restoredA.newUsers.enabled, true);
+    assert.equal(restoredA.cleanup.autoDeleteServiceMessages, false);
     assert.deepEqual(restoredA.promotion.recurrenceMuteMinutes, [60, 240]);
     assert.deepEqual(restoredA.promotion.statistics, {
       analyzed: 17,
@@ -51,6 +53,7 @@ test("group configuration persists independently across groups", async () => {
     assert.equal(restoredA.antiSpam.maxMentionsPerMessage, 12);
     assert.equal(restoredB.antiSpam.enabled, true);
     assert.equal(restoredB.newUsers.enabled, false);
+    assert.equal(restoredB.cleanup.autoDeleteServiceMessages, true);
     assert.deepEqual(restoredB.promotion.recurrenceMuteMinutes, [15, 60, 240, 1440]);
   } finally {
     for (const file of files) {

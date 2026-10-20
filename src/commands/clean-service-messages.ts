@@ -1,5 +1,7 @@
 import { Composer } from "grammy";
 import { callWithRetryAfter } from "../utils/safety.js";
+import { getGroupData, saveGroupData } from "../storage/index.js";
+import { getAllKnownGroups } from "../services/group-registry.js";
 import type { MyContext } from "../types.js";
 
 interface ServiceMessageContext {
@@ -134,6 +136,21 @@ export async function cleanTelegramServiceMessage(
 }
 
 export const cleanServiceMessages = new Composer<MyContext>();
+const autoDeleteEnabledByGroup = new Map<number, boolean>();
+
+export async function initializeServiceMessageCleanup(): Promise<void> {
+  for (const { id } of getAllKnownGroups()) {
+    const data = await getGroupData(id);
+    autoDeleteEnabledByGroup.set(id, data.cleanup.autoDeleteServiceMessages);
+  }
+}
+
+export function setServiceMessageCleanupEnabled(
+  chatId: number,
+  enabled: boolean,
+): void {
+  autoDeleteEnabledByGroup.set(chatId, enabled);
+}
 
 // These Message service fields have message_ids that deleteMessage can target.
 // chat_join_request and chat_member are separate updates, not deletable messages.
@@ -142,17 +159,36 @@ async function cleanupServiceMessage(ctx: MyContext, next: () => Promise<void>):
     await next();
     return;
   }
-  await cleanTelegramServiceMessage(
-    {
-      chat: ctx.chat,
-      message: ctx.message,
-      api: {
-        deleteMessage: (chatId, messageId) =>
-          ctx.api.deleteMessage(chatId, messageId),
-      },
-    },
-    next,
-  );
+  const isGroup = ctx.chat.type === "group" || ctx.chat.type === "supergroup";
+  if (isGroup && isTelegramServiceMessage(ctx.message)) {
+    const chat = ctx.chat;
+    const message = ctx.message;
+    if (autoDeleteEnabledByGroup.get(chat.id) !== false) {
+      void ctx.api.deleteMessage(chat.id, message.message_id).catch((error: unknown) => {
+        console.error(
+          `[ZEUS] No se pudo borrar el mensaje de servicio groupId=${chat.id} messageId=${message.message_id} error=${safeErrorCode(error)}`,
+        );
+      });
+    } else {
+      void Promise.resolve()
+        .then(async () => {
+        const data = await getGroupData(chat.id);
+        if (!data.recentMessages.includes(message.message_id)) {
+          data.recentMessages.push(message.message_id);
+          if (data.recentMessages.length > 250) {
+            data.recentMessages.splice(0, data.recentMessages.length - 250);
+          }
+          await saveGroupData(chat.id, data);
+        }
+        })
+        .catch((error: unknown) => {
+          console.error(
+            `[ZEUS] No se pudo registrar mensaje de servicio para purga groupId=${chat.id} messageId=${message.message_id} error=${safeErrorCode(error)}`,
+          );
+        });
+    }
+  }
+  await next();
 }
 
 cleanServiceMessages.on("message", cleanupServiceMessage);

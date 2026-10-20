@@ -17,6 +17,8 @@ import { getTrackedUser, getUserCard } from "../utils/users.js";
 import {
   buildBanConfirmPanel,
   buildCleanupPanel,
+  buildCleanupSettingsPanel,
+  buildAutomaticMessagePanel,
   buildDeleteHelpPanel,
   buildFilterConfirmPanel,
   buildFilterListPanel,
@@ -44,6 +46,7 @@ import {
   buildViewWarningsPanel,
   FilterAction,
   EmergencyAction,
+  AutomaticMessageAction,
   buildWarningsPanel,
   ModAction,
 } from "./panels.js";
@@ -69,6 +72,8 @@ import {
   restrictRecentMembers,
   restoreEmergencyRestrictions,
 } from "../services/emergency-mode.js";
+import { automaticMessageScheduler } from "../services/automatic-messages.js";
+import { setServiceMessageCleanupEnabled } from "../commands/clean-service-messages.js";
 
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
@@ -88,6 +93,8 @@ moderationActions.on("callback_query:data", async (ctx) => {
     parts[0] !== "fa" &&
     parts[0] !== "sa" &&
     parts[0] !== "ia" &&
+    parts[0] !== "cl" &&
+    parts[0] !== "am" &&
     parts[0] !== "ep"
   ) {
     return; // Callback ajeno: lo gestiona otro controlador.
@@ -201,6 +208,130 @@ moderationActions.on("callback_query:data", async (ctx) => {
       buildProtectionCenterPanel(
         data.emergency,
         data.antiRaid.emergencyMinutes,
+        ctx.session.user.selectedGroupTitle,
+      ),
+    );
+    return;
+  }
+
+  if (parts[0] === "cl") {
+    if (kind !== "toggle" || ctx.chat?.type !== "private") {
+      await ctx.answerCallbackQuery("Acción de limpieza no válida.");
+      return;
+    }
+    const data = await getGroupData(groupId);
+    data.cleanup.autoDeleteServiceMessages = !data.cleanup.autoDeleteServiceMessages;
+    await saveGroupData(groupId, data);
+    setServiceMessageCleanupEnabled(
+      groupId,
+      data.cleanup.autoDeleteServiceMessages,
+    );
+    await ctx.answerCallbackQuery(
+      data.cleanup.autoDeleteServiceMessages
+        ? "Auto-eliminación de avisos activada."
+        : "Auto-eliminación de avisos desactivada.",
+    );
+    await renderPanel(
+      ctx,
+      buildCleanupSettingsPanel(data.cleanup, ctx.session.user.selectedGroupTitle),
+    );
+    return;
+  }
+
+  if (parts[0] === "am") {
+    if (
+      !["home", "toggle", "interval", "configure", "send-now"].includes(kind) ||
+      ctx.chat?.type !== "private"
+    ) {
+      await ctx.answerCallbackQuery("Acción de mensajes recurrentes no válida.");
+      return;
+    }
+    const data = await getGroupData(groupId);
+    if (kind === "configure") {
+      ctx.session.user.pendingAction = { kind: "automaticMessage", groupId };
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildPromptPanel(
+          "✏️ *MENSAJE RECURRENTE*\n\nEscribe el texto que ZEUS publicará periódicamente en el grupo.",
+        ),
+      );
+      return;
+    }
+    if (kind === "toggle") {
+      if (!data.automaticMessage?.message) {
+        await ctx.answerCallbackQuery("Primero configura el texto del mensaje.");
+        await renderPanel(
+          ctx,
+          buildAutomaticMessagePanel(data.automaticMessage, ctx.session.user.selectedGroupTitle),
+        );
+        return;
+      }
+      data.automaticMessage.enabled = !data.automaticMessage.enabled;
+      data.automaticMessage.intervalMinutes ??= 60;
+      data.automaticMessage.nextRunAt = data.automaticMessage.enabled
+        ? new Date(Date.now() + data.automaticMessage.intervalMinutes * 60_000).toISOString()
+        : undefined;
+      await saveGroupData(groupId, data);
+      await automaticMessageScheduler.refreshGroup(groupId);
+      await ctx.answerCallbackQuery(
+        data.automaticMessage.enabled
+          ? "Mensajes recurrentes activados."
+          : "Mensajes recurrentes desactivados.",
+      );
+    } else if (kind === "interval") {
+      const intervals = [15, 30, 60, 120, 240, 480, 1440];
+      const current = data.automaticMessage?.intervalMinutes ?? 60;
+      const currentIndex = intervals.indexOf(current);
+      const nextInterval = intervals[(currentIndex + 1) % intervals.length] ?? 60;
+      data.automaticMessage = {
+        enabled: data.automaticMessage?.enabled ?? false,
+        message: data.automaticMessage?.message ?? "",
+        intervalMinutes: nextInterval,
+        nextRunAt: data.automaticMessage?.enabled
+          ? new Date(Date.now() + nextInterval * 60_000).toISOString()
+          : data.automaticMessage?.nextRunAt,
+        lastSentAt: data.automaticMessage?.lastSentAt,
+        lastMessageId: data.automaticMessage?.lastMessageId,
+      };
+      await saveGroupData(groupId, data);
+      await automaticMessageScheduler.refreshGroup(groupId);
+      await ctx.answerCallbackQuery(`Intervalo: ${nextInterval} minutos.`);
+    } else if (kind === "send-now") {
+      await ctx.answerCallbackQuery("Enviando mensaje…");
+      const result = await automaticMessageScheduler.sendNow(groupId);
+      if (!result.ok) {
+        const note = result.error instanceof Error
+          ? result.error.message
+          : "Error de envío.";
+        await renderPanel(
+          ctx,
+          buildAutomaticMessagePanel(
+            data.automaticMessage,
+            ctx.session.user.selectedGroupTitle,
+            `⛔ ${note}`,
+          ),
+        );
+        return;
+      }
+      const updated = await getGroupData(groupId);
+      await renderPanel(
+        ctx,
+        buildAutomaticMessagePanel(
+          updated.automaticMessage,
+          ctx.session.user.selectedGroupTitle,
+          "✅ Mensaje enviado.",
+        ),
+      );
+      return;
+    } else {
+      await ctx.answerCallbackQuery();
+    }
+
+    await renderPanel(
+      ctx,
+      buildAutomaticMessagePanel(
+        data.automaticMessage,
         ctx.session.user.selectedGroupTitle,
       ),
     );

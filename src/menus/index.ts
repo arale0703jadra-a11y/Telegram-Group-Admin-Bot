@@ -13,6 +13,8 @@ import {
   buildAntiSpamPanel,
   buildProtectionCenterPanel,
   buildInactivityPanel,
+  buildCleanupSettingsPanel,
+  buildAutomaticMessagePanel,
   buildUsersPanel,
 } from "./panels.js";
 import { renderPanel } from "./render.js";
@@ -189,6 +191,16 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
   } else if (action.kind === "sub" && action.section === "inactividad") {
     panel = buildInactivityPanel(
       (await getGroupData(selectedGroupId)).inactivity,
+      title,
+    );
+  } else if (action.kind === "sub" && action.section === "limpieza") {
+    panel = buildCleanupSettingsPanel(
+      (await getGroupData(selectedGroupId)).cleanup,
+      title,
+    );
+  } else if (action.kind === "sub" && action.section === "mensajes-recurrentes") {
+    panel = buildAutomaticMessagePanel(
+      (await getGroupData(selectedGroupId)).automaticMessage,
       title,
     );
   } else {

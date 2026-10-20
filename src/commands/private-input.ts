@@ -14,6 +14,7 @@ import {
   buildFiltersPanel,
   buildIllegalPanel,
   buildMuteMenuPanel,
+  buildAutomaticMessagePanel,
   buildUserCardPanel,
   buildUserSearchResultsPanel,
   buildWarningsPanel,
@@ -22,6 +23,7 @@ import {
 import { muteUser, unmuteUser, warnUser } from "../moderation/actions.js";
 import type { MyContext, PickAction } from "../types.js";
 import { consumeRecoveryKey } from "../services/system-owner.js";
+import { automaticMessageScheduler } from "../services/automatic-messages.js";
 
 const MAX_MUTE_MINUTES = 527040;
 
@@ -116,6 +118,37 @@ privateInput.on("message:text", async (ctx) => {
       await sendPanel(
         ctx,
         buildFiltersPanel(panelData.promotion, ctx.session.user.selectedGroupTitle),
+      );
+      return;
+    }
+    if (pending.kind === "automaticMessage") {
+      const message = text.trim();
+      if (!message || message.length > 3500) {
+        await ctx.reply("❌ El texto debe tener entre 1 y 3500 caracteres.");
+        return;
+      }
+      const data = await getGroupData(pending.groupId);
+      const current = data.automaticMessage;
+      data.automaticMessage = {
+        enabled: current?.enabled ?? false,
+        message,
+        intervalMinutes: current?.intervalMinutes ?? 60,
+        nextRunAt: current?.enabled
+          ? new Date(Date.now() + (current.intervalMinutes ?? 60) * 60_000).toISOString()
+          : current?.nextRunAt,
+        lastSentAt: current?.lastSentAt,
+        lastMessageId: current?.lastMessageId,
+      };
+      await saveGroupData(pending.groupId, data);
+      await automaticMessageScheduler.refreshGroup(pending.groupId);
+      ctx.session.user.pendingAction = undefined;
+      await ctx.reply("✅ Texto del mensaje recurrente guardado.");
+      await sendPanel(
+        ctx,
+        buildAutomaticMessagePanel(
+          data.automaticMessage,
+          ctx.session.user.selectedGroupTitle,
+        ),
       );
       return;
     }

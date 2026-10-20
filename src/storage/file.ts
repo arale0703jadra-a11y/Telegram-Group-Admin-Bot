@@ -199,6 +199,13 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
       ? (parsed.trustedUsers as Record<string, true>)
       : {},
     inactivity: normalizeInactivity(parsed.inactivity, base.inactivity),
+    cleanup: {
+      autoDeleteServiceMessages:
+        isRecord(parsed.cleanup) &&
+        typeof parsed.cleanup.autoDeleteServiceMessages === "boolean"
+          ? parsed.cleanup.autoDeleteServiceMessages
+          : base.cleanup.autoDeleteServiceMessages,
+    },
     activityMessages: normalizeActivityMessages(parsed.activityMessages),
     automaticMessage: normalizeAutomaticMessage(parsed.automaticMessage),
     newUsers: {

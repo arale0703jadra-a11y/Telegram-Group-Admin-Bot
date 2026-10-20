@@ -1,4 +1,4 @@
-import type { AntiRaidConfig, AntiSpamConfig, EmergencyConfig, GroupData, IllegalContentConfig, InactivityConfig, PromotionConfig } from "./types.js";
+import type { AntiRaidConfig, AntiSpamConfig, CleanupConfig, EmergencyConfig, GroupData, IllegalContentConfig, InactivityConfig, PromotionConfig } from "./types.js";
 
 export const PROMOTION_DICTIONARY = [
   "vendo", "venta", "vender", "vendo contenido", "contenido",
@@ -121,6 +121,10 @@ export function initialInactivityConfig(): InactivityConfig {
   return { enabled: false, inactivityDays: 21 };
 }
 
+export function initialCleanupConfig(): CleanupConfig {
+  return { autoDeleteServiceMessages: true };
+}
+
 /**
  * Estado inicial de un grupo recién registrado.
  * Cada grupo (chat_id) parte de estos valores por defecto.
@@ -143,6 +147,7 @@ export function initialGroupData(): GroupData {
     emergency: initialEmergencyConfig(),
     trustedUsers: {},
     inactivity: initialInactivityConfig(),
+    cleanup: initialCleanupConfig(),
     activityMessages: [],
     newUsers: { enabled: false },
     verifiedTitles: [],

@@ -22,8 +22,7 @@ menuCommand.command("menu", async (ctx) => {
     return;
   }
 
-  // El comando solo puede usarlo un administrador del grupo.
-  if (!from || !(await isUserAdmin(ctx))) {
+  if (!from) {
     const denial = await ctx.reply(
       "⛔ Lo siento, no tienes permisos para usar este comando.\n" +
         "Esta acción solo está disponible para administradores del grupo.",
@@ -39,9 +38,6 @@ menuCommand.command("menu", async (ctx) => {
   const groupTitle = chat.title ?? "";
   const botLink = `https://t.me/${username}`;
 
-  registerGroup(groupId, groupTitle);
-  markUserAsAdmin(groupId, from.id);
-
   // El administrador gestiona ahora este grupo en su chat privado.
   ctx.session.user = {
     selectedGroupId: groupId,
@@ -50,31 +46,64 @@ menuCommand.command("menu", async (ctx) => {
 
   const panel = buildMainPanel(groupTitle);
   const openButton = new InlineKeyboard().url("🔐 Abrir bot", botLink);
+  const authorization = isUserAdmin(ctx);
+  const delivery = ctx.api.sendMessage(from.id, panel.text, {
+    reply_markup: panel.keyboard,
+    parse_mode: "Markdown",
+  }).then((message) => ({ message, error: undefined }))
+    .catch((error: unknown) => ({ message: undefined, error }));
+  const sent = await delivery;
 
-  let sentToPrivate = false;
-  try {
-    await ctx.api.sendMessage(from.id, panel.text, {
-      reply_markup: panel.keyboard,
-      parse_mode: "Markdown",
-    });
-    sentToPrivate = true;
-  } catch {
-    sentToPrivate = false;
-  }
-
-  if (!sentToPrivate) {
-    await sendEphemeralGroupMessage(
-      ctx,
-      groupId,
-      "🔐 Abre el bot en privado para continuar.",
-      openButton,
+  if (!sent.message) {
+    console.warn(
+      `[MENU] No se pudo enviar el panel privado userId=${from.id} groupId=${groupId} errorType=${sent.error instanceof Error ? sent.error.name : typeof sent.error}`,
     );
   }
 
-  // Elimina también el mensaje "/menu" para mantener el grupo limpio.
   if (ctx.message) {
     scheduleMessageDeletion(ctx, groupId, ctx.message.message_id);
   }
+
+  void authorization.then((isAdmin) => {
+    if (isAdmin) {
+      registerGroup(groupId, groupTitle);
+      markUserAsAdmin(groupId, from.id);
+      if (!sent.message) {
+        void sendEphemeralGroupMessage(
+          ctx,
+          groupId,
+          "🔐 Abre el bot en privado para continuar.",
+          openButton,
+        ).catch((error: unknown) => {
+          console.error(
+            `[MENU] no se pudo enviar el aviso privado groupId=${groupId} userId=${from.id} error=${error instanceof Error ? error.name : "unknown"}`,
+          );
+        });
+      }
+      return;
+    }
+    if (sent.message) {
+      void ctx.api.deleteMessage(from.id, sent.message.message_id).catch((error: unknown) => {
+        console.error(
+          `[MENU] No se pudo retirar el panel de un usuario no administrador groupId=${groupId} userId=${from.id} error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+      });
+    }
+    console.warn(`[MENU] acceso denegado groupId=${groupId} userId=${from.id}`);
+  }).catch((error: unknown) => {
+    console.error(
+      `[MENU] falló la autorización en segundo plano groupId=${groupId} userId=${from.id} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+    if (sent.message) {
+      void ctx.api.deleteMessage(from.id, sent.message.message_id).catch((deleteError: unknown) => {
+        console.error(
+          `[MENU] no se pudo retirar el panel tras fallar autorización groupId=${groupId} userId=${from.id} error=${deleteError instanceof Error ? deleteError.name : "unknown"}`,
+        );
+      });
+    }
+  });
+
+  // Elimina también el mensaje "/menu" para mantener el grupo limpio.
 });
 
 /**
