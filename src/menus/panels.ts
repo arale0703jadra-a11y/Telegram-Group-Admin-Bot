@@ -184,7 +184,6 @@ const CATEGORIES: MenuItem[] = [
   { id: "limpieza", label: "👻 Limpieza" },
   { id: "actividad", label: "📊 Actividad" },
   { id: "reglas", label: "📜 Reglas" },
-  { id: "bienvenida", label: "👋 Bienvenida" },
   { id: "config", label: "⚙️ Configuración" },
   { id: "ayuda", label: "❓ Ayuda" },
 ];
@@ -283,16 +282,6 @@ const SUBMENUS: Record<string, SubmenuDef> = {
       { id: "editar", label: "✏️ Editar reglas" },
       { id: "publicar", label: "📌 Publicar reglas" },
       { id: "eliminar", label: "🗑️ Eliminar reglas" },
-    ],
-  },
-  bienvenida: {
-    icon: "👋",
-    title: "Bienvenida",
-    description: "Configura el mensaje de bienvenida del grupo.",
-    items: [
-      { id: "activar", label: "👋 Activar/desactivar" },
-      { id: "editar", label: "✏️ Editar mensaje" },
-      { id: "probar", label: "🧪 Probar bienvenida" },
     ],
   },
   config: {

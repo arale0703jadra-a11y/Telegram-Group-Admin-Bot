@@ -135,7 +135,7 @@ export function initialGroupData(): GroupData {
     recentMessages: [],
     indexedUsers: {},
     events: [],
-    welcome: { enabled: true, message: "" },
+    welcome: { enabled: false, message: "" },
     promotion: initialPromotionConfig(),
     illegalContent: initialIllegalContentConfig(),
     antiSpam: initialAntiSpamConfig(),

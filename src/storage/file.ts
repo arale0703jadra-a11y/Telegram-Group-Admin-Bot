@@ -180,9 +180,12 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
       ? (parsed.events as ModerationEvent[])
       : [],
     welcome: {
-      enabled: true,
-      message: "",
       ...(isRecord(parsed.welcome) ? parsed.welcome : {}),
+      enabled: false,
+      message:
+        isRecord(parsed.welcome) && typeof parsed.welcome.message === "string"
+          ? parsed.welcome.message
+          : "",
     },
     promotion: normalizePromotion(parsed.promotion, base.promotion),
     illegalContent: normalizeIllegalContent(

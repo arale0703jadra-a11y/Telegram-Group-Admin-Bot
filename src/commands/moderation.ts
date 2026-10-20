@@ -19,7 +19,10 @@ export const moderationCommand = new Composer<MyContext>();
 
 moderationCommand.command("borrar", async (ctx) => {
   if (!isGroupChat(ctx)) {
-    await ctx.reply("🗑️ Usa /borrar dentro del grupo, respondiendo al mensaje a borrar.");
+    await ctx.reply(
+      "🗑️ Usa /borrar dentro del grupo, respondiendo al mensaje que quieras eliminar. " +
+        "Para retirar una bienvenida antigua de ZEUS, responde a esa bienvenida con /borrar.",
+    );
     return;
   }
 
@@ -36,7 +39,11 @@ moderationCommand.command("borrar", async (ctx) => {
 
   const target = command.reply_to_message;
   if (!target) {
-    await sendEphemeral(ctx, "💬 Responde al mensaje que quieres borrar y vuelve a escribir /borrar.");
+    await sendEphemeral(
+      ctx,
+      "💬 Responde al mensaje que quieres borrar y vuelve a escribir /borrar. " +
+        "También puedes usarlo para eliminar una bienvenida antigua de ZEUS.",
+    );
     return;
   }
 

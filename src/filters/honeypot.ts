@@ -294,7 +294,7 @@ honeypot.on("callback_query:data", async (ctx, next) => {
     await saveGroupData(chatId, data);
     clearTimeout(challenge.cleanupTimer);
     pendingChallenges.delete(key);
-    await ctx.answerCallbackQuery("Verificación completada. ¡Bienvenido/a!");
+    await ctx.answerCallbackQuery("Verificación completada.");
     try {
       await ctx.api.deleteMessage(chatId, challenge.messageId);
     } catch (error) {

@@ -31,6 +31,7 @@ test("emergency recent-member policy uses a strict 48-hour join window", () => {
 
 test("one-hour emergency duration is the default for new group settings", () => {
   assert.equal(initialGroupData().antiRaid.emergencyMinutes, 60);
+  assert.equal(initialGroupData().welcome.enabled, false);
 });
 
 test("emergency restriction applies only to recent tracked members and can restore them", async () => {
