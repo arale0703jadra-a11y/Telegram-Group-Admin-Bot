@@ -1,3 +1,5 @@
+import { sanitizeIncomingText } from "../utils/sanitizer.js";
+
 export type PromotionIntent = "BUYING" | "SELLING" | "NEUTRAL" | "AMBIGUOUS";
 
 export type PromotionSignal =
@@ -59,17 +61,19 @@ export const CONTACT_SIGNAL_EXAMPLES = [
 ] as const;
 
 const COMMERCIAL_OBJECT_PATTERN =
-  /\b(?:contenido|content|material|packs?|paquetes?|bundles?|sets?|catalogo|menu|galerias?|galleries|clips?|fotos?|photos?|pics?|videos?|albums?|nudes?|sexting|videollamadas?|video calls?|llamadas?|calls?|servicios?|services?|pedidos?|orders?|comisiones?|commissions?|customs?|personalizad[oa]s?)\b/u;
+  /\b(?:contenido|content|material|packs?|paquetes?|bundles?|sets?|catalogo|menu|galerias?|galleries|clips?|fotos?|photos?|pics?|videos?|albums?|nudes?|sexting|videollamadas?|video calls?|llamadas?|calls?|servicios?|services?|pedidos?|orders?|comisiones?|commissions?|customs?|personalizad[oa]s?|culo|tetas?|senos?|vagina|escort|novia virtual)\b/u;
 const CONTACT_PATTERN =
   /\b(?:dm|inbox|directo|escribeme|hablame|contactame|interesados?|por privado|al privado|habla conmigo|mandame mensaje|mensajeame|message me|send me a message|private message|details by dm|dm me)\b/u;
 const LINK_PATTERN = /(?:https?:\/\/|www\.|t\.me\/|telegram\.me\/)/iu;
 
 const AUTHOR_SELLING_ACTION =
   /\b(?:(?:yo|nosotros|nosotras)\s+)?(?:vendo|vendemos|ofrezco|ofrecemos|hago|hacemos|realizo|realizamos|preparo|preparamos|creo|creamos|acepto|aceptamos|tomo|tomamos|estoy\s+(?:tomando|ofreciendo)|promociono|promocionando)\b|\b(?:quiero|voy\s+a|planeo)\s+vender\b|\b(?:i|we)\s+(?:(?:am|are)\s+)?(?:(?:also|sometimes|still|now)\s+)?(?:selling|sell|offer|make|create|do|accept|take|prepare|commission)\b|\bi\s+(?:(?:might|may|could|would)\s+)?sell\b|\bi['’]?m\s+(?:selling|offering|taking|accepting)\b|\b(?:taking|accepting|offering)\s+(?:custom\s+)?(?:orders|requests|commissions)\b|\bselling\s+(?:my|our)\b/u;
+const SELF_IDENTIFIED_ADULT_SERVICE_PATTERN =
+  /\b(?:soy|trabajo como)\s+(?:escort|novia virtual)\b/u;
 const NEGATED_SELLING_ACTION =
   /\b(?:no|nunca|jamas|not|never|don['’]?t|do\s+not|doesn['’]?t|does\s+not|isn['’]?t|is\s+not|aren['’]?t|are\s+not|am\s+not)\b.{0,32}\b(?:vendo|vendemos|vender|ofrezco|ofrecemos|ofrecer|hago|hacemos|hacer|realizo|realizamos|acepto|tomando|selling|sell|offer|offering|make|making|accept|taking)\b/u;
 const OWNED_OBJECT_PATTERN =
-  /\b(?:tengo|mi|mis|nuestro|nuestra|nuestros|nuestras|i\s+have|i['’]?ve\s+got|my|our)\b.{0,45}\b(?:contenido|content|material|packs?|paquetes?|bundles?|sets?|catalogo|menu|galerias?|galleries|clips?|fotos?|photos?|pics?|videos?|albums?|nudes?|sexting|videollamadas?|llamadas?|servicios?|services?|pedidos?|orders?|comisiones?|commissions?|customs?)\b/u;
+  /\b(?:tengo|mi|mis|nuestro|nuestra|nuestros|nuestras|i\s+have|i['’]?ve\s+got|my|our)\b.{0,45}\b(?:contenido|content|material|packs?|paquetes?|bundles?|sets?|catalogo|menu|galerias?|galleries|clips?|fotos?|photos?|pics?|videos?|albums?|nudes?|sexting|videollamadas?|llamadas?|servicios?|services?|pedidos?|orders?|comisiones?|commissions?|customs?|culo|tetas?|senos?|vagina|escort|novia virtual)\b/u;
 const OFFER_DESCRIPTOR_PATTERN =
   /\b(?:nuevo|nueva|nuevos|nuevas|new|exclusive|exclusivo|exclusiva|disponible|available|por\s+encargo|for\s+sale|a\s+la\s+venta|sale|descuento|discount|precio|prices?|tarifa|rates?|usd|eur|euros?|dolares?|dollars?)\b/u;
 const SELLING_BUYER_AUDIENCE_PATTERN =
@@ -100,7 +104,7 @@ const NEUTRAL_CONTEXT_PATTERN =
   /\b(?:work\s+schedule|shared\s+calendar|phone|telefono|available\s+in\s+my\s+country|internet\s+(?:signal|service)|senal\s+de\s+internet|mi\s+zona|my\s+area|my\s+country|university|universidad|escuela|school|homework|tarea|class|clase|presentation|presentacion|work\s+presentation|proyecto|project|avatar|video\s+game|videogame|minecraft|bank|banco|monthly\s+statement|estado\s+de\s+cuenta|restaurant|restaurante|store|tienda|vacation|vacaciones|viaje|my\s+mom|my\s+mother|mi\s+mama|mi\s+madre|family|familia|familiar|youtube|pelicula|movie|trabajo|job\s+search|looking\s+for\s+a\s+job|miembros?|members?|curso|course|grupo|group|paquete\s+.*\b(?:llego|arrived)\b|(?:llego|arrived)\s+(?:incompleto|incomplete|damaged)|\b(?:bought|purchased|compre)\b)\b/u;
 
 export function normalizeFilterTerm(value: string): string {
-  return value
+  return sanitizeIncomingText(value)
     .toLocaleLowerCase("es")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -192,7 +196,9 @@ export function detectPromotion(
     if (NEGATED_SELLING_ACTION.test(clause)) return false;
     if (THIRD_PERSON_SELLER_PATTERN.test(clause)) return false;
 
-    const authorAction = AUTHOR_SELLING_ACTION.test(clause);
+    const authorAction =
+      AUTHOR_SELLING_ACTION.test(clause) ||
+      SELF_IDENTIFIED_ADULT_SERVICE_PATTERN.test(clause);
     const seeksBuyers = SELLING_BUYER_AUDIENCE_PATTERN.test(clause);
     const ownedOffer =
       OWNED_OBJECT_PATTERN.test(clause) &&
@@ -222,7 +228,8 @@ export function detectPromotion(
   const sellingSignals = authorSelling
     ? unique([
         ...(authorSellingClauses.some((clause) =>
-          AUTHOR_SELLING_ACTION.test(clause),
+          AUTHOR_SELLING_ACTION.test(clause) ||
+          SELF_IDENTIFIED_ADULT_SERVICE_PATTERN.test(clause),
         )
           ? ["oferta propia en primera persona"]
           : []),
@@ -247,7 +254,7 @@ export function detectPromotion(
     signals.add("payment");
   }
   if (hasContactCallToAction) signals.add("contact");
-  if (/\b(?:adultos|desnudos?|nudes?|sexting|contenido \+18|contenido 18\+)\b/u.test(normalized)) {
+  if (/\b(?:adultos|desnudos?|nudes?|sexting|contenido \+18|contenido 18\+|culo|tetas?|senos?|vagina|escort|novia virtual)\b/u.test(normalized)) {
     signals.add("adult");
   }
   if (/\b(?:promocion|oferta|descuento|discount|for sale|a la venta)\b/u.test(normalized)) {

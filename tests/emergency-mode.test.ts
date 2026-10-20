@@ -19,14 +19,18 @@ const OLD_ID = 991000003;
 const TRUSTED_ID = 991000004;
 const CHAT_ID = -991000001;
 
-test("emergency recent-member policy uses a strict 24-hour join window", () => {
+test("emergency recent-member policy uses a strict 48-hour join window", () => {
   const now = Date.now();
   const nowSeconds = Math.floor(now / 1000);
 
-  assert.equal(isRecentEmergencyMember(nowSeconds - 86_399, now), true);
-  assert.equal(isRecentEmergencyMember(nowSeconds - 86_400, now), false);
+  assert.equal(isRecentEmergencyMember(nowSeconds - 172_799, now), true);
+  assert.equal(isRecentEmergencyMember(nowSeconds - 172_800, now), false);
   assert.equal(isRecentEmergencyMember(undefined, now), false);
   assert.equal(isRecentEmergencyMember(nowSeconds + 1, now), false);
+});
+
+test("one-hour emergency duration is the default for new group settings", () => {
+  assert.equal(initialGroupData().antiRaid.emergencyMinutes, 60);
 });
 
 test("emergency restriction applies only to recent tracked members and can restore them", async () => {
@@ -44,7 +48,7 @@ test("emergency restriction applies only to recent tracked members and can resto
   };
   data.indexedUsers[String(OLD_ID)] = {
     id: OLD_ID,
-    joinedAt: nowSeconds - 86_401,
+    joinedAt: nowSeconds - 172_801,
   };
   data.indexedUsers[String(TRUSTED_ID)] = {
     id: TRUSTED_ID,
@@ -136,9 +140,10 @@ test("emergency restriction applies only to recent tracked members and can resto
   try {
     resetSecurityCaches();
     const applied = await restrictRecentMembers(ctx, CHAT_ID, data, now);
-    assert.deepEqual(applied, { restricted: 1, failed: 0 });
-    assert.equal(appliedPermissions.length, 1);
+    assert.deepEqual(applied, { restricted: 2, failed: 0 });
+    assert.equal(appliedPermissions.length, 2);
     assert.equal(appliedPermissions[0]?.userId, RECENT_ID);
+    assert.equal(appliedPermissions[1]?.userId, TRUSTED_ID);
     assert.deepEqual(
       appliedPermissions[0]?.permissions,
       EMERGENCY_MEMBER_PERMISSIONS,
@@ -151,8 +156,13 @@ test("emergency restriction applies only to recent tracked members and can resto
     );
 
     assert.equal(await restoreEmergencyRestrictions(ctx, CHAT_ID, data), true);
-    assert.deepEqual(appliedPermissions[1], {
+    assert.deepEqual(appliedPermissions[2], {
       userId: RECENT_ID,
+      permissions: defaultPermissions,
+      untilDate: 0,
+    });
+    assert.deepEqual(appliedPermissions[3], {
+      userId: TRUSTED_ID,
       permissions: defaultPermissions,
       untilDate: 0,
     });
@@ -165,9 +175,9 @@ test("emergency restriction applies only to recent tracked members and can resto
 test("protection center presents the current emergency toggle", () => {
   const activePanel = buildProtectionCenterPanel(
     { active: true, expiresAt: Date.now() + 60_000 },
-    10,
+    60,
   );
-  const inactivePanel = buildProtectionCenterPanel({ active: false }, 10);
+  const inactivePanel = buildProtectionCenterPanel({ active: false }, 60);
   const activeCallbacks = activePanel.keyboard.inline_keyboard
     .flat()
     .map(buttonCallbackData);
@@ -179,4 +189,7 @@ test("protection center presents the current emergency toggle", () => {
   assert.match(inactivePanel.text, /Modo de emergencia: \*inactivo\*/u);
   assert.ok(activeCallbacks.includes(EmergencyAction.toggle));
   assert.ok(inactiveCallbacks.includes(EmergencyAction.toggle));
+  assert.ok(inactiveCallbacks.includes(EmergencyAction.duration));
+  assert.match(inactivePanel.text, /menos de 48 horas/u);
+  assert.match(inactivePanel.text, /Duración configurable/u);
 });

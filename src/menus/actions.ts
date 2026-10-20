@@ -73,6 +73,7 @@ import {
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
   "Primero selecciona el grupo que quieres administrar.";
+const EMERGENCY_DURATION_OPTIONS = [15, 30, 60, 120, 360, 720, 1440] as const;
 
 /**
  * Acciones reales del panel (Usuarios + Moderación).
@@ -109,13 +110,42 @@ moderationActions.on("callback_query:data", async (ctx) => {
   }
 
   if (parts[0] === "ep") {
-    if (kind !== "toggle" || ctx.chat?.type !== "private") {
+    if (
+      (kind !== "toggle" && kind !== "duration") ||
+      ctx.chat?.type !== "private"
+    ) {
       await ctx.answerCallbackQuery("Acción del Centro de Protección no válida.");
       return;
     }
     const data = await getGroupData(groupId);
     const now = Date.now();
     data.emergency = expireEmergencyIfNeeded(data.emergency, now);
+
+    if (kind === "duration") {
+      const currentIndex = EMERGENCY_DURATION_OPTIONS.indexOf(
+        data.antiRaid.emergencyMinutes as
+          (typeof EMERGENCY_DURATION_OPTIONS)[number],
+      );
+      const nextIndex =
+        currentIndex < 0
+          ? EMERGENCY_DURATION_OPTIONS.indexOf(60)
+          : (currentIndex + 1) % EMERGENCY_DURATION_OPTIONS.length;
+      data.antiRaid.emergencyMinutes =
+        EMERGENCY_DURATION_OPTIONS[nextIndex] ?? 60;
+      await saveGroupData(groupId, data);
+      await ctx.answerCallbackQuery(
+        `Duración: ${data.antiRaid.emergencyMinutes} minutos.`,
+      );
+      await renderPanel(
+        ctx,
+        buildProtectionCenterPanel(
+          data.emergency,
+          data.antiRaid.emergencyMinutes,
+          ctx.session.user.selectedGroupTitle,
+        ),
+      );
+      return;
+    }
 
     if (isEmergencyActive(data.emergency, now)) {
       const restored = await restoreEmergencyRestrictions(ctx, groupId, data);

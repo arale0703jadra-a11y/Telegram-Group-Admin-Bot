@@ -1,5 +1,6 @@
 import type { AntiRaidConfig, EmergencyConfig } from "../storage/types.js";
 import { SlidingWindowCounter } from "../utils/safety.js";
+import { sanitizeIncomingText } from "../utils/sanitizer.js";
 
 /**
  * Motor de detección de oleadas (raids) y actividad coordinada.
@@ -25,7 +26,7 @@ export interface CoordinatedResult {
   distinctUsers: number;
 }
 
-export const EMERGENCY_MEMBER_AGE_MS = 24 * 60 * 60 * 1000;
+export const EMERGENCY_MEMBER_AGE_MS = 48 * 60 * 60 * 1000;
 
 /** `joinedAt` in storage is epoch seconds; unknown or invalid dates are not recent. */
 export function isRecentEmergencyMember(
@@ -44,7 +45,7 @@ export function isRecentEmergencyMember(
 }
 
 export function normalizeCoordinationText(text: string): string {
-  return text
+  return sanitizeIncomingText(text)
     .toLocaleLowerCase("es")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")

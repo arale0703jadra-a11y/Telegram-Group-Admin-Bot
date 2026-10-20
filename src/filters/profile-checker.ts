@@ -5,6 +5,7 @@ import { logEvent } from "../moderation/events.js";
 import { KeyedMutex } from "../utils/safety.js";
 import { inspectLinks } from "./link-filter.js";
 import { isGroupChat } from "../utils/permissions.js";
+import { sanitizeIncomingText } from "../utils/sanitizer.js";
 import type { MyContext } from "../types.js";
 
 export interface ProfileFields {
@@ -39,7 +40,7 @@ const PROFILE_HOMOGLYPHS: Readonly<Record<string, string>> = {
 };
 
 function normalizeProfileText(value: string): string {
-  return value
+  return sanitizeIncomingText(value)
     .normalize("NFKD")
     .toLocaleLowerCase("en")
     .replace(/\p{M}/gu, "")

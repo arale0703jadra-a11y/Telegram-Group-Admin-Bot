@@ -213,3 +213,26 @@ test("ordinary conversation and weak dictionary matches are not moderated", () =
     assert.equal(detect(message).shouldModerate, false, message);
   }
 });
+
+test("adult niche vocabulary is contextual and only clear unverified offers are moderated", () => {
+  for (const text of [
+    "Vendo fotos de mis tetas",
+    "Ofrezco sexting",
+    "Soy escort, escríbeme al privado",
+    "Vendo novia virtual por horas",
+  ]) {
+    const result = detect(text);
+    assert.equal(result.intent, "SELLING", text);
+    assert.equal(result.shouldModerate, true, text);
+  }
+  for (const text of [
+    "Me gustan tus tetas",
+    "Está buena",
+    "¿Quién ofrece videollamadas?",
+    "Qué culo tiene",
+  ]) {
+    const result = detect(text);
+    assert.notEqual(result.intent, "SELLING", text);
+    assert.equal(result.shouldModerate, false, text);
+  }
+});

@@ -25,7 +25,8 @@ export type ModerationType =
   | "ANTIRAID"
   | "INACTIVITY_SCAN"
   | "INACTIVITY_REMOVE"
-  | "INACTIVITY_REMOVE_ERROR";
+  | "INACTIVITY_REMOVE_ERROR"
+  | "ADMIN_GUARDIAN";
 
 /**
  * Registro de una acción de moderación realizada por un administrador.

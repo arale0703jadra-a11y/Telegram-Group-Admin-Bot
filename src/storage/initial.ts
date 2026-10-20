@@ -109,7 +109,7 @@ export function initialAntiRaidConfig(): AntiRaidConfig {
     coordinatedThreshold: 4,
     newAccountRestrictionMinutes: 30,
     emergencyOnRaid: true,
-    emergencyMinutes: 10,
+    emergencyMinutes: 60,
   };
 }
 

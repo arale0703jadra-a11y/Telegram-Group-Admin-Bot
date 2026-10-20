@@ -329,6 +329,10 @@ function normalizeAntiRaid(
     typeof value === "number" && Number.isFinite(value) && value > 0
       ? Math.floor(value)
       : defaultValue;
+  const storedEmergencyMinutes = positive(
+    raw.emergencyMinutes,
+    fallback.emergencyMinutes,
+  );
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
     joinWindowSeconds: positive(raw.joinWindowSeconds, fallback.joinWindowSeconds),
@@ -349,7 +353,10 @@ function normalizeAntiRaid(
       typeof raw.emergencyOnRaid === "boolean"
         ? raw.emergencyOnRaid
         : fallback.emergencyOnRaid,
-    emergencyMinutes: positive(raw.emergencyMinutes, fallback.emergencyMinutes),
+    // Ten minutes was the previous implicit default; migrate it to the new one-hour default.
+    emergencyMinutes: storedEmergencyMinutes === 10
+      ? 60
+      : storedEmergencyMinutes,
   };
 }
 

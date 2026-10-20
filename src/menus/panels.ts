@@ -87,6 +87,7 @@ export const ModAction = {
 
 export const EmergencyAction = {
   toggle: "ep:toggle",
+  duration: "ep:duration",
 };
 
 const FILTER_PREFIX = "fa";
@@ -365,6 +366,8 @@ export function buildProtectionCenterPanel(
       EmergencyAction.toggle,
     )
     .row()
+    .text(`⏱️ Duración: ${durationMinutes} min`, EmergencyAction.duration)
+    .row()
     .add(...buildNavRow().inline_keyboard.flat());
 
   return {
@@ -373,9 +376,9 @@ export function buildProtectionCenterPanel(
       "🛡️ *Centro de Protección Avanzada*\n\n" +
       `Modo de emergencia: *${active ? "ACTIVO" : "inactivo"}*\n` +
       (expiry ? `Caduca automáticamente: ${expiry}\n` : "") +
-      `Duración al activarlo: ${durationMinutes} minutos.\n\n` +
-      "Durante una emergencia, los miembros con menos de 24 horas de antigüedad " +
-      "tendrán restringidos los enlaces, invitaciones y multimedia. Las restricciones " +
+      `Duración configurable al activarlo: ${durationMinutes} minutos.\n\n` +
+      "Durante una emergencia, los miembros con menos de 48 horas desde su ingreso " +
+      "tendrán restringidos enlaces, invitaciones, stickers, GIFs y multimedia. Las restricciones " +
       "de Telegram caducan junto con el modo; la activación también se produce " +
       "automáticamente al detectar una oleada si Anti-Raid está habilitado.\n\n" +
       "ZEUS necesita permisos para restringir miembros y borrar mensajes para " +

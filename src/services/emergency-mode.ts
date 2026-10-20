@@ -94,7 +94,7 @@ function emergencyUntil(
 ): number {
   return Math.min(
     emergencyExpiresAt,
-    joinedAt * 1000 + 24 * 60 * 60 * 1000,
+    joinedAt * 1000 + 48 * 60 * 60 * 1000,
   );
 }
 
@@ -130,7 +130,6 @@ export async function restrictRecentMembers(
       !Number.isSafeInteger(userId) ||
       userId <= 0 ||
       userId === OWNER_ID ||
-      data.trustedUsers[userKey] ||
       data.emergency.restrictedUsers[userKey] ||
       !isRecentEmergencyMember(tracked.joinedAt, now) ||
       tracked.joinedAt === undefined

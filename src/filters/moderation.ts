@@ -4,8 +4,6 @@ import {
   deleteMessageById,
   getMemberSafely,
   isVerifiableMember,
-  muteUser,
-  warnUser,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
 import { OWNER_ID } from "../config.js";
@@ -18,6 +16,7 @@ import {
 } from "../utils/cleanup.js";
 import type { MyContext } from "../types.js";
 import { getVerifiedUserPermissions } from "../services/verified-users.js";
+import { sanitizeIncomingText } from "../utils/sanitizer.js";
 
 export const promotionModeration = new Composer<MyContext>();
 
@@ -32,7 +31,7 @@ promotionModeration.on("message", async (ctx, next) => {
     await next();
     return;
   }
-  const text = ctx.message.text ?? ctx.message.caption ?? "";
+  const text = sanitizeIncomingText(ctx.message.text ?? ctx.message.caption ?? "");
   if (!text || text.startsWith("/")) {
     await next();
     return;
@@ -88,29 +87,10 @@ promotionModeration.on("message", async (ctx, next) => {
     return;
   }
 
-  const key = String(userId);
-  const infraction = (data.promotion.infractions[key] ?? 0) + 1;
-  data.promotion.infractions[key] = infraction;
-  await saveGroupData(chatId, data);
-  const muteMinutes =
-    data.promotion.recurrenceMuteMinutes[
-      Math.min(infraction - 2, data.promotion.recurrenceMuteMinutes.length - 1)
-    ] ?? 0;
-
-  const warning = await warnUser(
-    ctx,
-    chatId,
-    userId,
-    ctx.from.first_name,
-    `Promoción detectada: ${detection.sellingSignals.join(", ") || detection.reason}`,
-  );
   const deletion = await deleteMessageById(ctx, chatId, ctx.message.message_id);
   if (deletion.ok) {
     data.promotion.statistics.blocked += 1;
     await saveGroupData(chatId, data);
-  }
-  if (infraction >= 2 && muteMinutes > 0) {
-    await muteUser(ctx, chatId, userId, muteMinutes, ctx.from.first_name);
   }
 
   await logEvent(ctx, chatId, "DELETE", {
@@ -136,9 +116,6 @@ promotionModeration.on("message", async (ctx, next) => {
       verificationMessage.message_id,
       WARNING_AUTO_DELETE_SECONDS,
     );
-  }
-  if (!warning.ok) {
-    console.error(`[PROMOTION] No se pudo registrar advertencia userId=${userId}`);
   }
   await next();
 });

@@ -1,4 +1,5 @@
 import type { Message } from "@grammyjs/types";
+import { sanitizeIncomingText } from "../utils/sanitizer.js";
 
 type ScannableMessage = Pick<
   Message,
@@ -14,7 +15,7 @@ export function getScannableMessageContent(
   message: ScannableMessage,
 ): ScannableMessageContent {
   return {
-    text: message.text ?? message.caption ?? "",
+    text: sanitizeIncomingText(message.text ?? message.caption ?? ""),
     entities: [...(message.entities ?? []), ...(message.caption_entities ?? [])],
   };
 }

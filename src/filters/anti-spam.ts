@@ -26,6 +26,7 @@ import type { MessageEntity } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
 import { getVerifiedUserPermissions } from "../services/verified-users.js";
 import { shouldSkipOrdinarySpamViolation } from "../services/verified-user-policy.js";
+import { sanitizeIncomingText } from "../utils/sanitizer.js";
 
 interface UserSpamState {
   texts: string[];
@@ -62,7 +63,7 @@ function normalizeMessage(value: string): string {
 }
 
 function getText(ctx: MyContext): string {
-  return ctx.message?.text ?? ctx.message?.caption ?? "";
+  return sanitizeIncomingText(ctx.message?.text ?? ctx.message?.caption ?? "");
 }
 
 function getEntities(ctx: MyContext): MessageEntity[] {
