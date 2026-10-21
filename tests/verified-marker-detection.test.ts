@@ -23,6 +23,17 @@ test("detects configured markers in message text and visible profile fields", ()
   );
 });
 
+test("matches singular and plural markers after removing hashtags, punctuation, and emoji", () => {
+  assert.equal(
+    findConfiguredVerifiedMarker(["✨ #VERIFICADAS ✨"], ["Verificada"]),
+    "Verificada",
+  );
+  assert.equal(
+    findConfiguredVerifiedMarker(["#verificada"], ["Verificadas"]),
+    "Verificadas",
+  );
+});
+
 test("does not match a marker embedded inside another word", () => {
   assert.equal(
     findConfiguredVerifiedMarker(["unverified account"], ["verified"]),

@@ -24,7 +24,10 @@ import {
   recoverExpiredVerifiedTagReviewClaim,
   withVerifiedTagReviewLock,
 } from "../src/services/verified-tag-reviews.js";
-import { observeVerifiedMemberTag } from "../src/services/verified-tag-sync.js";
+import {
+  isRecognizedVerifiedMemberTag,
+  observeVerifiedMemberTag,
+} from "../src/services/verified-tag-sync.js";
 import {
   approveVerifiedTagCandidate,
   VerifiedTagApprovalError,
@@ -172,6 +175,7 @@ function makeMember(
     | "left"
     | "kicked" = "member",
   tag?: string,
+  customTitle = "Verificada",
 ): ChatMember {
   if (status === "administrator") {
     return {
@@ -182,7 +186,7 @@ function makeMember(
         first_name: "Test",
         username: "test_user",
       },
-      custom_title: "Verificada",
+      custom_title: customTitle,
     } as ChatMember;
   }
   return {
@@ -414,6 +418,17 @@ test("custom_title on an administrator is not treated as a member tag", async ()
     groupId: -100,
     member: makeMember("administrator"),
     recognizedTags: ["Verificada"],
+  });
+
+  test("native member tags accept normalized singular/plural labels", () => {
+    assert.equal(
+      isRecognizedVerifiedMemberTag("✨ #VERIFICADAS ✨", ["Verificada"]),
+      true,
+    );
+    assert.equal(
+      isRecognizedVerifiedMemberTag("#verificada", ["Verificadas"]),
+      true,
+    );
   });
 
   assert.equal(result.classification, "ignored");
@@ -916,6 +931,24 @@ test("manual marker scan records matching administrator custom titles as pending
     "Verificada (escaneo de título/perfil/actividad reciente)",
   );
   assert.equal(verifiedRows.length, 0);
+});
+
+test("manual marker scan matches plural administrator custom titles as pending", async () => {
+  const data = initialGroupData();
+  data.verifiedMemberTags = ["Verificada"];
+
+  const result = await scanObservedVerifiedMarkers(
+    mockAdminListApi([makeMember("administrator", undefined, "  ✨ #VERIFICADAS ✨  ")]),
+    -100,
+    data,
+  );
+
+  assert.equal(result.newCandidates, 1);
+  assert.equal(reviewRows[0]?.status, "pending");
+  assert.equal(
+    reviewRows[0]?.observed_tag,
+    "Verificada (escaneo de título/perfil/actividad reciente)",
+  );
 });
 
 test("manual marker scan reports a Telegram permissions error when it cannot list admins", async () => {

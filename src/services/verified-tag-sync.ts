@@ -8,16 +8,13 @@ import {
   recordVerifiedTagObservation,
   type VerifiedTagReview,
 } from "./verified-tag-reviews.js";
+import { findConfiguredVerifiedMarker } from "./verified-marker-detection.js";
 
 export function isRecognizedVerifiedMemberTag(
   tag: string | undefined,
   recognizedTags: string[],
 ): boolean {
-  if (!tag?.trim()) return false;
-  const candidate = tag.trim().toLowerCase();
-  return recognizedTags.some(
-    (recognized) => recognized.trim().toLowerCase() === candidate,
-  );
+  return Boolean(tag && findConfiguredVerifiedMarker([tag], recognizedTags));
 }
 
 export interface VerifiedTagObservationResult {

@@ -31,12 +31,12 @@ import { recordUserActivity } from "./services/user-activity.js";
 import { getGroupData, saveGroupData, store } from "./storage/index.js";
 import {
   markUserAsAdmin,
+  getAllKnownGroups,
   registerGroup,
   unregisterGroup,
 } from "./services/group-registry.js";
 import { MAX_ACTIVITY_MESSAGES, type ActivityMessage } from "./storage/types.js";
 import type { MyContext } from "./types.js";
-import { syncVerifiedAdministrators } from "./services/verified-title-sync.js";
 import { openPrivatePanel } from "./utils/private-panel.js";
 import {
   expireEmergencyIfNeeded,
@@ -44,6 +44,9 @@ import {
 } from "./filters/anti-raid-engine.js";
 import { restrictRecentMembers } from "./services/emergency-mode.js";
 import { automaticMessageScheduler } from "./services/automatic-messages.js";
+import { scanObservedVerifiedMarkers } from "./services/verified-marker-scan.js";
+
+const VERIFIED_MARKER_RESCAN_INTERVAL_MS = 5 * 60 * 1000;
 
 async function main(): Promise<void> {
   validateConfig();
@@ -55,6 +58,16 @@ async function main(): Promise<void> {
     new Context({ update_id: 0 }, bot.api, bot.botInfo),
     { session: { group: {}, user: {} } },
   ) as MyContext;
+  const scanGroupVerifiedMarkers = async (groupId: number): Promise<void> => {
+    const data = await getGroupData(groupId);
+    if (!data.verifiedTagSyncEnabled) return;
+    const result = await scanObservedVerifiedMarkers(bot.api, groupId, data);
+    if (result.newCandidates > 0) {
+      console.log(
+        `[VERIFIED_MARKER] Escaneo groupId=${groupId} newCandidates=${result.newCandidates}`,
+      );
+    }
+  };
 
   bot.catch((err) => {
     console.error(`[ERROR] ${err.message}`);
@@ -108,10 +121,10 @@ async function main(): Promise<void> {
         );
       }
       try {
-        await syncVerifiedAdministrators(ctx.api, ctx.chat.id, ctx.from?.id ?? 0);
+        await scanGroupVerifiedMarkers(ctx.chat.id);
       } catch (error) {
         console.error(
-          `[VERIFIED_TITLE] No se pudo sincronizar administradores groupId=${ctx.chat.id}`,
+          `[VERIFIED_MARKER] No se pudieron escanear administradores groupId=${ctx.chat.id}`,
           error,
         );
       }
@@ -189,20 +202,6 @@ async function main(): Promise<void> {
         } catch (error) {
           console.error(
             `[ANTI_RAID] No se pudo registrar la entrada groupId=${ctx.chat.id} userId=${member.user.id}:`,
-            error,
-          );
-        }
-      }
-      if (
-        member.status === "administrator" &&
-        "custom_title" in member &&
-        member.custom_title?.trim().toLocaleLowerCase("es") === "verificada"
-      ) {
-        try {
-          await syncVerifiedAdministrators(ctx.api, ctx.chat.id, ctx.from.id);
-        } catch (error) {
-          console.error(
-            `[VERIFIED_TITLE] No se pudo procesar chat_member groupId=${ctx.chat.id} userId=${member.user.id}`,
             error,
           );
         }
@@ -361,6 +360,29 @@ async function main(): Promise<void> {
     void runInactivityCleaner(inactivityContext);
   }, INACTIVITY_CLEANER_INTERVAL_MS);
   void runInactivityCleaner(inactivityContext);
+  let verifiedMarkerRescanInFlight = false;
+  const rescanVerifiedMarkers = async (): Promise<void> => {
+    if (verifiedMarkerRescanInFlight) return;
+    verifiedMarkerRescanInFlight = true;
+    try {
+      for (const group of getAllKnownGroups()) {
+        try {
+          await scanGroupVerifiedMarkers(group.id);
+        } catch (error) {
+          console.error(
+            `[VERIFIED_MARKER] Error en resync periódico groupId=${group.id}:`,
+            error,
+          );
+        }
+      }
+    } finally {
+      verifiedMarkerRescanInFlight = false;
+    }
+  };
+  const verifiedMarkerRescanTimer = setInterval(() => {
+    void rescanVerifiedMarkers();
+  }, VERIFIED_MARKER_RESCAN_INTERVAL_MS);
+  void rescanVerifiedMarkers();
   automaticMessageScheduler.start(bot.api);
 
   // Graceful shutdown: forzar flush de datos antes de cerrar
@@ -377,6 +399,7 @@ async function main(): Promise<void> {
       await bot.stop();
       automaticMessageScheduler.stop();
       clearInterval(inactivityTimer);
+      clearInterval(verifiedMarkerRescanTimer);
       console.log("🤖 Bot detenido correctamente.");
     } catch (error) {
       console.error("❌ Error al detener bot:", error);

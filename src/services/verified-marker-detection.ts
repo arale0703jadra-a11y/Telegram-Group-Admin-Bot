@@ -8,6 +8,20 @@ function normalizeMarkerText(value: string): string {
     .replace(/\s+/gu, " ");
 }
 
+function markerVariants(value: string): string[] {
+  const variants = new Set([value]);
+  const words = value.split(" ");
+  const lastWord = words[words.length - 1];
+  if (lastWord && /[aeiouáéíóú]s$/u.test(lastWord)) {
+    words[words.length - 1] = lastWord.slice(0, -1);
+    variants.add(words.join(" "));
+  } else if (lastWord && /[aeiouáéíóú]$/u.test(lastWord)) {
+    words[words.length - 1] = `${lastWord}s`;
+    variants.add(words.join(" "));
+  }
+  return [...variants];
+}
+
 export function normalizeConfiguredVerifiedMarkers(
   input: string,
 ): string[] | undefined {
@@ -42,11 +56,15 @@ export function findConfiguredVerifiedMarker(
   for (const marker of configuredMarkers) {
     const normalizedMarker = normalizeMarkerText(marker);
     if (!normalizedMarker) continue;
-    const pattern = new RegExp(
-      `(^|[^\\p{L}\\p{N}])${normalizedMarker.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replace(/\s+/gu, "[\\p{P}\\p{S}\\p{Z}\\s]+")}(?=$|[^\\p{L}\\p{N}])`,
-      "iu",
+    const patterns = markerVariants(normalizedMarker).map((variant) =>
+      new RegExp(
+        `(^|[^\\p{L}\\p{N}])${variant.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replace(/\s+/gu, "[\\p{P}\\p{S}\\p{Z}\\s]+")}(?=$|[^\\p{L}\\p{N}])`,
+        "iu",
+      ),
     );
-    if (normalizedValues.some((value) => pattern.test(value))) return marker;
+    if (normalizedValues.some((value) => patterns.some((pattern) => pattern.test(value)))) {
+      return marker;
+    }
   }
   return undefined;
 }
