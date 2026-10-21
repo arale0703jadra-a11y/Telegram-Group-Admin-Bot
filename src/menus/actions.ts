@@ -242,7 +242,11 @@ moderationActions.on("callback_query:data", async (ctx) => {
     if (kind === "scan_now") {
       try {
         const data = await getGroupData(groupId);
-        const result = await scanObservedVerifiedMarkers(groupId, data);
+        const result = await scanObservedVerifiedMarkers(
+          ctx.api,
+          groupId,
+          data,
+        );
         await ctx.reply(
           `🔎 Escaneo completado: ${result.scanned} usuarios observados; ` +
             `✅ ${result.newCandidates} candidatas nuevas para revisión.\n\n` +

@@ -3,13 +3,17 @@ import { getGroupData } from "../storage/index.js";
 import {
   getVerifiedUserRecord,
 } from "../services/verified-users.js";
-import { recordVerifiedTagObservation } from "../services/verified-tag-reviews.js";
+import {
+  getVerifiedTagReview,
+  recordVerifiedTagObservation,
+} from "../services/verified-tag-reviews.js";
 import { findConfiguredVerifiedMarker } from "../services/verified-marker-detection.js";
 import {
   isRecognizedVerifiedMemberTag,
   observeVerifiedMemberTag,
 } from "../services/verified-tag-sync.js";
 import { isGroupChat } from "../utils/permissions.js";
+import { getCachedChatMember } from "../utils/member-cache.js";
 import type { MyContext } from "../types.js";
 
 const OBSERVATION_COOLDOWN_MS = 60_000;
@@ -28,6 +32,34 @@ function shouldObserve(key: string, now: number): boolean {
     if (oldest !== undefined) recentObservations.delete(oldest);
   }
   return true;
+}
+
+async function recordAdministratorTitleCandidate(input: {
+  groupId: number;
+  userId: number;
+  username?: string;
+  firstName: string;
+  lastName?: string;
+  marker: string;
+}): Promise<void> {
+  const [verified, review] = await Promise.all([
+    getVerifiedUserRecord(input.groupId, input.userId),
+    getVerifiedTagReview(input.groupId, input.userId),
+  ]);
+  if (
+    (verified?.verified && verified.revoked_at === null) ||
+    review
+  ) {
+    return;
+  }
+  await recordVerifiedTagObservation({
+    groupId: input.groupId,
+    userId: input.userId,
+    username: input.username,
+    displayName: [input.firstName, input.lastName].filter(Boolean).join(" "),
+    observedTag: `${input.marker} (título personalizado de administrador)`,
+    status: "pending",
+  });
 }
 
 export const verifiedMarkerDetection = new Composer<MyContext>();
@@ -83,10 +115,7 @@ verifiedMarkerDetection.on("chat_member", async (ctx, next) => {
     return;
   }
   const member = ctx.chatMember.new_chat_member;
-  if (
-    member.user.is_bot ||
-    (member.status !== "member" && member.status !== "restricted")
-  ) {
+  if (member.user.is_bot) {
     await next();
     return;
   }
@@ -94,6 +123,30 @@ verifiedMarkerDetection.on("chat_member", async (ctx, next) => {
   try {
     const data = await getGroupData(ctx.chat.id);
     if (!data.verifiedTagSyncEnabled) {
+      await next();
+      return;
+    }
+    if (member.status === "administrator") {
+      const marker = findConfiguredVerifiedMarker(
+        [member.custom_title ?? ""],
+        data.verifiedMemberTags,
+      );
+      if (marker && shouldObserve(`${ctx.chat.id}:${member.user.id}`, Date.now())) {
+        await recordAdministratorTitleCandidate({
+          groupId: ctx.chat.id,
+          userId: member.user.id,
+          username: member.user.username,
+          firstName: member.user.first_name,
+          lastName: member.user.last_name,
+          marker,
+        });
+      }
+      if (marker) {
+        await next();
+        return;
+      }
+    }
+    if (member.status !== "member" && member.status !== "restricted") {
       await next();
       return;
     }
@@ -164,27 +217,39 @@ verifiedMarkerDetection.on("message", async (ctx, next) => {
       ],
       data.verifiedMemberTags,
     );
-    if (!marker || !shouldObserve(`${groupId}:${userId}`, Date.now())) {
-      await next();
-      return;
+    if (marker && shouldObserve(`${groupId}:${userId}`, Date.now())) {
+      const existing = await getVerifiedUserRecord(groupId, userId);
+      if (!(existing?.verified && existing.revoked_at === null)) {
+        await recordVerifiedTagObservation({
+          groupId,
+          userId,
+          username: ctx.from.username,
+          displayName: [ctx.from.first_name, ctx.from.last_name]
+            .filter(Boolean)
+            .join(" "),
+          observedTag: `${marker} (coincidencia en mensaje o perfil visible)`,
+          status: "pending",
+        });
+      }
+    } else if (shouldObserve(`${groupId}:${userId}:custom-title`, Date.now())) {
+      const member = await getCachedChatMember(ctx.api, groupId, userId);
+      if (member?.status === "administrator") {
+        const titleMarker = findConfiguredVerifiedMarker(
+          [member.custom_title ?? ""],
+          data.verifiedMemberTags,
+        );
+        if (titleMarker) {
+          await recordAdministratorTitleCandidate({
+            groupId,
+            userId,
+            username: member.user.username,
+            firstName: member.user.first_name,
+            lastName: member.user.last_name,
+            marker: titleMarker,
+          });
+        }
+      }
     }
-
-    const existing = await getVerifiedUserRecord(groupId, userId);
-    if (existing?.verified && existing.revoked_at === null) {
-      await next();
-      return;
-    }
-
-    await recordVerifiedTagObservation({
-      groupId,
-      userId,
-      username: ctx.from.username,
-      displayName: [ctx.from.first_name, ctx.from.last_name]
-        .filter(Boolean)
-        .join(" "),
-      observedTag: `${marker} (coincidencia en mensaje o perfil visible)`,
-      status: "pending",
-    });
   } catch (error) {
     console.error(
       `[VERIFIED_MARKER] No se pudo registrar candidata groupId=${ctx.chat.id} userId=${ctx.from.id}:`,

@@ -1,3 +1,4 @@
+import type { Api } from "grammy";
 import type { GroupData } from "../storage/types.js";
 import { findConfiguredVerifiedMarker } from "./verified-marker-detection.js";
 import {
@@ -16,6 +17,7 @@ export interface VerifiedMarkerScanResult {
 }
 
 export async function scanObservedVerifiedMarkers(
+  api: Pick<Api, "getChatAdministrators">,
   groupId: number,
   data: GroupData,
   now = Math.floor(Date.now() / 1000),
@@ -71,6 +73,31 @@ export async function scanObservedVerifiedMarkers(
     });
   }
 
+  const administrators = await api.getChatAdministrators(groupId);
+  for (const administrator of administrators) {
+    if (
+      administrator.status !== "administrator" ||
+      administrator.user.is_bot ||
+      !administrator.custom_title
+    ) {
+      continue;
+    }
+    const existing = recentUsers.get(administrator.user.id);
+    recentUsers.set(administrator.user.id, {
+      username: administrator.user.username ?? existing?.username,
+      displayName:
+        [administrator.user.first_name, administrator.user.last_name]
+          .filter(Boolean)
+          .join(" ") ||
+        existing?.displayName ||
+        `ID ${administrator.user.id}`,
+      markerFields: [
+        administrator.custom_title,
+        ...(existing?.markerFields ?? []),
+      ],
+    });
+  }
+
   let newCandidates = 0;
   for (const [userId, user] of recentUsers) {
     const marker = findConfiguredVerifiedMarker(
@@ -83,18 +110,14 @@ export async function scanObservedVerifiedMarkers(
     if (existing?.verified && existing.revoked_at === null) continue;
 
     const priorReview = await getVerifiedTagReview(groupId, userId);
-    if (priorReview?.status === "rejected" || priorReview?.status === "approving") {
-      continue;
-    }
-    if (!priorReview || priorReview.status !== "pending") {
-      newCandidates++;
-    }
+    if (priorReview) continue;
+    newCandidates++;
     await recordVerifiedTagObservation({
       groupId,
       userId,
       username: user.username,
       displayName: user.displayName,
-      observedTag: `${marker} (escaneo de perfil/actividad reciente)`,
+      observedTag: `${marker} (escaneo de título/perfil/actividad reciente)`,
       status: "pending",
     });
   }

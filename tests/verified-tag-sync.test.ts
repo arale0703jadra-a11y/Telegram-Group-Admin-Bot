@@ -227,6 +227,15 @@ function mockMemberApi(
   };
 }
 
+function mockAdminListApi(
+  administrators: ChatMember[],
+): Pick<Api, "getChatAdministrators"> {
+  return {
+    getChatAdministrators: async () =>
+      administrators as Awaited<ReturnType<Api["getChatAdministrators"]>>,
+  };
+}
+
 test("tag detection is enabled by default for new groups", () => {
   const data = initialGroupData();
   assert.equal(data.verifiedTagSyncEnabled, true);
@@ -869,12 +878,39 @@ test("manual marker scan records profile matches as pending candidates without v
     status: "member",
   };
 
-  const firstScan = await scanObservedVerifiedMarkers(-100, data, now);
-  const secondScan = await scanObservedVerifiedMarkers(-100, data, now);
+  const api = mockAdminListApi([]);
+  const firstScan = await scanObservedVerifiedMarkers(api, -100, data, now);
+  const secondScan = await scanObservedVerifiedMarkers(api, -100, data, now);
 
   assert.equal(firstScan.scanned, 1);
   assert.equal(firstScan.newCandidates, 1);
   assert.equal(secondScan.newCandidates, 0);
   assert.equal(reviewRows[0]?.status, "pending");
+  assert.equal(verifiedRows.length, 0);
+});
+
+test("manual marker scan records matching administrator custom titles as pending candidates", async () => {
+  const data = initialGroupData();
+  data.verifiedMemberTags = ["Verificada"];
+
+  const firstScan = await scanObservedVerifiedMarkers(
+    mockAdminListApi([makeMember("administrator")]),
+    -100,
+    data,
+  );
+  const secondScan = await scanObservedVerifiedMarkers(
+    mockAdminListApi([makeMember("administrator")]),
+    -100,
+    data,
+  );
+
+  assert.equal(firstScan.scanned, 1);
+  assert.equal(firstScan.newCandidates, 1);
+  assert.equal(secondScan.newCandidates, 0);
+  assert.equal(reviewRows[0]?.status, "pending");
+  assert.equal(
+    reviewRows[0]?.observed_tag,
+    "Verificada (escaneo de título/perfil/actividad reciente)",
+  );
   assert.equal(verifiedRows.length, 0);
 });
