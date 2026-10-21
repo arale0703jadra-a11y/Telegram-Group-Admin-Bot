@@ -49,6 +49,8 @@ test("verified management panel displays private actions for the listed IDs", ()
   assert.ok(callbacks.includes(FilterAction.verifiedRevoke(456)));
   assert.ok(callbacks.includes("cfg:verified_tags_toggle"));
   assert.ok(callbacks.includes("vu:edit"));
+  assert.ok(callbacks.includes("menu:main"));
+  assert.ok(!callbacks.includes(FilterAction.home));
 });
 
 test("verified management panel paginates action buttons", () => {

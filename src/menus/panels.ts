@@ -695,9 +695,12 @@ export function buildVerifiedModelsPanel(
       tagDetectionEnabled ? "🔴 Pausar detección" : "🟢 Activar detección",
       "cfg:verified_tags_toggle",
     )
+    .row()
+    .text("🔍 Escanear / Detectar Verificadas", "vu:scan_now")
+    .row()
     .text("✏️ Etiquetas", "vu:edit")
     .row()
-    .text("⬅️ Volver a promociones", FilterAction.home)
+    .text("⬅️ Volver al Menú Principal", MenuAction.main)
     .row()
     .add(...buildNavRow().inline_keyboard.flat());
 
@@ -1772,7 +1775,8 @@ export function buildVerifiedTitleConfigPanel(
       `Detección automática: ${tagSyncEnabled ? "🟢 Activada" : "🔴 Desactivada"}\n` +
       `Etiqueta actual: "${currentTag}"\n\n` +
       "Las coincidencias en mensajes o perfil generan candidatas para revisión; " +
-      "no conceden permisos automáticamente.",
+      "no conceden permisos automáticamente. El escaneo manual revisa perfiles y actividad " +
+      "que ZEUS ya tiene registrados.",
     keyboard: new InlineKeyboard()
       .text(
         tagSyncEnabled

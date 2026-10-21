@@ -73,6 +73,7 @@ import {
 } from "../services/verified-tag-reviews.js";
 import { approveVerifiedMarkerCandidate } from "../services/verified-marker-approval.js";
 import { approveVerifiedTagCandidate } from "../services/verified-tag-approval.js";
+import { scanObservedVerifiedMarkers } from "../services/verified-marker-scan.js";
 import { unmarkUserVerified } from "../services/user-registry.js";
 import {
   activateEmergency,
@@ -148,7 +149,11 @@ moderationActions.on("callback_query:data", async (ctx) => {
     await ctx.answerCallbackQuery(text).catch(() => {});
   };
   if (verifiedPanelCallback || verifiedSubAction) {
-    await answerVerifiedCallback();
+    await answerVerifiedCallback(
+      parts[0] === "vu" && kind === "scan_now"
+        ? "Iniciando escaneo..."
+        : undefined,
+    );
   }
 
   const groupId = ctx.session.user.selectedGroupId;
@@ -222,6 +227,26 @@ moderationActions.on("callback_query:data", async (ctx) => {
             "Se aceptan hasta 20 etiquetas de 64 caracteres. Coincidir solo crea candidatas pendientes.",
         ),
       );
+      return;
+    }
+    if (kind === "scan_now") {
+      try {
+        const data = await getGroupData(groupId);
+        const result = await scanObservedVerifiedMarkers(groupId, data);
+        await ctx.reply(
+          `🔎 Escaneo completado: ${result.scanned} usuarios observados; ` +
+            `✅ ${result.newCandidates} candidatas nuevas para revisión.\n\n` +
+            "Las coincidencias no otorgan automáticamente el estado Verificada.",
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_SCAN] Falló groupId=${groupId} userId=${ctx.from.id}:`,
+          error,
+        );
+        await ctx.reply(
+          "⚠️ No se pudo completar el escaneo. Inténtalo de nuevo más tarde.",
+        );
+      }
       return;
     }
     if (kind === "candidates") {

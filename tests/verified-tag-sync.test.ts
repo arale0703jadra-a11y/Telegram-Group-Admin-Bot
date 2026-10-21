@@ -30,6 +30,7 @@ import {
   VerifiedTagApprovalError,
 } from "../src/services/verified-tag-approval.js";
 import { approveVerifiedMarkerCandidate } from "../src/services/verified-marker-approval.js";
+import { scanObservedVerifiedMarkers } from "../src/services/verified-marker-scan.js";
 import { initialGroupData } from "../src/storage/initial.js";
 import { flushStorage } from "../src/storage/index.js";
 import { buttonCallbackData } from "./helpers.js";
@@ -777,4 +778,28 @@ test("text-marker approval requires authorization and confirms current membershi
     process.chdir(originalDirectory);
     rmSync(resolve(testDirectory), { recursive: true, force: true });
   }
+});
+
+test("manual marker scan records profile matches as pending candidates without verifying", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const data = initialGroupData();
+  data.verifiedMemberTags = ["#verificada"];
+  data.indexedUsers["501"] = {
+    id: 501,
+    groupId: -100,
+    firstName: "#Verificada",
+    lastName: "Test",
+    username: "test_user",
+    lastSeen: now,
+    status: "member",
+  };
+
+  const firstScan = await scanObservedVerifiedMarkers(-100, data, now);
+  const secondScan = await scanObservedVerifiedMarkers(-100, data, now);
+
+  assert.equal(firstScan.scanned, 1);
+  assert.equal(firstScan.newCandidates, 1);
+  assert.equal(secondScan.newCandidates, 0);
+  assert.equal(reviewRows[0]?.status, "pending");
+  assert.equal(verifiedRows.length, 0);
 });
