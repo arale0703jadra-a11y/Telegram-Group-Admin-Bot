@@ -73,7 +73,10 @@ import {
 } from "../services/verified-tag-reviews.js";
 import { approveVerifiedMarkerCandidate } from "../services/verified-marker-approval.js";
 import { approveVerifiedTagCandidate } from "../services/verified-tag-approval.js";
-import { scanObservedVerifiedMarkers } from "../services/verified-marker-scan.js";
+import {
+  scanObservedVerifiedMarkers,
+  VerifiedMarkerAdminLookupError,
+} from "../services/verified-marker-scan.js";
 import { unmarkUserVerified } from "../services/user-registry.js";
 import {
   activateEmergency,
@@ -253,12 +256,17 @@ moderationActions.on("callback_query:data", async (ctx) => {
             "Las coincidencias no otorgan automáticamente el estado Verificada.",
         );
       } catch (error) {
-        console.error(
-          `[VERIFIED_SCAN] Falló groupId=${groupId} userId=${ctx.from.id}:`,
-          error,
-        );
+        console.error("[scanVerifiedMarkers Error]:", error);
+        if (error instanceof VerifiedMarkerAdminLookupError) {
+          await ctx.reply(
+            error.permissionDenied
+              ? "⚠️ Telegram no permitió consultar los administradores. Comprueba que ZEUS siga en el grupo y tenga permisos de administrador."
+              : "⚠️ No se pudo obtener la lista de administradores de Telegram. Inténtalo de nuevo cuando se recupere la conexión.",
+          );
+          return;
+        }
         await ctx.reply(
-          "⚠️ No se pudo completar el escaneo. Inténtalo de nuevo más tarde.",
+          "⚠️ No se pudo completar el escaneo por un error al leer los datos. Inténtalo de nuevo más tarde.",
         );
       }
       return;

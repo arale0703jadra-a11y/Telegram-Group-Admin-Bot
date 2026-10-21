@@ -33,7 +33,10 @@ import {
   approveVerifiedMarkerCandidate,
   VerifiedMarkerApprovalError,
 } from "../src/services/verified-marker-approval.js";
-import { scanObservedVerifiedMarkers } from "../src/services/verified-marker-scan.js";
+import {
+  scanObservedVerifiedMarkers,
+  VerifiedMarkerAdminLookupError,
+} from "../src/services/verified-marker-scan.js";
 import { initialGroupData } from "../src/storage/initial.js";
 import { flushStorage } from "../src/storage/index.js";
 import { buttonCallbackData } from "./helpers.js";
@@ -913,4 +916,20 @@ test("manual marker scan records matching administrator custom titles as pending
     "Verificada (escaneo de título/perfil/actividad reciente)",
   );
   assert.equal(verifiedRows.length, 0);
+});
+
+test("manual marker scan reports a Telegram permissions error when it cannot list admins", async () => {
+  const data = initialGroupData();
+  const api: Pick<Api, "getChatAdministrators"> = {
+    getChatAdministrators: async () => {
+      throw { error_code: 403, description: "Forbidden" };
+    },
+  };
+
+  await assert.rejects(
+    scanObservedVerifiedMarkers(api, -100, data),
+    (error: unknown) =>
+      error instanceof VerifiedMarkerAdminLookupError &&
+      error.permissionDenied,
+  );
 });

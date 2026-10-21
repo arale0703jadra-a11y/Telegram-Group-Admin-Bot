@@ -16,6 +16,34 @@ export interface VerifiedMarkerScanResult {
   newCandidates: number;
 }
 
+export class VerifiedMarkerAdminLookupError extends Error {
+  constructor(
+    readonly permissionDenied: boolean,
+    options?: ErrorOptions,
+  ) {
+    super(
+      permissionDenied
+        ? "Telegram no permitió consultar los administradores del grupo."
+        : "No se pudo consultar la lista de administradores en Telegram.",
+      options,
+    );
+    this.name = "VerifiedMarkerAdminLookupError";
+  }
+}
+
+function isPermissionError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const record = error as Record<string, unknown>;
+  if (record.error_code === 403) return true;
+  const description =
+    typeof record.description === "string" ? record.description.toLowerCase() : "";
+  return (
+    description.includes("not enough rights") ||
+    description.includes("not an administrator") ||
+    description.includes("forbidden")
+  );
+}
+
 export async function scanObservedVerifiedMarkers(
   api: Pick<Api, "getChatAdministrators">,
   groupId: number,
@@ -73,13 +101,24 @@ export async function scanObservedVerifiedMarkers(
     });
   }
 
-  const administrators = await api.getChatAdministrators(groupId);
+  let administrators: Awaited<ReturnType<Api["getChatAdministrators"]>>;
+  try {
+    administrators = await api.getChatAdministrators(groupId);
+  } catch (error) {
+    throw new VerifiedMarkerAdminLookupError(isPermissionError(error), {
+      cause: error,
+    });
+  }
   for (const administrator of administrators) {
-    if (
-      administrator.status !== "administrator" ||
-      administrator.user.is_bot ||
-      !administrator.custom_title
-    ) {
+    if (administrator.status !== "administrator" || administrator.user.is_bot) {
+      continue;
+    }
+    const customTitle =
+      "custom_title" in administrator &&
+      typeof administrator.custom_title === "string"
+        ? administrator.custom_title
+        : "";
+    if (!findConfiguredVerifiedMarker([customTitle], data.verifiedMemberTags)) {
       continue;
     }
     const existing = recentUsers.get(administrator.user.id);
@@ -92,7 +131,7 @@ export async function scanObservedVerifiedMarkers(
         existing?.displayName ||
         `ID ${administrator.user.id}`,
       markerFields: [
-        administrator.custom_title,
+        customTitle,
         ...(existing?.markerFields ?? []),
       ],
     });
