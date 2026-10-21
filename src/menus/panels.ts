@@ -1712,12 +1712,12 @@ export function buildVerifiedTagCandidatesPanel(
     keyboard.text(`👤 ${name}`, `vu:review:${review.user_id}`).row();
     if (review.status === "pending") {
       keyboard
-        .text("✅ Aprobar", `vu:review:approve:${review.user_id}`)
+        .text("✅ Aprobar", `vu:apply:approve:${review.user_id}`)
         .text("❌ Rechazar", `vu:review:reject:${review.user_id}`)
         .row();
     } else if (review.status === "revoked_tag") {
       keyboard
-        .text("♻️ Revisar reactivación", `vu:review:approve:${review.user_id}`)
+        .text("♻️ Revisar reactivación", `vu:apply:approve:${review.user_id}`)
         .text("❌ Rechazar", `vu:review:reject:${review.user_id}`)
         .row();
     }

@@ -142,13 +142,17 @@ moderationActions.on("callback_query:data", async (ctx) => {
   const verifiedSubAction =
     parts[0] === "vu" ||
     (parts[0] === "cfg" && kind === "verified_tags_toggle");
+  const deferVerifiedApplyCallback = parts[0] === "vu" && kind === "apply";
   let verifiedCallbackAnswered = false;
   const answerVerifiedCallback = async (text?: string): Promise<void> => {
     if (verifiedCallbackAnswered) return;
     verifiedCallbackAnswered = true;
     await ctx.answerCallbackQuery(text).catch(() => {});
   };
-  if (verifiedPanelCallback || verifiedSubAction) {
+  if (
+    verifiedPanelCallback ||
+    (verifiedSubAction && !deferVerifiedApplyCallback)
+  ) {
     await answerVerifiedCallback(
       parts[0] === "vu" && kind === "scan_now"
         ? "Iniciando escaneo..."
@@ -158,14 +162,20 @@ moderationActions.on("callback_query:data", async (ctx) => {
 
   const groupId = ctx.session.user.selectedGroupId;
   if (typeof groupId !== "number" || !Number.isInteger(groupId)) {
-    if (!verifiedPanelCallback && !verifiedSubAction) {
+    if (
+      !verifiedPanelCallback &&
+      (!verifiedSubAction || deferVerifiedApplyCallback)
+    ) {
       await ctx.answerCallbackQuery(NO_GROUP_SELECTED_MESSAGE);
     }
     return;
   }
   const isAdmin = await isUserAdminOf(ctx, groupId);
   if (!isAdmin) {
-    if (!verifiedPanelCallback && !verifiedSubAction) {
+    if (
+      !verifiedPanelCallback &&
+      (!verifiedSubAction || deferVerifiedApplyCallback)
+    ) {
       await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
     }
     return;
@@ -362,6 +372,11 @@ moderationActions.on("callback_query:data", async (ctx) => {
               authorize: () => isUserAdminOf(ctx, groupId, ctx.from?.id),
             });
           }
+          const displayName =
+            review?.display_name ?? review?.username ?? `ID ${userId}`;
+          await answerVerifiedCallback(
+            `✅ Usuario ${displayName.slice(0, 150)} verificado con éxito.`,
+          );
         } else {
           const review = await getVerifiedTagReview(groupId, userId);
           if (!review || (review.status !== "pending" && review.status !== "revoked_tag")) {
@@ -378,9 +393,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
             throw new Error("La candidata ya no está pendiente de revisión.");
           }
         }
-        await answerVerifiedCallback(
-          action === "approve" ? "✅ Candidata verificada." : "Candidata rechazada.",
-        );
+        if (action === "reject") {
+          await answerVerifiedCallback("Candidata rechazada.");
+        }
       } catch (error) {
         console.error(
           `[VERIFIED_MARKER] No se pudo ${action} groupId=${groupId} userId=${userId}:`,

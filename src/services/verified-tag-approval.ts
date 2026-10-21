@@ -17,6 +17,7 @@ import {
 } from "./verified-tag-reviews.js";
 import {
   getVerifiedGroupMember,
+  isActiveVerifiedGroupMember,
   VerifiedUserRegistrationError,
 } from "./verified-user-registration.js";
 import { markUserVerified } from "./user-registry.js";
@@ -30,6 +31,7 @@ export type VerifiedTagApprovalErrorCode =
   | "NOT_PENDING"
   | "IN_PROGRESS"
   | "TAG_NOT_CONFIRMED"
+  | "USER_NOT_IN_GROUP"
   | "REVIEW_CHANGED";
 
 export class VerifiedTagApprovalError extends Error {
@@ -116,6 +118,31 @@ export async function approveVerifiedTagCandidate(input: {
           input.userId,
         );
       } catch (cause) {
+        if (
+          cause instanceof VerifiedUserRegistrationError &&
+          cause.code === "USER_NOT_IN_GROUP"
+        ) {
+          const removed = await decideVerifiedTagReview({
+            groupId: input.groupId,
+            userId: input.userId,
+            decision: "rejected",
+            expectedStatus: "approving",
+            claimToken: claim.review_claim_token,
+            actorUserId: input.actorUserId,
+          });
+          if (!removed) {
+            throw new VerifiedTagApprovalError(
+              "REVIEW_CHANGED",
+              "La revisión cambió durante la comprobación de membresía.",
+            );
+          }
+          completed = true;
+          throw new VerifiedTagApprovalError(
+            "USER_NOT_IN_GROUP",
+            "⚠️ El usuario ya no está en el grupo.",
+            { cause },
+          );
+        }
         const failureCode =
           cause instanceof VerifiedUserRegistrationError
             ? cause.code
@@ -138,6 +165,28 @@ export async function approveVerifiedTagCandidate(input: {
             ? `Resultado incierto: ${cause.message} La candidata sigue pendiente y no se modificó la verificación.`
             : "Resultado incierto: Telegram no pudo confirmar la identidad y pertenencia. La candidata sigue pendiente y no se modificó la verificación.",
         };
+      }
+
+      if (!isActiveVerifiedGroupMember(member)) {
+        const removed = await decideVerifiedTagReview({
+          groupId: input.groupId,
+          userId: input.userId,
+          decision: "rejected",
+          expectedStatus: "approving",
+          claimToken: claim.review_claim_token,
+          actorUserId: input.actorUserId,
+        });
+        if (!removed) {
+          throw new VerifiedTagApprovalError(
+            "REVIEW_CHANGED",
+            "La revisión cambió durante la comprobación de membresía.",
+          );
+        }
+        completed = true;
+        throw new VerifiedTagApprovalError(
+          "USER_NOT_IN_GROUP",
+          "⚠️ El usuario ya no está en el grupo.",
+        );
       }
 
       const supportsMemberTag =

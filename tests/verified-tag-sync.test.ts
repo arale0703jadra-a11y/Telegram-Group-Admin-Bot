@@ -29,7 +29,10 @@ import {
   approveVerifiedTagCandidate,
   VerifiedTagApprovalError,
 } from "../src/services/verified-tag-approval.js";
-import { approveVerifiedMarkerCandidate } from "../src/services/verified-marker-approval.js";
+import {
+  approveVerifiedMarkerCandidate,
+  VerifiedMarkerApprovalError,
+} from "../src/services/verified-marker-approval.js";
 import { scanObservedVerifiedMarkers } from "../src/services/verified-marker-scan.js";
 import { initialGroupData } from "../src/storage/initial.js";
 import { flushStorage } from "../src/storage/index.js";
@@ -158,7 +161,13 @@ test.beforeEach(() => {
 });
 
 function makeMember(
-  status: "member" | "restricted" | "administrator" = "member",
+  status:
+    | "member"
+    | "restricted"
+    | "administrator"
+    | "creator"
+    | "left"
+    | "kicked" = "member",
   tag?: string,
 ): ChatMember {
   if (status === "administrator") {
@@ -302,7 +311,7 @@ test("review panels expose an empty state and only actionable review statuses", 
   };
   const panel = buildVerifiedTagCandidatesPanel([review], 0, "Grupo");
   assert.ok(panel.keyboard.inline_keyboard.flat().some((button) =>
-    buttonCallbackData(button) === "vu:review:approve:501",
+    buttonCallbackData(button) === "vu:apply:approve:501",
   ));
   assert.ok(panel.keyboard.inline_keyboard.flat().some((button) =>
     buttonCallbackData(button) === "vu:review:reject:501",
@@ -778,6 +787,72 @@ test("text-marker approval requires authorization and confirms current membershi
     process.chdir(originalDirectory);
     rmSync(resolve(testDirectory), { recursive: true, force: true });
   }
+});
+
+test("marker approval rejects and removes a candidate when Telegram confirms the user left", async () => {
+  const originalDirectory = process.cwd();
+  const testDirectory = mkdtempSync(join(tmpdir(), "zeus-marker-left-"));
+  try {
+    process.chdir(testDirectory);
+    await recordVerifiedTagObservation({
+      groupId: -100,
+      userId: 501,
+      username: "test_user",
+      displayName: "Test",
+      observedTag: "#verificada",
+      status: "pending",
+    });
+
+    await assert.rejects(
+      approveVerifiedMarkerCandidate({
+        api: mockMemberApi(makeMember("left")),
+        groupId: -100,
+        userId: 501,
+        actorUserId: 100,
+        authorize: async () => true,
+      }),
+      (error: unknown) =>
+        error instanceof VerifiedMarkerApprovalError &&
+        error.code === "USER_NOT_IN_GROUP",
+    );
+
+    assert.equal(reviewRows[0]?.status, "rejected");
+    assert.deepEqual(await listVerifiedTagReviews(-100), []);
+    assert.equal(verifiedRows.length, 0);
+  } finally {
+    process.chdir(originalDirectory);
+    rmSync(resolve(testDirectory), { recursive: true, force: true });
+  }
+});
+
+test("native-tag approval rejects and removes a candidate when Telegram confirms the user left", async () => {
+  await recordVerifiedTagObservation({
+    groupId: -100,
+    userId: 501,
+    username: "test_user",
+    displayName: "Test",
+    observedTag: "Verificada",
+    status: "pending",
+  });
+
+  await assert.rejects(
+    approveVerifiedTagCandidate({
+      api: mockMemberApi(makeMember("left")),
+      groupId: -100,
+      userId: 501,
+      actorUserId: 100,
+      recognizedTags: ["Verificada"],
+      authorize: async () => true,
+      syncLocal: async () => undefined,
+    }),
+    (error: unknown) =>
+      error instanceof VerifiedTagApprovalError &&
+      error.code === "USER_NOT_IN_GROUP",
+  );
+
+  assert.equal(reviewRows[0]?.status, "rejected");
+  assert.deepEqual(await listVerifiedTagReviews(-100), []);
+  assert.equal(verifiedRows.length, 0);
 });
 
 test("manual marker scan records profile matches as pending candidates without verifying", async () => {

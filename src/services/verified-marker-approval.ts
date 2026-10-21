@@ -1,3 +1,4 @@
+import type { ChatMember } from "@grammyjs/types";
 import type { Api } from "grammy";
 import {
   addVerifiedUser,
@@ -10,8 +11,22 @@ import {
   getVerifiedTagReview,
   withVerifiedTagReviewLock,
 } from "./verified-tag-reviews.js";
-import { getVerifiedGroupMember } from "./verified-user-registration.js";
+import {
+  getVerifiedGroupMember,
+  isActiveVerifiedGroupMember,
+  VerifiedUserRegistrationError,
+} from "./verified-user-registration.js";
 import { markUserVerified, unmarkUserVerified } from "./user-registry.js";
+
+export class VerifiedMarkerApprovalError extends Error {
+  constructor(
+    readonly code: "USER_NOT_IN_GROUP",
+    message: string,
+  ) {
+    super(message);
+    this.name = "VerifiedMarkerApprovalError";
+  }
+}
 
 export async function approveVerifiedMarkerCandidate(input: {
   api: Pick<Api, "getChatMember">;
@@ -29,11 +44,51 @@ export async function approveVerifiedMarkerCandidate(input: {
       throw new Error("La candidata ya no está pendiente de revisión.");
     }
 
-    const member = await getVerifiedGroupMember(
-      input.api,
-      input.groupId,
-      input.userId,
-    );
+    let member: ChatMember;
+    try {
+      member = await getVerifiedGroupMember(
+        input.api,
+        input.groupId,
+        input.userId,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof VerifiedUserRegistrationError) ||
+        error.code !== "USER_NOT_IN_GROUP"
+      ) {
+        throw error;
+      }
+      const removed = await decideVerifiedTagReview({
+        groupId: input.groupId,
+        userId: input.userId,
+        decision: "rejected",
+        expectedStatus: "pending",
+        actorUserId: input.actorUserId,
+      });
+      if (!removed) {
+        throw new Error("La revisión cambió durante la comprobación de membresía.");
+      }
+      throw new VerifiedMarkerApprovalError(
+        "USER_NOT_IN_GROUP",
+        "⚠️ El usuario ya no está en el grupo.",
+      );
+    }
+    if (!isActiveVerifiedGroupMember(member)) {
+      const removed = await decideVerifiedTagReview({
+        groupId: input.groupId,
+        userId: input.userId,
+        decision: "rejected",
+        expectedStatus: "pending",
+        actorUserId: input.actorUserId,
+      });
+      if (!removed) {
+        throw new Error("La revisión cambió durante la comprobación de membresía.");
+      }
+      throw new VerifiedMarkerApprovalError(
+        "USER_NOT_IN_GROUP",
+        "⚠️ El usuario ya no está en el grupo.",
+      );
+    }
     if (member.user.is_bot) {
       throw new Error("No se puede verificar una cuenta de bot.");
     }
