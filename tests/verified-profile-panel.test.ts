@@ -65,6 +65,7 @@ test("verified profile shows IDs, Telegram membership, sanctions, and available 
   );
 
   assert.match(panel.text, /ID: 456/);
+  assert.match(panel.text, /✅ Verificada/);
   assert.match(panel.text, /Grupo ID: -100123/);
   assert.match(panel.text, /@current\\_name/);
   assert.match(panel.text, /Estado Telegram: 👤 Miembro; En el grupo/);
@@ -79,6 +80,18 @@ test("verified profile shows IDs, Telegram membership, sanctions, and available 
   );
 });
 
+test("verified profile keeps its badge after the informational validity date", () => {
+  const panel = buildVerifiedUserPanel(
+    verifiedUser({
+      valid_until: "2020-01-01T00:00:00.000Z",
+    }),
+    "Test group",
+    "member",
+  );
+  assert.match(panel.text, /✅ Verificada/);
+  assert.match(panel.text, /la verificación sigue activa/);
+});
+
 test("non-functional link and fixed promotion permissions are informative, not toggle controls", () => {
   const panel = buildVerifiedUserPanel(verifiedUser(), "Test group", "member");
   const callbacks = panel.keyboard.inline_keyboard
@@ -86,7 +99,7 @@ test("non-functional link and fixed promotion permissions are informative, not t
     .map(buttonCallbackData);
 
   assert.match(panel.text, /Enlaces ordinarios ✅ \(no aplicado/);
-  assert.match(panel.text, /Libertad promocional ✅ fija/);
+  assert.match(panel.text, /Libertad promocional ❌ fija/);
   assert.ok(!callbacks.includes(VerifiedAction.toggle(456, "can_send_links")));
   assert.ok(!callbacks.includes(VerifiedAction.toggle(456, "bypass_promotion_filter")));
 });

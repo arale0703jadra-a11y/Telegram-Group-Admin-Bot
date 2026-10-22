@@ -25,6 +25,7 @@ export type PendingAction =
   | { kind: "promotionTest"; groupId: number }
   | { kind: "automaticMessage"; groupId: number }
   | { kind: "verifiedMarkers"; groupId: number }
+  | { kind: "verifiedManualAdd"; groupId: number }
   | { kind: "filterAdd"; groupId: number; messageId?: number }
   | { kind: "illegalAdd"; groupId: number; messageId?: number }
   | {

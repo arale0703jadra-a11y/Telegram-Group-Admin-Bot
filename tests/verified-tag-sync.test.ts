@@ -370,7 +370,7 @@ test("candidates panel navigation stays within the verified module", () => {
   assert.ok(callbacks.includes("vu:review-list:0"));
 });
 
-test("the verified panel has a compact detection, list, label, and back layout", () => {
+test("the verified panel has detection, list, manual add, label, and back actions", () => {
   const panel = buildVerifiedTitleConfigPanel(
     "Grupo",
     ["Verificada"],
@@ -380,12 +380,13 @@ test("the verified panel has a compact detection, list, label, and back layout",
   assert.match(panel.text, /Etiqueta actual: "Verificada"/);
   assert.match(panel.text, /generan candidatas para revisión/);
   const buttons = panel.keyboard.inline_keyboard.flat();
-  assert.equal(buttons.length, 4);
+  assert.equal(buttons.length, 5);
   assert.deepEqual(
     buttons.map((button) => button.text),
     [
       "🟢 Detección: ACTIVADA",
       "👥 Lista de Verificadas",
+      "➕ Añadir verificada",
       '🏷️ Etiqueta actual: "Verificada"',
       "⬅️ Volver al Menú Principal",
     ],

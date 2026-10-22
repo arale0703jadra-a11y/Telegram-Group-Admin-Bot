@@ -104,6 +104,7 @@ export async function approveVerifiedMarkerCandidate(input: {
           .filter(Boolean)
           .join(" "),
         createdBy: input.actorUserId,
+        reactivate: true,
       });
       await markUserVerified(
         input.groupId,

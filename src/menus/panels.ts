@@ -33,6 +33,15 @@ export interface Panel {
   keyboard: InlineKeyboard;
 }
 
+function formatVerifiedValidity(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "fecha no disponible";
+  const formatted = date.toLocaleDateString("es-ES", { timeZone: "UTC" });
+  return date.getTime() <= Date.now()
+    ? `cumplida el ${formatted}; la verificación sigue activa`
+    : `hasta el ${formatted}`;
+}
+
 /**
  * Esquema de callback_data del panel.
  *   menu:main / menu:home        -> panel principal
@@ -54,6 +63,32 @@ export const MenuAction = {
   groups: `${MENU_PREFIX}:groups`,
   group: (chatId: number): string => `${MENU_PREFIX}:group:${chatId}`,
 };
+
+export function buildManualVerifiedConfirmPanel(input: {
+  userId: number;
+  displayName: string;
+  username?: string;
+  reactivate: boolean;
+  groupTitle?: string;
+}): Panel {
+  const identity = input.username
+    ? `@${escapeLegacyMarkdown(input.username)}`
+    : escapeLegacyMarkdown(input.displayName);
+  const mode = input.reactivate ? "REACTIVAR" : "ACTIVAR";
+  return {
+    text:
+      `${formatGroupHeader(input.groupTitle)}\n\n👑 *CONFIRMAR ${mode} VERIFICACIÓN*\n\n` +
+      `Usuaria: ${identity}\nID: ${input.userId}\n\n` +
+      "La vigencia inicial será de 30 días desde la confirmación. La fecha solo es informativa; " +
+      "al cumplirse, ZEUS no quitará la verificación ni cambiará permisos o historial.",
+    keyboard: new InlineKeyboard()
+      .text(
+        "✅ Confirmar",
+        VerifiedAction.manualConfirm(input.userId, input.reactivate),
+      )
+      .text("❌ Cancelar", "vu:manual-cancel"),
+  };
+}
 
 /**
  * Acciones reales del panel (Usuarios + Moderación).
@@ -664,6 +699,7 @@ export function buildVerifiedModelsPanel(
   groupTitle?: string,
   recognizedTags: string[] = [],
   tagDetectionEnabled = false,
+  autoRevocationEnabled = false,
 ): Panel {
   const pageSize = 5;
   const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
@@ -696,7 +732,16 @@ export function buildVerifiedModelsPanel(
       "cfg:verified_tags_toggle",
     )
     .row()
+    .text(
+      autoRevocationEnabled
+        ? "⏳ Revocación automática: ON"
+        : "⏳ Revocación automática: OFF",
+      "vu:auto-revoke-toggle",
+    )
+    .row()
     .text("🔍 Escanear / Detectar Verificadas", "vu:scan_now")
+    .row()
+    .text("➕ Añadir verificada", "vu:add")
     .row()
     .text("✏️ Etiquetas", "vu:edit")
     .row()
@@ -707,7 +752,10 @@ export function buildVerifiedModelsPanel(
   const list = pageUsers.length
     ? pageUsers.map((user) => {
         const identity = user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
-        return `• ${escapeLegacyMarkdown(identity)} — ID ${user.user_id}`;
+        const validity = user.valid_until
+          ? formatVerifiedValidity(user.valid_until)
+          : "sin fecha informativa";
+        return `• ✅ ${escapeLegacyMarkdown(identity)} — ID ${user.user_id}\n  Vigencia informativa: ${validity}`;
       }).join("\n")
     : "No hay usuarias verificadas activas en este grupo.";
 
@@ -715,8 +763,10 @@ export function buildVerifiedModelsPanel(
     text:
       `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n` +
       `Detección de marcas: ${tagDetectionEnabled ? "activa" : "inactiva"}\n` +
+      `Revocación automática: ${autoRevocationEnabled ? "activa" : "inactiva"}\n` +
       `Marcas configuradas: ${recognizedTags.join(", ") || "ninguna"}\n\n` +
       `${list}\n\n` +
+      "La vigencia es informativa salvo cuando la revocación automática está activada; en ese caso, el vencimiento de 30 días puede cerrar la verificación de forma persistente.\n\n" +
       "🔇 Silenciar durante 24 horas · ⛔ Banear · ❌ Quitar verificación" +
       (pageCount > 1 ? `\n\nPágina ${currentPage + 1} de ${pageCount}` : ""),
     keyboard,
@@ -1463,6 +1513,8 @@ export function buildActivityUnavailablePanel(groupTitle?: string): Panel {
 }
 
 export const VerifiedAction = {
+  manualConfirm: (userId: number, reactivate: boolean): string =>
+    `vu:manual-confirm:${userId}:${reactivate ? "reactivate" : "activate"}`,
   revokeConfirm: (userId: number): string => `vu:revoke-confirm:${userId}`,
   revokeApply: (userId: number): string => `vu:revoke:${userId}`,
   reactivateConfirm: (userId: number, permissions: string): string =>
@@ -1586,6 +1638,9 @@ export function buildVerifiedUserPanel(
         (command.last_error ? `: ${command.last_error}` : ""),
     ),
   ].filter((line): line is string => Boolean(line));
+  const verifiedState = user.verified && user.revoked_at === null
+    ? `✅ Verificada${user.valid_until ? ` — vigencia informativa ${formatVerifiedValidity(user.valid_until)}` : ""}`
+    : "⛔ Verificación no activa";
   const keyboard = new InlineKeyboard();
   if (user.verified && user.revoked_at === null) {
     keyboard.text("⛔ Revocar verificación", VerifiedAction.revokeConfirm(user.user_id));
@@ -1603,6 +1658,7 @@ export function buildVerifiedUserPanel(
     text:
       `${formatGroupHeader(groupTitle)}\n\n👑 *PERFIL VERIFICADO*\n\n` +
       `Usuario: ${identity}\nID: ${user.user_id}\n` +
+      `${verifiedState}\n` +
       (history ? `Grupo ID: ${history.groupId}\n` : "") +
       `Estado Telegram: ${memberStatus[telegramStatus] ?? memberStatus.unknown}\n\n` +
       `${permissionLines.join("\n")}\n\n` +
@@ -1786,6 +1842,8 @@ export function buildVerifiedTitleConfigPanel(
       )
       .row()
       .text("👥 Lista de Verificadas", FilterAction.verifiedList(0))
+      .row()
+      .text("➕ Añadir verificada", "vu:add")
       .row()
       .text(`🏷️ Etiqueta actual: "${currentTag}"`, "vu:edit")
       .row()

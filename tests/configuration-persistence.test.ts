@@ -18,6 +18,7 @@ test("group configuration persists independently across groups", async () => {
     dataA.antiSpam.detectAutomatedBehavior = false;
     dataA.newUsers.enabled = true;
     dataA.cleanup.autoDeleteServiceMessages = false;
+    dataA.verifiedAutoRevocationEnabled = true;
     dataA.promotion.recurrenceMuteMinutes = [60, 240];
     dataA.promotion.statistics.analyzed = 17;
     dataA.promotion.statistics.buying = 4;
@@ -39,6 +40,8 @@ test("group configuration persists independently across groups", async () => {
     assert.equal(restoredA.antiSpam.detectAutomatedBehavior, false);
     assert.equal(restoredA.newUsers.enabled, true);
     assert.equal(restoredA.cleanup.autoDeleteServiceMessages, false);
+    assert.equal(restoredA.verifiedAutoRevocationEnabled, true);
+    assert.equal(restoredB.verifiedAutoRevocationEnabled, false);
     assert.deepEqual(restoredA.promotion.recurrenceMuteMinutes, [60, 240]);
     assert.deepEqual(restoredA.promotion.statistics, {
       analyzed: 17,

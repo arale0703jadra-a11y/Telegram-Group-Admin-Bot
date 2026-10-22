@@ -87,10 +87,9 @@ export class FileStore implements PersistenceStore {
 
   async saveGroup(chatId: number, data: GroupData): Promise<void> {
     if (this.corruptGroups.has(chatId)) {
-      console.error(
-        `[STORAGE] No se sobrescribe el archivo corrupto del grupo ${chatId}; requiere recuperación manual.`,
+      throw new Error(
+        `No se puede guardar la configuración del grupo ${chatId}: el archivo requiere recuperación manual.`,
       );
-      return;
     }
     this.cache.set(chatId, structuredClone(data));
     this.dirty.add(chatId);
@@ -103,13 +102,16 @@ export class FileStore implements PersistenceStore {
     }
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      void this.flushAll();
+      void this.flushAll().catch((error: unknown) => {
+        console.error("[STORAGE] No se pudieron guardar todos los grupos:", error);
+      });
     }, 250);
   }
 
   private async flushAll(): Promise<void> {
     const ids = [...this.dirty];
     this.dirty.clear();
+    let firstError: unknown;
     for (const chatId of ids) {
       const data = this.cache.get(chatId);
       if (!data) {
@@ -122,8 +124,10 @@ export class FileStore implements PersistenceStore {
       } catch (error) {
         console.error(`[STORAGE] No se pudo guardar el grupo ${chatId}:`, error);
         this.dirty.add(chatId);
+        firstError ??= error;
       }
     }
+    if (firstError) throw firstError;
   }
 
   /**
@@ -232,6 +236,12 @@ function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
     verifiedMemberTags: Array.isArray(parsed.verifiedMemberTags)
       ? parsed.verifiedMemberTags.filter((tag): tag is string => typeof tag === "string")
       : base.verifiedMemberTags,
+    verifiedAutoRevocationEnabled:
+      typeof parsed.verifiedAutoRevocationEnabled === "boolean"
+        ? parsed.verifiedAutoRevocationEnabled
+        : typeof parsed.verifiedAutoRevokeEnabled === "boolean"
+          ? parsed.verifiedAutoRevokeEnabled
+          : base.verifiedAutoRevocationEnabled,
   };
 }
 

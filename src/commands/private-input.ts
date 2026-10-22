@@ -15,6 +15,7 @@ import {
   buildIllegalPanel,
   buildMuteMenuPanel,
   buildAutomaticMessagePanel,
+  buildManualVerifiedConfirmPanel,
   buildVerifiedTitleConfigPanel,
   buildUserCardPanel,
   buildUserSearchResultsPanel,
@@ -26,6 +27,14 @@ import type { MyContext, PickAction } from "../types.js";
 import { consumeRecoveryKey } from "../services/system-owner.js";
 import { automaticMessageScheduler } from "../services/automatic-messages.js";
 import { normalizeConfiguredVerifiedMarkers } from "../services/verified-marker-detection.js";
+import {
+  getVerifiedUserRecord,
+} from "../services/verified-users.js";
+import {
+  isActiveVerifiedGroupMember,
+  resolveVerifiedUserInput,
+  VerifiedUserRegistrationError,
+} from "../services/verified-user-registration.js";
 
 const MAX_MUTE_MINUTES = 527040;
 
@@ -54,7 +63,7 @@ privateInput.on("message:text", async (ctx) => {
   console.log(
     `[PRIVATE INPUT] received userId=${ctx.from.id} ` +
       `pendingKind=${pending.kind} text=${
-        pending.kind === "recoveryKey"
+      pending.kind === "recoveryKey" || pending.kind === "verifiedManualAdd"
           ? "[redacted]"
           : JSON.stringify(text.slice(0, 120))
       }`,
@@ -92,6 +101,46 @@ privateInput.on("message:text", async (ctx) => {
   }
 
   try {
+    if (pending.kind === "verifiedManualAdd") {
+      const data = await getGroupData(pending.groupId);
+      const member = await resolveVerifiedUserInput(
+        ctx.api,
+        pending.groupId,
+        text,
+        Object.values(data.indexedUsers),
+      );
+      if (member.user.is_bot || !isActiveVerifiedGroupMember(member)) {
+        await ctx.reply("⛔ Solo puedes verificar a una persona que siga en el grupo.");
+        return;
+      }
+
+      const existing = await getVerifiedUserRecord(pending.groupId, member.user.id);
+      if (existing?.verified && existing.revoked_at === null) {
+        ctx.session.user.pendingAction = undefined;
+        await ctx.reply(
+          "ℹ️ Esta persona ya está verificada. No se modificó su vigencia ni se publicó otro anuncio.",
+        );
+        return;
+      }
+
+      const displayName = [
+        member.user.first_name,
+        "last_name" in member.user ? member.user.last_name : undefined,
+      ].filter(Boolean).join(" ") || `ID ${member.user.id}`;
+      ctx.session.user.pendingAction = undefined;
+      await sendPanel(
+        ctx,
+        buildManualVerifiedConfirmPanel({
+          userId: member.user.id,
+          displayName,
+          username: member.user.username,
+          reactivate: Boolean(existing),
+          groupTitle: ctx.session.user.selectedGroupTitle,
+        }),
+      );
+      return;
+    }
+
     if (pending.kind === "promotionTest") {
       const data = await getGroupData(pending.groupId);
       const result = detectPromotion(text, data.promotion.dictionary);
@@ -260,6 +309,17 @@ privateInput.on("message:text", async (ctx) => {
       return;
     }
   } catch (error) {
+    if (pending.kind === "verifiedManualAdd") {
+      if (error instanceof VerifiedUserRegistrationError) {
+        await ctx.reply(error.message);
+      } else {
+        console.error(
+          `[VERIFIED_MANUAL] No se pudo preparar la activación (${error instanceof Error ? error.name : "unknown"}).`,
+        );
+        await ctx.reply("⚠️ No se pudo comprobar o consultar el registro. Inténtalo de nuevo.");
+      }
+      return;
+    }
     console.error("[PRIVADO] Error al procesar la entrada:", error);
     await ctx.reply("⚠️ Algo falló al procesar tu mensaje. Inténtalo de nuevo.");
   }

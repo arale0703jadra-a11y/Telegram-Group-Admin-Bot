@@ -127,6 +127,7 @@ export function isActiveVerifiedGroupMember(member: ChatMember): boolean {
   return (
     member.status === "member" ||
     member.status === "administrator" ||
-    member.status === "creator"
+    member.status === "creator" ||
+    (member.status === "restricted" && member.is_member)
   );
 }

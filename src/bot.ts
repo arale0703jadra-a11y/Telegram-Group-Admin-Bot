@@ -44,7 +44,10 @@ import {
 } from "./filters/anti-raid-engine.js";
 import { restrictRecentMembers } from "./services/emergency-mode.js";
 import { automaticMessageScheduler } from "./services/automatic-messages.js";
-import { scanObservedVerifiedMarkers } from "./services/verified-marker-scan.js";
+import { scanObservedVerifiedMarkers, describeVerifiedMarkerScanError } from "./services/verified-marker-scan.js";
+import {
+  processAutoRevocationForGroup,
+} from "./services/verified-users.js";
 
 const VERIFIED_MARKER_RESCAN_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -124,8 +127,8 @@ async function main(): Promise<void> {
         await scanGroupVerifiedMarkers(ctx.chat.id);
       } catch (error) {
         console.error(
-          `[VERIFIED_MARKER] No se pudieron escanear administradores groupId=${ctx.chat.id}`,
-          error,
+          `[VERIFIED_MARKER] No se pudieron escanear administradores groupId=${ctx.chat.id} ` +
+            describeVerifiedMarkerScanError(error),
         );
       }
 
@@ -370,8 +373,8 @@ async function main(): Promise<void> {
           await scanGroupVerifiedMarkers(group.id);
         } catch (error) {
           console.error(
-            `[VERIFIED_MARKER] Error en resync periódico groupId=${group.id}:`,
-            error,
+            `[VERIFIED_MARKER] Error en resync periódico groupId=${group.id} ` +
+              describeVerifiedMarkerScanError(error),
           );
         }
       }
@@ -382,7 +385,32 @@ async function main(): Promise<void> {
   const verifiedMarkerRescanTimer = setInterval(() => {
     void rescanVerifiedMarkers();
   }, VERIFIED_MARKER_RESCAN_INTERVAL_MS);
+  const processAutoRevokedVerifiedUsers = async (): Promise<void> => {
+    for (const group of getAllKnownGroups()) {
+      try {
+        const data = await getGroupData(group.id);
+        const result = await processAutoRevocationForGroup(
+          group.id,
+          data.verifiedAutoRevocationEnabled,
+          bot.api,
+        );
+        if (result.revoked > 0 || result.errors > 0) {
+          console.log(
+            `[VERIFIED_AUTO_REVOCATION] groupId=${group.id} revoked=${result.revoked} announced=${result.announced} errors=${result.errors}`,
+          );
+        }
+      } catch (error) {
+        console.error(
+          `[VERIFIED_AUTO_REVOCATION] Error groupId=${group.id} ${describeVerifiedMarkerScanError(error)}`,
+        );
+      }
+    }
+  };
+  const verifiedAutoRevocationTimer = setInterval(() => {
+    void processAutoRevokedVerifiedUsers();
+  }, 60_000);
   void rescanVerifiedMarkers();
+  void processAutoRevokedVerifiedUsers();
   automaticMessageScheduler.start(bot.api);
 
   // Graceful shutdown: forzar flush de datos antes de cerrar
@@ -400,6 +428,7 @@ async function main(): Promise<void> {
       automaticMessageScheduler.stop();
       clearInterval(inactivityTimer);
       clearInterval(verifiedMarkerRescanTimer);
+      clearInterval(verifiedAutoRevocationTimer);
       console.log("🤖 Bot detenido correctamente.");
     } catch (error) {
       console.error("❌ Error al detener bot:", error);

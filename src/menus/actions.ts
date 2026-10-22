@@ -1,6 +1,6 @@
 import { Composer, InlineKeyboard } from "grammy";
 import { isUserAdminOf } from "../utils/permissions.js";
-import { getGroupData, saveGroupData } from "../storage/index.js";
+import { flushStorage, getGroupData, saveGroupData } from "../storage/index.js";
 import {
   banUser,
   cleanRecentMessages,
@@ -61,11 +61,16 @@ import {
   removeInactiveUser,
 } from "../services/inactivity.js";
 import {
+  activateManualVerifiedUser,
   getVerifiedUser,
   getVerifiedUsers,
   invalidateVerifiedUserCache,
-  revokeVerifiedUser,
+  revokeManualVerifiedUser,
 } from "../services/verified-users.js";
+import {
+  getVerifiedGroupMember,
+  isActiveVerifiedGroupMember,
+} from "../services/verified-user-registration.js";
 import {
   decideVerifiedTagReview,
   getVerifiedTagReview,
@@ -74,10 +79,12 @@ import {
 import { approveVerifiedMarkerCandidate } from "../services/verified-marker-approval.js";
 import { approveVerifiedTagCandidate } from "../services/verified-tag-approval.js";
 import {
-  scanObservedVerifiedMarkers,
-  VerifiedMarkerAdminLookupError,
+  runVerifiedMarkerScan,
 } from "../services/verified-marker-scan.js";
-import { unmarkUserVerified } from "../services/user-registry.js";
+import {
+  markUserVerified,
+  unmarkUserVerified,
+} from "../services/user-registry.js";
 import {
   activateEmergency,
   expireEmergencyIfNeeded,
@@ -95,6 +102,107 @@ const NO_GROUP_SELECTED_MESSAGE =
   "Primero selecciona el grupo que quieres administrar.";
 const EMERGENCY_DURATION_OPTIONS = [15, 30, 60, 120, 360, 720, 1440] as const;
 const VERIFIED_PANEL_TIMEOUT_MS = 4_000;
+
+async function setNativeVerifiedTitleIfSupported(
+  ctx: MyContext,
+  groupId: number,
+  member: Awaited<ReturnType<typeof getVerifiedGroupMember>>,
+): Promise<void> {
+  if (member.status !== "administrator") return;
+  if (
+    "custom_title" in member &&
+    typeof member.custom_title === "string" &&
+    member.custom_title.trim()
+  ) {
+    return;
+  }
+  try {
+    const bot = await ctx.api.getMe();
+    const botMember = await ctx.api.getChatMember(groupId, bot.id);
+    if (
+      botMember.status !== "administrator" ||
+      botMember.can_promote_members !== true
+    ) {
+      return;
+    }
+    await ctx.api.setChatAdministratorCustomTitle(groupId, member.user.id, "Verificada");
+  } catch (error) {
+    console.error(
+      `[VERIFIED_MANUAL] No se pudo asignar el título nativo (${error instanceof Error ? error.name : "unknown"}).`,
+    );
+  }
+}
+
+async function completeManualVerification(
+  ctx: MyContext,
+  groupId: number,
+  userId: number,
+  reactivate: boolean,
+): Promise<string> {
+  if (!ctx.from) return "No se pudo identificar al administrador.";
+  const member = await getVerifiedGroupMember(ctx.api, groupId, userId);
+  if (member.user.is_bot || !isActiveVerifiedGroupMember(member)) {
+    return "La persona ya no pertenece al grupo; no se guardó la verificación.";
+  }
+
+  const outcome = await activateManualVerifiedUser({
+    groupId,
+    userId,
+    username: member.user.username,
+    displayName: [
+      member.user.first_name,
+      "last_name" in member.user ? member.user.last_name : undefined,
+    ].filter(Boolean).join(" "),
+    actorUserId: ctx.from.id,
+    reactivate,
+  });
+  if (!("user" in outcome)) {
+    if (outcome.status === "already_active") {
+      return "Esta persona ya está verificada. No se modificó la vigencia ni se publicó otro anuncio.";
+    }
+    if (outcome.status === "reactivation_required") {
+      return "El registro está revocado; inicia una reactivación explícita para confirmar el nuevo plazo.";
+    }
+    return "El registro que se iba a reactivar ya no existe. Inicia una nueva alta.";
+  }
+
+  try {
+    await markUserVerified(
+      groupId,
+      userId,
+      member.user.username,
+      [
+        member.user.first_name,
+        "last_name" in member.user ? member.user.last_name : undefined,
+      ].filter(Boolean).join(" "),
+    );
+  } catch (error) {
+    console.error(
+      `[VERIFIED_MANUAL] Registro guardado; falló la actualización local (${error instanceof Error ? error.name : "unknown"}).`,
+    );
+  }
+
+  const announcementName = member.user.username
+    ? `@${member.user.username}`
+    : [member.user.first_name, "last_name" in member.user ? member.user.last_name : undefined]
+      .filter(Boolean).join(" ");
+  try {
+    await ctx.api.sendMessage(
+      groupId,
+      `✅ ${announcementName || `Usuario ${userId}`} ha sido verificada en nuestro grupo.`,
+    );
+  } catch (error) {
+    console.error(
+      `[VERIFIED_MANUAL] Verificación guardada, pero falló el anuncio (${error instanceof Error ? error.name : "unknown"}).`,
+    );
+  }
+
+  await setNativeVerifiedTitleIfSupported(ctx, groupId, member);
+  const validity = outcome.user.valid_until
+    ? new Date(outcome.user.valid_until).toLocaleDateString("es-ES", { timeZone: "UTC" })
+    : "no disponible";
+  return `✅ Verificación ${outcome.status === "created" ? "activada" : "reactivada"}; vigencia informativa hasta ${validity}.`;
+}
 
 async function withVerifiedPanelTimeout<T>(operation: Promise<T>): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -211,6 +319,74 @@ moderationActions.on("callback_query:data", async (ctx) => {
       return;
     }
     const title = ctx.session.user.selectedGroupTitle;
+    if (kind === "add") {
+      ctx.session.user.pendingAction = { kind: "verifiedManualAdd", groupId };
+      await renderPanel(
+        ctx,
+        buildPromptPanel(
+          "➕ *AÑADIR VERIFICADA*\n\n" +
+            "Envía el Telegram user ID o un @username exacto que ZEUS ya haya observado en este grupo. " +
+            "Se comprobarán la identidad y la pertenencia; después deberás confirmar el alta.",
+        ),
+      );
+      return;
+    }
+    if (kind === "manual-confirm") {
+      const userId = Number(parts[2]);
+      const mode = parts[3];
+      if (
+        !Number.isSafeInteger(userId) ||
+        userId <= 0 ||
+        (mode !== "activate" && mode !== "reactivate")
+      ) {
+        await answerVerifiedCallback("Confirmación no válida.");
+        return;
+      }
+      try {
+        const result = await completeManualVerification(
+          ctx,
+          groupId,
+          userId,
+          mode === "reactivate",
+        );
+        await ctx.reply(result);
+      } catch (error) {
+        console.error(
+          `[VERIFIED_MANUAL] No se pudo completar la confirmación (${error instanceof Error ? error.name : "unknown"}).`,
+        );
+        await ctx.reply(
+          "⚠️ No se pudo guardar o comprobar la verificación. No se publicó ningún anuncio si falló el guardado.",
+        );
+      }
+      try {
+        await renderPanel(
+          ctx,
+          buildVerifiedModelsPanel(
+            await getVerifiedUsers(groupId),
+            0,
+            title,
+          ),
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_MANUAL] No se pudo actualizar el panel (${error instanceof Error ? error.name : "unknown"}).`,
+        );
+      }
+      return;
+    }
+    if (kind === "manual-cancel") {
+      ctx.session.user.pendingAction = undefined;
+      const data = await getGroupData(groupId);
+      await renderPanel(
+        ctx,
+        buildVerifiedTitleConfigPanel(
+          title,
+          data.verifiedMemberTags,
+          data.verifiedTagSyncEnabled,
+        ),
+      );
+      return;
+    }
     if (kind === "toggle") {
       const data = await getGroupData(groupId);
       data.verifiedTagSyncEnabled = !data.verifiedTagSyncEnabled;
@@ -231,6 +407,49 @@ moderationActions.on("callback_query:data", async (ctx) => {
       );
       return;
     }
+    if (kind === "auto-revoke-toggle") {
+      const data = await getGroupData(groupId);
+      const previousValue = data.verifiedAutoRevocationEnabled;
+      data.verifiedAutoRevocationEnabled = !previousValue;
+      try {
+        await saveGroupData(groupId, data);
+        await flushStorage();
+      } catch (error) {
+        data.verifiedAutoRevocationEnabled = previousValue;
+        try {
+          await saveGroupData(groupId, data);
+          await flushStorage();
+        } catch (rollbackError) {
+          console.error(
+            `[VERIFIED_AUTO_REVOCATION] No se pudo restaurar el interruptor groupId=${groupId}:`,
+            rollbackError,
+          );
+        }
+        console.error(
+          `[VERIFIED_AUTO_REVOCATION] No se pudo persistir el interruptor groupId=${groupId}:`,
+          error,
+        );
+        await answerVerifiedCallback("No se pudo guardar el cambio. El interruptor no se ha actualizado.");
+        return;
+      }
+      await answerVerifiedCallback(
+        data.verifiedAutoRevocationEnabled
+          ? "Revocación automática activada."
+          : "Revocación automática desactivada.",
+      );
+      await renderPanel(
+        ctx,
+        buildVerifiedModelsPanel(
+          await getVerifiedUsers(groupId),
+          0,
+          title,
+          data.verifiedMemberTags,
+          data.verifiedTagSyncEnabled,
+          data.verifiedAutoRevocationEnabled,
+        ),
+      );
+      return;
+    }
     if (kind === "edit") {
       ctx.session.user.pendingAction = { kind: "verifiedMarkers", groupId };
       await renderPanel(
@@ -243,32 +462,17 @@ moderationActions.on("callback_query:data", async (ctx) => {
       return;
     }
     if (kind === "scan_now") {
-      try {
-        const data = await getGroupData(groupId);
-        const result = await scanObservedVerifiedMarkers(
-          ctx.api,
-          groupId,
-          data,
-        );
-        await ctx.reply(
-          `🔎 Escaneo completado: ${result.scanned} usuarios observados; ` +
-            `✅ ${result.newCandidates} candidatas nuevas para revisión.\n\n` +
-            "Las coincidencias no otorgan automáticamente el estado Verificada.",
-        );
-      } catch (error) {
-        console.error("[scanVerifiedMarkers Error]:", error);
-        if (error instanceof VerifiedMarkerAdminLookupError) {
-          await ctx.reply(
-            error.permissionDenied
-              ? "⚠️ Telegram no permitió consultar los administradores. Comprueba que ZEUS siga en el grupo y tenga permisos de administrador."
-              : "⚠️ No se pudo obtener la lista de administradores de Telegram. Inténtalo de nuevo cuando se recupere la conexión.",
-          );
-          return;
-        }
-        await ctx.reply(
-          "⚠️ No se pudo completar el escaneo por un error al leer los datos. Inténtalo de nuevo más tarde.",
-        );
+      const outcome = await runVerifiedMarkerScan({ api: ctx.api, groupId });
+      // Registro interno con etapa y causa reales; nunca tokens ni credenciales.
+      const logLine =
+        `[VERIFIED_MARKER_SCAN] groupId=${groupId} ok=${outcome.ok} ` +
+        `${outcome.detail}`;
+      if (outcome.ok) {
+        console.log(logLine);
+      } else {
+        console.error(logLine);
       }
+      await ctx.reply(outcome.userMessage);
       return;
     }
     if (kind === "candidates") {
@@ -702,6 +906,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
             title,
             data.verifiedMemberTags,
             data.verifiedTagSyncEnabled,
+            data.verifiedAutoRevocationEnabled,
           ),
         );
       } catch (error) {
@@ -748,12 +953,24 @@ moderationActions.on("callback_query:data", async (ctx) => {
             verifiedUser.display_name ?? verifiedUser.username ?? String(userId),
           );
           if (!result.ok) throw new Error(result.error ?? "No se pudo banear.");
-          await revokeVerifiedUser(groupId, userId);
+          await revokeManualVerifiedUser({
+            groupId,
+            userId,
+            actorUserId: ctx.from.id,
+          });
           await unmarkUserVerified(groupId, userId);
           invalidateVerifiedUserCache(groupId, userId);
           resultMessage = "Baneada y verificación retirada.";
         } else {
-          await revokeVerifiedUser(groupId, userId);
+          const revoked = await revokeManualVerifiedUser({
+            groupId,
+            userId,
+            actorUserId: ctx.from.id,
+          });
+          if (!revoked) {
+            await ctx.answerCallbackQuery("La verificación ya no estaba activa.");
+            return;
+          }
           await unmarkUserVerified(groupId, userId);
           invalidateVerifiedUserCache(groupId, userId);
           resultMessage = "Verificación retirada.";
@@ -766,8 +983,19 @@ moderationActions.on("callback_query:data", async (ctx) => {
         );
         await ctx.answerCallbackQuery("No se pudo completar la acción.");
       }
+      const data = await getGroupData(groupId);
       const users = await getVerifiedUsers(groupId);
-      await renderPanel(ctx, buildVerifiedModelsPanel(users, 0, title));
+      await renderPanel(
+        ctx,
+        buildVerifiedModelsPanel(
+          users,
+          0,
+          title,
+          data.verifiedMemberTags,
+          data.verifiedTagSyncEnabled,
+          data.verifiedAutoRevocationEnabled,
+        ),
+      );
       return;
     }
     if (

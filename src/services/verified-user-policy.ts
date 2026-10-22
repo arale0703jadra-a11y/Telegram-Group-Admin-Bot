@@ -8,7 +8,11 @@ export type TelegramUserStatus =
   | "unknown";
 
 export function isActiveVerifiedRecord(
-  record: { verified?: boolean; revoked_at?: string | null } | undefined,
+  record: {
+    verified?: boolean;
+    revoked_at?: string | null;
+    valid_until?: string | null;
+  } | undefined,
 ): boolean {
   return Boolean(record?.verified && !record.revoked_at);
 }

@@ -302,7 +302,7 @@ test("corrupt group JSON is backed up, not overwritten by fallback writes, and n
       userId: 10,
       timestamp: 1_700_000_000,
     });
-    await fileStore.saveGroup(-100, fallbackData);
+    await assert.rejects(fileStore.saveGroup(-100, fallbackData), /requiere recuperación manual/);
     await fileStore.flushForced();
 
     assert.equal(readFileSync(groupFile, "utf8"), corruptContents);

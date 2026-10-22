@@ -293,4 +293,5 @@ export interface GroupData {
   verifiedTagSyncEnabled: boolean;
   verifiedTagSyncConfigured: boolean;
   verifiedMemberTags: string[];
+  verifiedAutoRevocationEnabled: boolean;
 }

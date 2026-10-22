@@ -156,5 +156,6 @@ export function initialGroupData(): GroupData {
     verifiedTagSyncEnabled: true,
     verifiedTagSyncConfigured: false,
     verifiedMemberTags: ["Verificada"],
+    verifiedAutoRevocationEnabled: false,
   };
 }

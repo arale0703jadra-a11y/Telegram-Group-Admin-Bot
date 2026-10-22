@@ -258,6 +258,7 @@ export async function approveVerifiedTagCandidate(input: {
         username: member.user.username,
         displayName,
         createdBy: input.actorUserId,
+        reactivate: true,
       });
       await (input.syncLocal ?? markUserVerified)(
         input.groupId,

@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   addVerifiedUser,
   DEFAULT_VERIFIED_PERMISSIONS,
+  getVerifiedUser,
+  getVerifiedUsers,
   getVerifiedUserPermissions,
   isVerifiedUser,
   normalizeVerifiedPermissions,
@@ -31,6 +33,8 @@ type MockVerifiedRow = {
   updated_at: string;
   created_by: number | null;
   revoked_at: string | null;
+  activated_at?: string | null;
+  valid_until?: string | null;
   verification_method?: "manual" | "detected_custom_title";
   detected_at?: string | null;
 };
@@ -102,15 +106,15 @@ test("verified permissions have the requested safe defaults", () => {
     can_post: true,
     can_send_media: true,
     can_send_links: true,
-    bypass_antispam: true,
-    bypass_promotion_filter: true,
+    bypass_antispam: false,
+    bypass_promotion_filter: false,
     bypass_illegal_filter: false,
     bypass_automatic_deletion: false,
   });
 });
 
-test("existing spam and illegal-content bypass defaults remain unchanged", () => {
-  assert.equal(DEFAULT_VERIFIED_PERMISSIONS.bypass_antispam, true);
+test("spam and illegal-content bypass defaults are disabled", () => {
+  assert.equal(DEFAULT_VERIFIED_PERMISSIONS.bypass_antispam, false);
   assert.equal(DEFAULT_VERIFIED_PERMISSIONS.bypass_illegal_filter, false);
   assert.equal(DEFAULT_VERIFIED_PERMISSIONS.bypass_automatic_deletion, false);
 });
@@ -118,7 +122,7 @@ test("existing spam and illegal-content bypass defaults remain unchanged", () =>
 test("permission edits preserve unspecified values", () => {
   const permissions = normalizeVerifiedPermissions({ bypass_illegal_filter: true });
   assert.equal(permissions.bypass_illegal_filter, true);
-  assert.equal(permissions.bypass_antispam, true);
+  assert.equal(permissions.bypass_antispam, false);
   assert.equal(permissions.can_post, true);
 });
 
@@ -127,6 +131,25 @@ test("new and previously registered active users are recognized without title me
   assert.equal(isActiveVerifiedRecord(activeRecord), true);
   assert.equal(isActiveVerifiedRecord(activeRecord), true);
   assert.equal(isActiveVerifiedRecord(undefined), false);
+});
+
+test("expiry dates do not deactivate records without a persisted revocation", () => {
+  assert.equal(
+    isActiveVerifiedRecord({
+      verified: true,
+      revoked_at: null,
+      valid_until: "2020-01-01T00:00:00.000Z",
+    }),
+    true,
+  );
+  assert.equal(
+    isActiveVerifiedRecord({
+      verified: true,
+      revoked_at: null,
+      valid_until: "not-a-date",
+    }),
+    true,
+  );
 });
 
 test("revoked records are not treated as verified and may be reactivated without duplicating the record", () => {
@@ -221,7 +244,7 @@ test("verified message posting and media permissions have independent effects", 
 });
 
 test("verified promotional freedom does not depend on the legacy promotion bypass flag", () => {
-  assert.equal(DEFAULT_VERIFIED_PERMISSIONS.bypass_promotion_filter, true);
+  assert.equal(DEFAULT_VERIFIED_PERMISSIONS.bypass_promotion_filter, false);
   assert.equal(shouldSkipPromotionFilter(true, true), true);
   assert.equal(shouldSkipPromotionFilter(true, false), false);
 });
@@ -240,7 +263,7 @@ test("illegal-filter and automatic-deletion bypasses cannot suppress critical th
   assert.equal(shouldSkipAutomaticDeletion(true, true), false);
 });
 
-test("manual add persists a current group member using only columns present before migrations 009/010", async () => {
+test("new verification persists a 30-day validity and conservative bypass defaults", async () => {
   mockRows.length = 0;
   const user = await addVerifiedUser({
     groupId: -10001,
@@ -250,6 +273,12 @@ test("manual add persists a current group member using only columns present befo
     createdBy: 700,
   });
   assert.equal(user.verified, true);
+  assert.equal(user.permissions.bypass_antispam, false);
+  assert.equal(user.permissions.bypass_promotion_filter, false);
+  assert.equal(
+    Date.parse(user.valid_until ?? "") - Date.parse(user.activated_at ?? ""),
+    30 * 24 * 60 * 60 * 1000,
+  );
   assert.equal(await isVerifiedUser(-10001, 501), true);
   assert.equal(mockRows.length, 1);
   assert.deepEqual(
@@ -266,8 +295,27 @@ test("manual add persists a current group member using only columns present befo
       "user_id",
       "username",
       "verified",
+      "activated_at",
+      "valid_until",
     ].sort(),
   );
+});
+
+test("an expired record remains verified until an automatic revocation is persisted", async () => {
+  mockRows.length = 0;
+  await addVerifiedUser({
+    groupId: -10001,
+    userId: 501,
+    username: "still-verified",
+    displayName: "Still Verified",
+    createdBy: 700,
+  });
+  mockRows[0].valid_until = "2020-01-01T00:00:00.000Z";
+
+  assert.equal(await isVerifiedUser(-10001, 501), true);
+  assert.ok(await getVerifiedUser(-10001, 501));
+  assert.equal((await getVerifiedUsers(-10001)).length, 1);
+  assert.ok(await getVerifiedUserPermissions(-10001, 501));
 });
 
 test("adding an already active user reuses the verified_users row instead of duplicating it", async () => {
@@ -292,6 +340,7 @@ test("reactivating a revoked verification restores the existing row and preserve
     groupId: existing.group_id,
     userId: existing.user_id,
     createdBy: 702,
+    reactivate: true,
   });
   assert.equal(reactivated.id, existing.id);
   assert.equal(reactivated.verified, true);
