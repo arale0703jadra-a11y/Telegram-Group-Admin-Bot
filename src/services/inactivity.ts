@@ -7,7 +7,9 @@ import {
   isVerifiableMember,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
-import { OWNER_ID } from "../config.js";
+import { ALEXIITA_TELEGRAM_ID, OWNER_ID } from "../config.js";
+import { isSystemOwner } from "./system-owner.js";
+import { isVerifiedUser } from "./verified-users.js";
 import type { MyContext } from "../types.js";
 import type { IndexedUser } from "../storage/types.js";
 
@@ -18,6 +20,21 @@ export interface InactiveUser extends IndexedUser {
 
 function thresholdDays(data: Awaited<ReturnType<typeof getGroupData>>): number {
   return data.inactivity.customDays ?? data.inactivity.inactivityDays;
+}
+
+export async function isInactivityProtectedUser(userId: number): Promise<boolean> {
+  if (userId === OWNER_ID || userId === ALEXIITA_TELEGRAM_ID) {
+    return true;
+  }
+  try {
+    return await isSystemOwner(userId);
+  } catch (error) {
+    console.error(
+      `[INACTIVITY] No se pudo comprobar si userId=${userId} es System Owner; se protege por seguridad ` +
+        `error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+    return true;
+  }
 }
 
 export async function getInactiveUsers(
@@ -46,8 +63,17 @@ export async function getInactiveUsers(
       member.status === "kicked" ||
       isProtectedMember(member) ||
       !isVerifiableMember(member) ||
-      OWNER_ID === user.id
+      await isInactivityProtectedUser(user.id)
     ) {
+      continue;
+    }
+    try {
+      if (await isVerifiedUser(chatId, user.id)) continue;
+    } catch (error) {
+      console.error(
+        `[INACTIVITY] No se pudo comprobar verificación groupId=${chatId} userId=${user.id}; se omite.`,
+        error,
+      );
       continue;
     }
     const referenceAt = user.lastSeen ?? user.joinedAt;
@@ -64,7 +90,7 @@ export async function removeInactiveUser(
   ctx: MyContext,
   chatId: number,
   userId: number,
-): Promise<"removed" | "skipped" | "error"> {
+): Promise<"removed" | "simulated" | "skipped" | "error"> {
   const data = await getGroupData(chatId);
   if (!data.inactivity.enabled) {
     return "skipped";
@@ -89,13 +115,24 @@ export async function removeInactiveUser(
     member.status === "kicked" ||
     isProtectedMember(member) ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId
+    await isInactivityProtectedUser(userId)
   ) {
     await logEvent(ctx, chatId, "INACTIVITY_REMOVE_ERROR", {
       targetId: userId,
       result: "error",
       detail: "Usuario no elegible o estado no verificable.",
     });
+    return "skipped";
+  }
+  try {
+    if (await isVerifiedUser(chatId, userId)) {
+      return "skipped";
+    }
+  } catch (error) {
+    console.error(
+      `[INACTIVITY] No se pudo comprobar verificación groupId=${chatId} userId=${userId}; se omite.`,
+      error,
+    );
     return "skipped";
   }
   const rights = await getBotRights(ctx, chatId);
@@ -106,6 +143,15 @@ export async function removeInactiveUser(
       detail: "Sin permisos para expulsar.",
     });
     return "error";
+  }
+  if (data.inactivity.simulationMode !== false) {
+    await logEvent(ctx, chatId, "INACTIVITY_SCAN", {
+      targetId: userId,
+      targetName: user.name,
+      result: "queued",
+      detail: "SIMULACIÓN: candidato elegible; no se modificó su estado en Telegram.",
+    });
+    return "simulated";
   }
   try {
     await ctx.api.banChatMember(chatId, userId);

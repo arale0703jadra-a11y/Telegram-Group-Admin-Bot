@@ -57,7 +57,7 @@ test("verified management panel displays private actions for the listed IDs", ()
   assert.ok(!callbacks.includes(FilterAction.home));
 });
 
-test("manual verification panel requires explicit confirmation and states expiry is informational", () => {
+test("manual verification panel requires confirmation and explains expiry enforcement", () => {
   const panel = buildManualVerifiedConfirmPanel({
     userId: 456,
     displayName: "Sample Member",
@@ -67,8 +67,8 @@ test("manual verification panel requires explicit confirmation and states expiry
   });
   const buttons = panel.keyboard.inline_keyboard.flat();
 
-  assert.match(panel.text, /vigencia inicial será de 30 días/);
-  assert.match(panel.text, /no quitará la verificación ni cambiará permisos o historial/);
+  assert.match(panel.text, /vigencia será de 30 días/);
+  assert.match(panel.text, /no concederá privilegios hasta una renovación explícita/);
   assert.ok(buttons.some(
     (button) => buttonCallbackData(button) === VerifiedAction.manualConfirm(456, true),
   ));

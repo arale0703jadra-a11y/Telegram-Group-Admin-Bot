@@ -57,12 +57,19 @@ async function recordAudit(
   if (error) throw error;
 }
 
-export async function isSystemOwner(userId: number): Promise<boolean> {
-  if (!Number.isSafeInteger(userId) || userId <= 0) return false;
+export async function getSystemOwnerId(): Promise<number | undefined> {
   const { data, error } = await getClient().from("system_owner")
     .select("owner_user_id").eq("singleton", true).maybeSingle();
   if (error) throw error;
-  return data?.owner_user_id === userId;
+  const userId = data?.owner_user_id;
+  return typeof userId === "number" && Number.isSafeInteger(userId) && userId > 0
+    ? userId
+    : undefined;
+}
+
+export async function isSystemOwner(userId: number): Promise<boolean> {
+  if (!Number.isSafeInteger(userId) || userId <= 0) return false;
+  return (await getSystemOwnerId()) === userId;
 }
 
 export async function bootstrapSystemOwner(userId: number): Promise<boolean> {
@@ -124,7 +131,9 @@ export async function consumeRecoveryKey(
   // The Recovery Key is verified with scrypt in Zeus. service_role is restricted
   // to this trusted backend, so recovery RPCs receive only an ephemeral challenge.
   const { data, error } = await db.from("system_owner_recovery_keys")
-    .select("id,key_salt,key_hash,used_at,revoked_at");
+    .select("id,key_salt,key_hash")
+    .is("used_at", null)
+    .is("revoked_at", null);
   if (error) throw error;
   for (const row of data ?? []) {
     if (!(await verifyRecoveryKey(candidate, { salt: row.key_salt, hash: row.key_hash }))) continue;

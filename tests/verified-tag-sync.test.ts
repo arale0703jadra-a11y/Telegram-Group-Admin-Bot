@@ -36,6 +36,7 @@ import {
   approveVerifiedMarkerCandidate,
   VerifiedMarkerApprovalError,
 } from "../src/services/verified-marker-approval.js";
+import { verifiedMarkerDetection } from "../src/filters/verified-marker-detection.js";
 import {
   scanObservedVerifiedMarkers,
   VerifiedMarkerAdminLookupError,
@@ -199,6 +200,66 @@ function makeMember(
     },
     ...(tag ? { tag } : {}),
   } as ChatMember;
+}
+
+async function runMarkerDetectionUpdate(input: {
+  groupId: number;
+  kind: "message" | "chat_member";
+  user: { id: number; first_name: string; username?: string };
+  tag?: string;
+  text?: string;
+  customTitle?: string;
+}): Promise<void> {
+  const originalDirectory = process.cwd();
+  const testDirectory = mkdtempSync(join(tmpdir(), "zeus-marker-detection-"));
+  process.chdir(testDirectory);
+  const chat = { id: input.groupId, type: "supergroup" };
+  const update: Record<string, unknown> = {};
+  let ctx: Record<string, unknown>;
+  try {
+    if (input.kind === "message") {
+      const message = {
+        message_id: 1,
+        date: 1,
+        chat,
+        from: { ...input.user, is_bot: false },
+        text: input.text ?? "",
+      };
+      update.message = message;
+      ctx = {
+        update,
+        chat,
+        from: { ...input.user, is_bot: false },
+        message,
+      };
+    } else {
+      const member = {
+        status: input.customTitle ? "administrator" : "member",
+        user: { ...input.user, is_bot: false },
+        ...(input.tag ? { tag: input.tag } : {}),
+        ...(input.customTitle ? { custom_title: input.customTitle } : {}),
+      };
+      const chatMember = {
+        chat,
+        date: 1,
+        old_chat_member: member,
+        new_chat_member: member,
+      };
+      update.chat_member = chatMember;
+      ctx = {
+        update,
+        chat,
+        from: { ...input.user, is_bot: false },
+        chatMember,
+      };
+    }
+    ctx.update = update;
+    ctx.has = (...paths: string[]) => paths.some((path) => path in update);
+    await verifiedMarkerDetection.middleware()(ctx as never, async () => undefined);
+  } finally {
+    process.chdir(originalDirectory);
+    rmSync(resolve(testDirectory), { recursive: true, force: true });
+  }
 }
 
 function verifiedRecord(
@@ -437,7 +498,10 @@ test("custom_title on an administrator is not treated as a member tag", async ()
 });
 
 test("a recognized tag on an active verified user records a match without changing authority", async () => {
-  verifiedRows.push(verifiedRecord(-100, 501));
+  verifiedRows.push({
+    ...verifiedRecord(-100, 501),
+    valid_until: "2099-01-01T00:00:00.000Z",
+  });
   const result = await observeVerifiedMemberTag({
     groupId: -100,
     member: makeMember("member", "Verificada"),
@@ -447,6 +511,135 @@ test("a recognized tag on an active verified user records a match without changi
   assert.equal(result.classification, "matched");
   assert.equal(verifiedRows[0]?.verified, true);
   assert.equal(reviewRows[0]?.status, "matched");
+});
+
+test("a legacy verified record without valid_until still matches a recognized tag", async () => {
+  verifiedRows.push({
+    ...verifiedRecord(-100, 501),
+    valid_until: null,
+  });
+  const result = await observeVerifiedMemberTag({
+    groupId: -100,
+    member: makeMember("member", "Verificada"),
+    recognizedTags: ["Verificada"],
+  });
+
+  assert.equal(result.classification, "matched");
+  assert.equal(reviewRows[0]?.status, "matched");
+});
+
+test("an expired verified record is a tag discrepancy, not an active match", async () => {
+  verifiedRows.push({
+    ...verifiedRecord(-100, 501),
+    valid_until: "2020-01-01T00:00:00.000Z",
+  });
+  const result = await observeVerifiedMemberTag({
+    groupId: -100,
+    member: makeMember("member", "Verificada"),
+    recognizedTags: ["Verificada"],
+  });
+
+  assert.equal(result.classification, "revoked_tag");
+  assert.equal(result.verifiedUser?.verified, true);
+  assert.equal(reviewRows[0]?.status, "revoked_tag");
+});
+
+test("expired administrator-title detection creates only a review candidate", async () => {
+  const record = {
+    ...verifiedRecord(-101, 601),
+    valid_until: "2020-01-01T00:00:00.000Z",
+  };
+  verifiedRows.push(record);
+
+  await runMarkerDetectionUpdate({
+    groupId: -101,
+    kind: "chat_member",
+    user: { id: 601, first_name: "Test", username: "test_user" },
+    customTitle: "Verificada",
+  });
+
+  assert.equal(reviewRows[0]?.status, "pending");
+  assert.equal(verifiedRows[0], record);
+  assert.equal(verifiedRows[0]?.verified, true);
+  assert.equal(verifiedRows[0]?.valid_until, "2020-01-01T00:00:00.000Z");
+});
+
+test("expired member-profile detection creates only a review candidate", async () => {
+  const record = {
+    ...verifiedRecord(-102, 602),
+    valid_until: "2020-01-01T00:00:00.000Z",
+  };
+  verifiedRows.push(record);
+
+  await runMarkerDetectionUpdate({
+    groupId: -102,
+    kind: "chat_member",
+    user: { id: 602, first_name: "Verificada", username: "test_user" },
+  });
+
+  assert.equal(reviewRows[0]?.status, "pending");
+  assert.equal(verifiedRows[0], record);
+  assert.equal(verifiedRows[0]?.verified, true);
+});
+
+test("expired message-marker detection creates only a review candidate", async () => {
+  const record = {
+    ...verifiedRecord(-103, 603),
+    valid_until: "2020-01-01T00:00:00.000Z",
+  };
+  verifiedRows.push(record);
+
+  await runMarkerDetectionUpdate({
+    groupId: -103,
+    kind: "message",
+    user: { id: 603, first_name: "Test", username: "test_user" },
+    text: "Verificada",
+  });
+
+  assert.equal(reviewRows[0]?.status, "pending");
+  assert.equal(verifiedRows[0], record);
+  assert.equal(verifiedRows[0]?.verified, true);
+});
+
+test("marker detection preserves active and legacy records and still reviews revoked records", async () => {
+  verifiedRows.push(
+    {
+      ...verifiedRecord(-104, 604),
+      valid_until: "2099-01-01T00:00:00.000Z",
+    },
+    {
+      ...verifiedRecord(-105, 605),
+      valid_until: null,
+    },
+    verifiedRecord(-106, 606, true),
+  );
+
+  await runMarkerDetectionUpdate({
+    groupId: -104,
+    kind: "message",
+    user: { id: 604, first_name: "Test", username: "test_user" },
+    text: "Verificada",
+  });
+  await runMarkerDetectionUpdate({
+    groupId: -105,
+    kind: "message",
+    user: { id: 605, first_name: "Test", username: "test_user" },
+    text: "Verificada",
+  });
+  await runMarkerDetectionUpdate({
+    groupId: -106,
+    kind: "message",
+    user: { id: 606, first_name: "Test", username: "test_user" },
+    text: "Verificada",
+  });
+
+  assert.deepEqual(
+    reviewRows.map((row) => row.group_id).sort(),
+    [-106],
+  );
+  assert.equal(verifiedRows[0]?.valid_until, "2099-01-01T00:00:00.000Z");
+  assert.equal(verifiedRows[1]?.valid_until, null);
+  assert.equal(verifiedRows[2]?.verified, false);
 });
 
 test("a confirmed missing recognized tag is informational and does not revoke verification", async () => {
@@ -722,6 +915,41 @@ test("manual approval reactivates a revoked record without resetting its permiss
   assert.equal(verifiedRows[0]?.permissions.can_send_links, false);
 });
 
+test("tag approval refuses to implicitly renew an expired verified record", async () => {
+  verifiedRows.push({
+    ...verifiedRecord(-100, 501),
+    valid_until: "2020-01-01T00:00:00.000Z",
+  });
+  await observeVerifiedMemberTag({
+    groupId: -100,
+    member: makeMember("member", "Verificada"),
+    recognizedTags: ["Verificada"],
+  });
+  let localSyncCalls = 0;
+
+  await assert.rejects(
+    approveVerifiedTagCandidate({
+      api: mockMemberApi(makeMember("member", "Verificada")),
+      groupId: -100,
+      userId: 501,
+      actorUserId: 100,
+      recognizedTags: ["Verificada"],
+      authorize: async () => true,
+      syncLocal: async () => {
+        localSyncCalls += 1;
+      },
+    }),
+    (error: unknown) =>
+      error instanceof VerifiedTagApprovalError &&
+      error.code === "REACTIVATION_REQUIRED",
+  );
+
+  assert.equal(verifiedRows[0]?.valid_until, "2020-01-01T00:00:00.000Z");
+  assert.equal(verifiedRows[0]?.verified, true);
+  assert.equal(localSyncCalls, 0);
+  assert.equal(reviewRows[0]?.status, "revoked_tag");
+});
+
 test("approval does not proceed when the live tag is no longer recognized", async () => {
   await observeVerifiedMemberTag({
     groupId: -100,
@@ -811,6 +1039,48 @@ test("text-marker approval requires authorization and confirms current membershi
     );
     await flushStorage();
     assert.equal((await new FileStore().loadGroup(-100)).indexedUsers["501"]?.verified, true);
+  } finally {
+    process.chdir(originalDirectory);
+    rmSync(resolve(testDirectory), { recursive: true, force: true });
+  }
+});
+
+test("marker approval refuses to implicitly renew an expired verified record", async () => {
+  const originalDirectory = process.cwd();
+  const testDirectory = mkdtempSync(join(tmpdir(), "zeus-marker-expired-"));
+  try {
+    process.chdir(testDirectory);
+    await recordVerifiedTagObservation({
+      groupId: -100,
+      userId: 501,
+      username: "test_user",
+      displayName: "Test",
+      observedTag: "#verificada (mensaje)",
+      status: "pending",
+    });
+    verifiedRows.push({
+      ...verifiedRecord(-100, 501),
+      valid_until: "2020-01-01T00:00:00.000Z",
+    });
+
+    await assert.rejects(
+      approveVerifiedMarkerCandidate({
+        api: mockMemberApi(makeMember("member")),
+        groupId: -100,
+        userId: 501,
+        actorUserId: 100,
+        authorize: async () => true,
+      }),
+      (error: unknown) =>
+        error instanceof VerifiedMarkerApprovalError &&
+        error.code === "REACTIVATION_REQUIRED",
+    );
+
+    assert.equal(verifiedRows[0]?.valid_until, "2020-01-01T00:00:00.000Z");
+    assert.equal(verifiedRows[0]?.verified, true);
+    assert.equal(reviewRows[0]?.status, "pending");
+    const group = await new FileStore().loadGroup(-100);
+    assert.notEqual(group.indexedUsers["501"]?.verified, true);
   } finally {
     process.chdir(originalDirectory);
     rmSync(resolve(testDirectory), { recursive: true, force: true });

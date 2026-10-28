@@ -1,4 +1,3 @@
-import { OWNER_ID } from "../config.js";
 import { isDeletedTelegramAccount } from "../filters/deleted-accounts.js";
 import { getBotRights, getMemberSafely, isProtectedMember, isVerifiableMember } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
@@ -12,6 +11,7 @@ import {
   warnMissingActivityConfiguration,
   type UserActivityCandidate,
 } from "./user-activity.js";
+import { isInactivityProtectedUser } from "./inactivity.js";
 import { isVerifiedUser } from "./verified-users.js";
 import { callWithRetryAfter, runChatActionExclusive } from "../utils/safety.js";
 import { invalidateSecurityCaches } from "../utils/member-cache.js";
@@ -83,9 +83,10 @@ async function removeCandidate(
   chatId: number,
   candidate: UserActivityCandidate,
   cutoffMs: number,
-): Promise<"removed" | "skipped" | "error"> {
+  simulationMode: boolean,
+): Promise<"removed" | "simulated" | "skipped" | "error"> {
   const { userId } = candidate;
-  if (userId === Number(OWNER_ID)) return "skipped";
+  if (await isInactivityProtectedUser(userId)) return "skipped";
   const member = await getMemberSafely(ctx, chatId, userId);
   if (
     !member ||
@@ -123,6 +124,16 @@ async function removeCandidate(
       detail: "Depuración automática omitida: falta can_restrict_members.",
     });
     return "error";
+  }
+
+  if (simulationMode) {
+    await logEvent(ctx, chatId, "INACTIVITY_SCAN", {
+      targetId: userId,
+      targetName: member.user.first_name,
+      result: "queued",
+      detail: "SIMULACIÓN: candidato elegible; no se modificó su estado en Telegram.",
+    });
+    return "simulated";
   }
 
   try {
@@ -214,14 +225,24 @@ export async function runInactivityCleaner(
         cutoffMs,
       ).slice(0, batchSize);
       let removed = 0;
+      let simulated = 0;
       let skipped = 0;
       let failed = 0;
+      const simulationMode = data.inactivity.simulationMode !== false;
 
       for (const candidate of candidates) {
-        const result = await removeCandidate(ctx, group.id, candidate, cutoffMs);
+        const result = await removeCandidate(
+          ctx,
+          group.id,
+          candidate,
+          cutoffMs,
+          simulationMode,
+        );
         if (result === "removed") {
           removed += 1;
           if (delayMs > 0) await wait(delayMs);
+        } else if (result === "simulated") {
+          simulated += 1;
         } else if (result === "error") {
           failed += 1;
         } else {
@@ -232,7 +253,7 @@ export async function runInactivityCleaner(
       await logEvent(ctx, group.id, "INACTIVITY_SCAN", {
         result: failed > 0 ? "error" : "ok",
         detail:
-          `Candidatos=${candidates.length}; expulsados=${removed}; ` +
+          `Candidatos=${candidates.length}; simulados=${simulated}; expulsados=${removed}; ` +
           `omitidos=${skipped}; fallidos=${failed}; lote=${batchSize}.`,
       });
     } catch (error) {

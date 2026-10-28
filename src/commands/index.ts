@@ -5,6 +5,7 @@ import { menuCommand } from "./menu.js";
 import { moderationCommand } from "./moderation.js";
 import { privateInput } from "./private-input.js";
 import { zeusCommand } from "./zeus.js";
+import { verifiedCommand } from "./verified.js";
 import type { MyContext } from "../types.js";
 
 /**
@@ -18,4 +19,5 @@ export function registerCommands(bot: Composer<MyContext>): void {
   bot.use(moderationCommand);
   bot.use(privateInput);
   bot.use(zeusCommand);
+  bot.use(verifiedCommand);
 }

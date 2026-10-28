@@ -147,15 +147,31 @@ test("reactivation is a distinct explicitly requested audited activation", async
   assert.equal(rpcCalls[0]?.body.p_reactivate, true);
 });
 
-test("expired verification remains active until the scheduled revocation is persisted", () => {
+test("expired verification is inactive even before scheduled revocation is persisted", () => {
   assert.equal(
     isActiveVerifiedRecord({
       verified: true,
       revoked_at: null,
       valid_until: "2020-01-01T00:00:00.000Z",
-    }),
-    true,
+    }, new Date("2026-01-01T00:00:00.000Z")),
+    false,
   );
+});
+
+test("manual renewal sends deterministic validity dates to the audited operation", async () => {
+  rpcResponse = { status: "reactivated", user: verifiedRow() };
+  const now = new Date("2026-06-01T00:00:00.000Z");
+  await activateManualVerifiedUser({
+    groupId: -100123,
+    userId: 456,
+    actorUserId: 123,
+    reactivate: true,
+    now,
+  });
+
+  assert.equal(rpcCalls[0]?.body.p_reactivate, true);
+  assert.equal(rpcCalls[0]?.body.p_activated_at, "2026-06-01T00:00:00.000Z");
+  assert.equal(rpcCalls[0]?.body.p_valid_until, "2026-07-01T00:00:00.000Z");
 });
 
 test("manual revocation records only an explicit active-state transition", async () => {

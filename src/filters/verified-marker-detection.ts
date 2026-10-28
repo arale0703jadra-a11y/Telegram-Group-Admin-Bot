@@ -3,6 +3,7 @@ import { getGroupData } from "../storage/index.js";
 import {
   getVerifiedUserRecord,
 } from "../services/verified-users.js";
+import { isActiveVerifiedRecord } from "../services/verified-user-policy.js";
 import {
   getVerifiedTagReview,
   recordVerifiedTagObservation,
@@ -47,7 +48,7 @@ async function recordAdministratorTitleCandidate(input: {
     getVerifiedTagReview(input.groupId, input.userId),
   ]);
   if (
-    (verified?.verified && verified.revoked_at === null) ||
+    isActiveVerifiedRecord(verified) ||
     review
   ) {
     return;
@@ -170,7 +171,7 @@ verifiedMarkerDetection.on("chat_member", async (ctx, next) => {
     );
     if (marker && shouldObserve(`${ctx.chat.id}:${member.user.id}`, Date.now())) {
       const existing = await getVerifiedUserRecord(ctx.chat.id, member.user.id);
-      if (!(existing?.verified && existing.revoked_at === null)) {
+      if (!isActiveVerifiedRecord(existing)) {
         await recordVerifiedTagObservation({
           groupId: ctx.chat.id,
           userId: member.user.id,
@@ -219,7 +220,7 @@ verifiedMarkerDetection.on("message", async (ctx, next) => {
     );
     if (marker && shouldObserve(`${groupId}:${userId}`, Date.now())) {
       const existing = await getVerifiedUserRecord(groupId, userId);
-      if (!(existing?.verified && existing.revoked_at === null)) {
+      if (!isActiveVerifiedRecord(existing)) {
         await recordVerifiedTagObservation({
           groupId,
           userId,

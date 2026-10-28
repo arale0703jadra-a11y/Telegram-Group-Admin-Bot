@@ -293,6 +293,8 @@ function normalizeInactivity(
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
     inactivityDays: days,
+    simulationMode:
+      typeof raw.simulationMode === "boolean" ? raw.simulationMode : true,
     customDays:
       typeof raw.customDays === "number" && raw.customDays > 0
         ? Math.floor(raw.customDays)

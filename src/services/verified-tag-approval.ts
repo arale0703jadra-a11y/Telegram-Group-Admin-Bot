@@ -20,6 +20,7 @@ import {
   isActiveVerifiedGroupMember,
   VerifiedUserRegistrationError,
 } from "./verified-user-registration.js";
+import { isActiveVerifiedRecord } from "./verified-user-policy.js";
 import { markUserVerified } from "./user-registry.js";
 import {
   isRecognizedVerifiedMemberTag,
@@ -32,6 +33,7 @@ export type VerifiedTagApprovalErrorCode =
   | "IN_PROGRESS"
   | "TAG_NOT_CONFIRMED"
   | "USER_NOT_IN_GROUP"
+  | "REACTIVATION_REQUIRED"
   | "REVIEW_CHANGED";
 
 export class VerifiedTagApprovalError extends Error {
@@ -221,7 +223,18 @@ export async function approveVerifiedTagCandidate(input: {
       }
 
       const existing = await getVerifiedUserRecord(input.groupId, input.userId);
-      if (existing?.verified && existing.revoked_at === null) {
+      const alreadyVerified = isActiveVerifiedRecord(existing);
+      if (
+        existing?.verified &&
+        existing.revoked_at === null &&
+        !alreadyVerified
+      ) {
+        throw new VerifiedTagApprovalError(
+          "REACTIVATION_REQUIRED",
+          "La verificación existente no está vigente. Renueva explícitamente la verificación desde gestión antes de aprobar esta candidata.",
+        );
+      }
+      if (existing && alreadyVerified) {
         const displayName = [member.user.first_name, member.user.last_name]
           .filter(Boolean)
           .join(" ");

@@ -1,9 +1,14 @@
 import type { ChatMember, ChatPermissions } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
-import { OWNER_ID } from "../config.js";
+import { ALEXIITA_TELEGRAM_ID, OWNER_ID } from "../config.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
 import { callWithRetryAfter, runChatActionExclusive } from "../utils/safety.js";
-import { getCachedBotRights, getCachedChatMember } from "../utils/member-cache.js";
+import {
+  getCachedBotRights,
+  getCachedChatMember,
+  invalidateSecurityCaches,
+} from "../utils/member-cache.js";
+import { getSystemOwnerId } from "../services/system-owner.js";
 import { logEvent } from "./events.js";
 
 export interface ActionResult {
@@ -14,6 +19,10 @@ export interface ActionResult {
 export interface CleanResult {
   attempted: number;
   deleted: number;
+}
+
+function reasonDetail(reason?: string): string {
+  return reason ? `; Motivo: ${reason.slice(0, 240)}` : "";
 }
 
 export const PERMISSION_ERROR =
@@ -112,6 +121,32 @@ export async function getMemberSafely(
   userId: number,
 ): Promise<ChatMember | undefined> {
   return getCachedChatMember(ctx.api, chatId, userId);
+}
+
+export async function isProtectedModerationTarget(
+  ctx: MyContext,
+  chatId: number,
+  userId: number,
+  ownerLookup: () => Promise<number | undefined> = getSystemOwnerId,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(userId) || userId <= 0 || ctx.from?.id === userId) {
+    return true;
+  }
+  invalidateSecurityCaches(chatId, userId);
+  const member = await getMemberSafely(ctx, chatId, userId);
+  if (member && isProtectedMember(member)) return true;
+  try {
+    const ownerId = await ownerLookup();
+    return userId === ownerId ||
+      userId === ALEXIITA_TELEGRAM_ID ||
+      (ownerId === undefined && userId === OWNER_ID);
+  } catch (error) {
+    console.error(
+      `[MODERATION] No se pudo comprobar el propietario groupId=${chatId} ` +
+        `targetId=${userId} error=${error instanceof Error ? error.name : "unknown"}; acción denegada`,
+    );
+    return true;
+  }
 }
 
 /**
@@ -304,21 +339,37 @@ export async function muteUser(
   userId: number,
   minutes: number,
   targetName?: string,
+  reason?: string,
 ): Promise<ActionResult> {
   const name = targetName ?? String(userId);
+  if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 527040) {
+    await logEvent(ctx, chatId, "MUTE", {
+      targetId: userId,
+      targetName: name,
+      result: "rejected",
+      detail: `Duración inválida${reasonDetail(reason)}`,
+    });
+    return { ok: false, error: "La duración debe estar entre 1 y 527040 minutos." };
+  }
   const { canRestrict } = await getBotRights(ctx, chatId);
   if (!canRestrict) {
     await logEvent(ctx, chatId, "MUTE", {
       targetId: userId,
       targetName: name,
       result: "error",
-      detail: "Sin permisos del bot",
+      detail: `Sin permisos del bot${reasonDetail(reason)}`,
     });
     return { ok: false, error: PERMISSION_ERROR };
   }
 
   const member = await getMemberSafely(ctx, chatId, userId);
   if (!member) {
+    await logEvent(ctx, chatId, "MUTE", {
+      targetId: userId,
+      targetName: name,
+      result: "error",
+      detail: `No se pudo verificar el estado del usuario${reasonDetail(reason)}`,
+    });
     return { ok: false, error: "No encuentro al usuario en el grupo." };
   }
   if (
@@ -327,7 +378,31 @@ export async function muteUser(
     OWNER_ID === userId ||
     isProtectedMember(member)
   ) {
+    await logEvent(ctx, chatId, "MUTE", {
+      targetId: userId,
+      targetName: name,
+      result: "rejected",
+      detail: `Objetivo protegido o no sancionable${reasonDetail(reason)}`,
+    });
     return { ok: false, error: "No se puede silenciar a un administrador o al propietario." };
+  }
+
+  let hasActiveMuteRecord = false;
+  let previousPermissions: ChatPermissions | undefined;
+  try {
+    const data = await getGroupData(chatId);
+    const previousMute = data.mutedUsers[String(userId)];
+    if (previousMute && previousMute.until > isEpochNowSeconds()) {
+      hasActiveMuteRecord = true;
+      if (isValidPermissionSnapshot(previousMute.previousPermissions)) {
+        previousPermissions = previousMute.previousPermissions;
+      }
+    }
+  } catch (error) {
+    console.error(
+      `[MODERATION] No se pudo leer el snapshot previo groupId=${chatId} ` +
+        `userId=${userId} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
   }
 
   const until = isEpochNowSeconds() + minutes * 60;
@@ -342,6 +417,7 @@ export async function muteUser(
       targetId: userId,
       targetName: name,
       result: "error",
+      detail: `Telegram rechazó el silencio${reasonDetail(reason)}`,
     });
     return { ok: false, error: "No se pudo silenciar al usuario." };
   }
@@ -353,8 +429,9 @@ export async function muteUser(
       adminId: ctx.from?.id,
       adminName: ctx.from?.first_name,
       at: new Date().toISOString(),
-      previousPermissions:
-        member.status === "restricted"
+      previousPermissions: hasActiveMuteRecord
+        ? previousPermissions
+        : member.status === "restricted"
           ? {
               can_send_messages: member.can_send_messages,
               can_send_audios: member.can_send_audios,
@@ -376,15 +453,18 @@ export async function muteUser(
           : undefined,
     };
     await saveGroupData(chatId, data);
-  } catch {
-    // Si no se puede guardar el estado, la acción en Telegram ya se aplicó.
+  } catch (error) {
+    console.error(
+      `[MODERATION] Silencio aplicado sin snapshot persistido groupId=${chatId} ` +
+        `userId=${userId} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
   }
 
   await logEvent(ctx, chatId, "MUTE", {
     targetId: userId,
     targetName: name,
     result: "ok",
-    detail: `${minutes} min`,
+    detail: `${minutes} min${reasonDetail(reason)}`,
   });
   return { ok: true };
 }
@@ -412,6 +492,12 @@ export async function unmuteUser(
 
   const member = await getMemberSafely(ctx, chatId, userId);
   if (!member) {
+    await logEvent(ctx, chatId, "UNMUTE", {
+      targetId: userId,
+      targetName: name,
+      result: "rejected",
+      detail: "No se encontró un miembro que pueda desmutearse.",
+    });
     return { ok: false, error: "No encuentro al usuario en el grupo." };
   }
 
@@ -422,8 +508,11 @@ export async function unmuteUser(
     if (isValidPermissionSnapshot(previous)) {
       permissions = previous;
     }
-  } catch {
-    // Si no se puede verificar el snapshot, se aplican permisos básicos.
+  } catch (error) {
+    console.error(
+      `[MODERATION] No se pudo leer el snapshot al desmutear groupId=${chatId} ` +
+        `userId=${userId} error=${error instanceof Error ? error.name : "unknown"}; se usarán permisos básicos`,
+    );
   }
 
   try {
@@ -443,8 +532,11 @@ export async function unmuteUser(
     const data = await getGroupData(chatId);
     delete data.mutedUsers[String(userId)];
     await saveGroupData(chatId, data);
-  } catch {
-    // El estado se ignorará igualmente porque `until` queda en el pasado.
+  } catch (error) {
+    console.error(
+      `[MODERATION] Desmute aplicado sin actualizar el almacenamiento groupId=${chatId} ` +
+        `userId=${userId} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
   }
 
   await logEvent(ctx, chatId, "UNMUTE", {
@@ -463,6 +555,7 @@ export async function banUser(
   chatId: number,
   userId: number,
   targetName?: string,
+  reason?: string,
 ): Promise<ActionResult> {
   const name = targetName ?? String(userId);
   const { canRestrict } = await getBotRights(ctx, chatId);
@@ -471,7 +564,7 @@ export async function banUser(
       targetId: userId,
       targetName: name,
       result: "error",
-      detail: "Sin permisos del bot",
+      detail: `Sin permisos del bot${reasonDetail(reason)}`,
     });
     return { ok: false, error: PERMISSION_ERROR };
   }
@@ -482,7 +575,7 @@ export async function banUser(
       targetId: userId,
       targetName: name,
       result: "error",
-      detail: "Autoban omitido: no se pudo verificar el estado actual del usuario.",
+      detail: `Autoban omitido: no se pudo verificar el estado actual del usuario.${reasonDetail(reason)}`,
     });
     return { ok: false, error: "No se pudo verificar el estado del usuario." };
   }
@@ -495,8 +588,8 @@ export async function banUser(
     await logEvent(ctx, chatId, "BAN", {
       targetId: userId,
       targetName: name,
-      result: "error",
-      detail: "Autoban omitido: propietario o administrador protegido.",
+      result: "rejected",
+      detail: `Autoban omitido: propietario o administrador protegido.${reasonDetail(reason)}`,
     });
     return { ok: false, error: "No se puede banear al propietario o a un administrador." };
   }
@@ -512,7 +605,7 @@ export async function banUser(
       targetId: userId,
       targetName: name,
       result: "error",
-      detail: `Telegram rechazó el ban: ${technicalError}`,
+      detail: `Telegram rechazó el ban: ${technicalError}${reasonDetail(reason)}`,
     });
     return { ok: false, error: "No se pudo banear al usuario." };
   }
@@ -527,15 +620,18 @@ export async function banUser(
       adminName: ctx.from?.first_name,
     };
     await saveGroupData(chatId, data);
-  } catch {
-    // El ban de Telegram ya se aplicó.
+  } catch (error) {
+    console.error(
+      `[MODERATION] Ban aplicado sin guardar el registro local groupId=${chatId} ` +
+        `userId=${userId} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
   }
 
   await logEvent(ctx, chatId, "BAN", {
     targetId: userId,
     targetName: name,
     result: "ok",
-    detail: "Permanente",
+    detail: `Permanente${reasonDetail(reason)}`,
   });
   return { ok: true };
 }
@@ -561,8 +657,28 @@ export async function unbanUser(
     return { ok: false, error: PERMISSION_ERROR };
   }
 
+  const member = await getMemberSafely(ctx, chatId, userId);
+  if (!member) {
+    await logEvent(ctx, chatId, "UNBAN", {
+      targetId: userId,
+      targetName: name,
+      result: "error",
+      detail: "No se pudo verificar el estado actual del usuario.",
+    });
+    return { ok: false, error: "No se pudo verificar el estado del usuario." };
+  }
+  if (member.status !== "kicked") {
+    await logEvent(ctx, chatId, "UNBAN", {
+      targetId: userId,
+      targetName: name,
+      result: "rejected",
+      detail: "El usuario no está baneado.",
+    });
+    return { ok: false, error: "El usuario no está baneado." };
+  }
+
   try {
-    await ctx.api.unbanChatMember(chatId, userId, { only_if_banned: false });
+    await ctx.api.unbanChatMember(chatId, userId, { only_if_banned: true });
   } catch {
     await logEvent(ctx, chatId, "UNBAN", {
       targetId: userId,
@@ -576,8 +692,11 @@ export async function unbanUser(
     const data = await getGroupData(chatId);
     delete data.bannedUsers[String(userId)];
     await saveGroupData(chatId, data);
-  } catch {
-    // El unban de Telegram ya se aplicó.
+  } catch (error) {
+    console.error(
+      `[MODERATION] Unban aplicado sin actualizar el almacenamiento groupId=${chatId} ` +
+        `userId=${userId} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
   }
 
   await logEvent(ctx, chatId, "UNBAN", {

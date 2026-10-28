@@ -95,6 +95,15 @@ const verificationStatusCache = new Map<
 >();
 const PERMISSIONS_CACHE_TTL_MS = 10_000;
 
+function getVerifiedCacheExpiry(
+  record: VerifiedUser | undefined,
+  now: Date,
+): number {
+  const ttlExpiry = now.getTime() + PERMISSIONS_CACHE_TTL_MS;
+  if (record?.valid_until == null) return ttlExpiry;
+  return Math.min(ttlExpiry, Date.parse(record.valid_until));
+}
+
 function getClient(): SupabaseClient {
   if (client) return client;
   const url = process.env.SUPABASE_URL;
@@ -128,10 +137,12 @@ export async function addVerifiedUser(input: {
   detectedAt?: string;
   reactivate?: boolean;
   permissions?: Partial<VerifiedUserPermissions>;
+  now?: Date;
 }): Promise<VerifiedUser> {
   const existing = await getStoredVerifiedUser(input.groupId, input.userId);
-  const now = calculateManualVerificationDates();
-  const existingActive = isActiveVerifiedRecord(existing);
+  const now = input.now ?? new Date();
+  const dates = calculateManualVerificationDates(now);
+  const existingActive = isActiveVerifiedRecord(existing, now);
   if (existing && !existingActive && !input.reactivate) {
     throw new Error("VERIFIED_REACTIVATION_REQUIRED");
   }
@@ -152,11 +163,11 @@ export async function addVerifiedUser(input: {
       ...(input.detectedAt ? { detected_at: input.detectedAt } : {}),
       activated_at: existingActive
         ? existing?.activated_at ?? null
-        : now.activatedAt,
+        : dates.activatedAt,
       valid_until: existingActive
         ? existing?.valid_until ?? null
-        : now.validUntil,
-      updated_at: new Date().toISOString(),
+        : dates.validUntil,
+      updated_at: now.toISOString(),
   };
   const query = existing
     ? getClient().from("verified_users").update(values)
@@ -175,8 +186,9 @@ export async function activateManualVerifiedUser(input: {
   displayName?: string;
   actorUserId: number;
   reactivate: boolean;
+  now?: Date;
 }): Promise<ManualVerificationOutcome> {
-  const dates = calculateManualVerificationDates();
+  const dates = calculateManualVerificationDates(input.now);
   const { data, error } = await getClient().rpc(
     "activate_manual_verified_user",
     {
@@ -279,6 +291,7 @@ export async function getVerifiedUserRecord(
 export async function getVerifiedUsers(
   groupId: number,
   search?: string,
+  now = new Date(),
 ): Promise<VerifiedUser[]> {
   let query = getClient()
     .from("verified_users")
@@ -293,11 +306,14 @@ export async function getVerifiedUsers(
   }
   const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []) as VerifiedUser[];
+  return ((data ?? []) as VerifiedUser[]).filter(
+    (user) => isActiveVerifiedRecord(user, now),
+  );
 }
 
 export async function getRevokedVerifiedUsers(
   groupId: number,
+  now = new Date(),
 ): Promise<VerifiedUser[]> {
   const { data, error } = await getClient()
     .from("verified_users")
@@ -306,13 +322,30 @@ export async function getRevokedVerifiedUsers(
     .order("updated_at", { ascending: false });
   if (error) throw error;
   return ((data ?? []) as VerifiedUser[]).filter(
-    (user) => !user.verified || user.revoked_at !== null,
+    (user) => !isActiveVerifiedRecord(user, now),
+  );
+}
+
+export async function getVerifiedUsersForListing(
+  groupId: number,
+): Promise<VerifiedUser[]> {
+  const { data, error } = await getClient()
+    .from("verified_users")
+    .select("*")
+    .eq("group_id", groupId)
+    .order("display_name", { ascending: true });
+  if (error) throw error;
+  return ([...(data ?? [])] as VerifiedUser[]).sort((left, right) =>
+    (left.display_name || left.username || String(left.user_id)).localeCompare(
+      right.display_name || right.username || String(right.user_id),
+    ),
   );
 }
 
 export async function getVerifiedUser(
   groupId: number,
   userId: number,
+  now = new Date(),
 ): Promise<VerifiedUser | undefined> {
   const { data, error } = await getClient()
     .from("verified_users")
@@ -323,7 +356,8 @@ export async function getVerifiedUser(
     .is("revoked_at", null)
     .maybeSingle();
   if (error) throw error;
-  return (data as VerifiedUser | null) ?? undefined;
+  const user = (data as VerifiedUser | null) ?? undefined;
+  return isActiveVerifiedRecord(user, now) ? user : undefined;
 }
 
 export async function updateVerifiedUser(
@@ -656,14 +690,18 @@ function logAutoRevocationFailure(
   );
 }
 
-export async function isVerifiedUser(groupId: number, userId: number): Promise<boolean> {
+export async function isVerifiedUser(
+  groupId: number,
+  userId: number,
+  now = new Date(),
+): Promise<boolean> {
   const key = `${groupId}:${userId}`;
   const cached = verificationStatusCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.verified;
-  const record = await getVerifiedUser(groupId, userId);
-  const verified = isActiveVerifiedRecord(record);
+  if (cached && cached.expiresAt > now.getTime()) return cached.verified;
+  const record = await getVerifiedUser(groupId, userId, now);
+  const verified = Boolean(record);
   verificationStatusCache.set(key, {
-    expiresAt: Date.now() + PERMISSIONS_CACHE_TTL_MS,
+    expiresAt: getVerifiedCacheExpiry(record, now),
     verified,
   });
   return verified;
@@ -672,18 +710,19 @@ export async function isVerifiedUser(groupId: number, userId: number): Promise<b
 export async function getVerifiedUserPermissions(
   groupId: number,
   userId: number,
+  now = new Date(),
 ): Promise<VerifiedUserPermissions | undefined> {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return undefined;
   }
   const key = `${groupId}:${userId}`;
   const cached = permissionsCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.permissions;
+  if (cached && cached.expiresAt > now.getTime()) return cached.permissions;
   try {
-    const record = await getVerifiedUser(groupId, userId);
+    const record = await getVerifiedUser(groupId, userId, now);
     const permissions = record?.permissions;
     permissionsCache.set(key, {
-      expiresAt: Date.now() + PERMISSIONS_CACHE_TTL_MS,
+      expiresAt: getVerifiedCacheExpiry(record, now),
       permissions,
     });
     return permissions;

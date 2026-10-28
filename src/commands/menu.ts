@@ -9,17 +9,24 @@ import {
   registerGroup,
 } from "../services/group-registry.js";
 import { getAdministrableGroups } from "../utils/groups.js";
+import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 import type { MyContext } from "../types.js";
+import { COMMANDS } from "./definitions.js";
 
 export const menuCommand = new Composer<MyContext>();
 
-menuCommand.command("menu", async (ctx) => {
+menuCommand.command(COMMANDS.menu, async (ctx) => {
   const from = ctx.from;
   const chat = ctx.chat;
   const username = ctx.me.username;
 
-  if (ctx.message) {
-    void ctx.deleteMessage().catch(() => {});
+  if (ctx.message && chat.type === "private") {
+    void ctx.deleteMessage().catch((error: unknown) => {
+      console.warn(
+        `[COMMAND_DELETE] No se pudo borrar /menu privado userId=${from?.id ?? "unknown"} ` +
+          `error=${error instanceof Error ? error.name : "unknown"}`,
+      );
+    });
   }
 
   if (!from) {
@@ -27,6 +34,13 @@ menuCommand.command("menu", async (ctx) => {
   }
 
   try {
+    if (!(await isAuthorizedPanelUser(from.id))) {
+      if (chat.type === "private") {
+        await ctx.reply("⛔ No autorizado para acceder al panel de ZEUS.");
+      }
+      return;
+    }
+
     if (isGroupChat(ctx)) {
       if (!(await isUserAdmin(ctx))) {
         return;

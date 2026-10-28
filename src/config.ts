@@ -6,13 +6,22 @@ import "dotenv/config";
  */
 export const BOT_TOKEN = process.env.BOT_TOKEN;
 
-export const OWNER_ID = process.env.OWNER_ID
-  ? Number(process.env.OWNER_ID)
-  : undefined;
+function parseTelegramUserId(value: string | undefined): number | undefined {
+  if (!value || !/^[1-9]\d*$/.test(value.trim())) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
 
-export const SYSTEM_OWNER_BOOTSTRAP_ID = process.env.SYSTEM_OWNER_BOOTSTRAP_ID
-  ? Number(process.env.SYSTEM_OWNER_BOOTSTRAP_ID)
-  : undefined;
+export const OWNER_ID = parseTelegramUserId(process.env.OWNER_ID);
+
+export const SYSTEM_OWNER_BOOTSTRAP_ID = parseTelegramUserId(
+  process.env.SYSTEM_OWNER_BOOTSTRAP_ID,
+);
+export const ALEXIITA_TELEGRAM_ID = parseTelegramUserId(
+  process.env.ALEXIITA_TELEGRAM_ID,
+);
 
 function parseCommaSeparatedValues(value: string | undefined): string[] {
   return value

@@ -8,6 +8,7 @@ import {
   muteUser,
   unmuteUser,
   unbanUser,
+  isProtectedModerationTarget,
   unwarnUser,
   unwarnAllUser,
   warnUser,
@@ -33,9 +34,11 @@ import {
   buildInactivityPanel,
   buildInactiveUsersPanel,
   buildInactivityCleanConfirmPanel,
+  buildInactivityLiveConfirmPanel,
   buildAntiSpamPanel,
   buildProtectionCenterPanel,
   buildVerifiedModelsPanel,
+  buildVerifiedRecordsPanel,
   buildVerifiedLoadErrorPanel,
   buildVerifiedTagCandidatesPanel,
   buildVerifiedTagReviewConfirmPanel,
@@ -60,10 +63,13 @@ import {
   getInactiveUsers,
   removeInactiveUser,
 } from "../services/inactivity.js";
+import { isActiveVerifiedRecord } from "../services/verified-user-policy.js";
 import {
   activateManualVerifiedUser,
   getVerifiedUser,
+  getVerifiedUserRecord,
   getVerifiedUsers,
+  getVerifiedUsersForListing,
   invalidateVerifiedUserCache,
   revokeManualVerifiedUser,
 } from "../services/verified-users.js";
@@ -96,6 +102,7 @@ import {
 } from "../services/emergency-mode.js";
 import { automaticMessageScheduler } from "../services/automatic-messages.js";
 import { setServiceMessageCleanupEnabled } from "../commands/clean-service-messages.js";
+import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 
 const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
@@ -201,7 +208,7 @@ async function completeManualVerification(
   const validity = outcome.user.valid_until
     ? new Date(outcome.user.valid_until).toLocaleDateString("es-ES", { timeZone: "UTC" })
     : "no disponible";
-  return `✅ Verificación ${outcome.status === "created" ? "activada" : "reactivada"}; vigencia informativa hasta ${validity}.`;
+  return `✅ Verificación ${outcome.status === "created" ? "activada" : "reactivada"}; autorizada hasta ${validity}.`;
 }
 
 async function withVerifiedPanelTimeout<T>(operation: Promise<T>): Promise<T> {
@@ -248,12 +255,25 @@ moderationActions.on("callback_query:data", async (ctx) => {
     return;
   }
 
+  if (
+    ctx.chat?.type !== "private" ||
+    !ctx.from ||
+    !(await isAuthorizedPanelUser(ctx.from.id))
+  ) {
+    await ctx.answerCallbackQuery(
+      "⛔ No autorizado para acceder al panel de ZEUS.",
+    );
+    return;
+  }
+
   const verifiedPanelCallback =
     parts[0] === "fa" && (kind === "verified" || kind === "verified_list");
   const verifiedSubAction =
     parts[0] === "vu" ||
     (parts[0] === "cfg" && kind === "verified_tags_toggle");
-  const deferVerifiedApplyCallback = parts[0] === "vu" && kind === "apply";
+  const deferVerifiedApplyCallback =
+    parts[0] === "vu" &&
+    (kind === "apply" || kind === "quick-activate" || kind === "quick-revoke");
   let verifiedCallbackAnswered = false;
   const answerVerifiedCallback = async (text?: string): Promise<void> => {
     if (verifiedCallbackAnswered) return;
@@ -319,6 +339,108 @@ moderationActions.on("callback_query:data", async (ctx) => {
       return;
     }
     const title = ctx.session.user.selectedGroupTitle;
+    if (kind === "quick-activate") {
+      const callbackGroupId = Number(parts[2]);
+      const userId = Number(parts[3]);
+      const mode = parts[4];
+      if (
+        callbackGroupId !== groupId ||
+        !Number.isSafeInteger(userId) ||
+        userId <= 0 ||
+        (mode !== "activate" && mode !== "reactivate")
+      ) {
+        await answerVerifiedCallback("La confirmación es inválida o pertenece a otro grupo.");
+        return;
+      }
+      try {
+        const existing = await getVerifiedUserRecord(groupId, userId);
+        const isActive = isActiveVerifiedRecord(existing);
+        if (isActive) {
+          await answerVerifiedCallback("La verificación ya está activa; no se modificó.");
+          return;
+        }
+        if ((mode === "reactivate") !== Boolean(existing)) {
+          await answerVerifiedCallback("El estado cambió; vuelve a iniciar la operación.");
+          return;
+        }
+        const result = await completeManualVerification(
+          ctx,
+          groupId,
+          userId,
+          mode === "reactivate",
+        );
+        await answerVerifiedCallback(result);
+        await renderPanel(
+          ctx,
+          buildVerifiedModelsPanel(await getVerifiedUsers(groupId), 0, title),
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_COMMAND] No se pudo confirmar activación groupId=${groupId} userId=${userId} error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await answerVerifiedCallback("No se pudo completar; no se confirmó el cambio.");
+      }
+      return;
+    }
+    if (kind === "list") {
+      const page = Number(parts[2] ?? 0);
+      if (!Number.isSafeInteger(page) || page < 0) {
+        await answerVerifiedCallback("Página no válida.");
+        return;
+      }
+      try {
+        const records = await getVerifiedUsersForListing(groupId);
+        const panel = buildVerifiedRecordsPanel(records, page, title);
+        await renderPanel(ctx, panel);
+      } catch (error) {
+        console.error(
+          `[VERIFIED_LIST] No se pudo cargar groupId=${groupId} page=${page} error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title));
+      }
+      return;
+    }
+    if (kind === "quick-revoke") {
+      const callbackGroupId = Number(parts[2]);
+      const userId = Number(parts[3]);
+      if (
+        callbackGroupId !== groupId ||
+        !Number.isSafeInteger(userId) ||
+        userId <= 0
+      ) {
+        await answerVerifiedCallback("La confirmación es inválida o pertenece a otro grupo.");
+        return;
+      }
+      try {
+        const existing = await getVerifiedUserRecord(groupId, userId);
+        if (!existing?.verified || existing.revoked_at !== null) {
+          await answerVerifiedCallback("No hay una verificación que revocar.");
+          return;
+        }
+        const revoked = await revokeManualVerifiedUser({
+          groupId,
+          userId,
+          actorUserId: ctx.from.id,
+        });
+        if (!revoked) {
+          await answerVerifiedCallback("El registro ya no estaba activo.");
+          return;
+        }
+        await unmarkUserVerified(groupId, userId);
+        invalidateVerifiedUserCache(groupId, userId);
+        await answerVerifiedCallback("✅ Conversión a free completada.");
+        await renderPanel(
+          ctx,
+          buildVerifiedModelsPanel(await getVerifiedUsers(groupId), 0, title),
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_COMMAND] No se pudo convertir a free groupId=${groupId} userId=${userId} error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await answerVerifiedCallback("No se pudo completar; no se modificó el estado mostrado.");
+      }
+      return;
+    }
     if (kind === "add") {
       ctx.session.user.pendingAction = { kind: "verifiedManualAdd", groupId };
       await renderPanel(
@@ -936,6 +1058,13 @@ moderationActions.on("callback_query:data", async (ctx) => {
       try {
         let resultMessage: string;
         if (kind === "verified_mute") {
+          if (await isProtectedModerationTarget(ctx, groupId, userId)) {
+            await ctx.answerCallbackQuery({
+              text: "⛔ No se puede silenciar a esta persona.",
+              show_alert: true,
+            });
+            return;
+          }
           const result = await muteUser(
             ctx,
             groupId,
@@ -946,6 +1075,13 @@ moderationActions.on("callback_query:data", async (ctx) => {
           if (!result.ok) throw new Error(result.error ?? "No se pudo silenciar.");
           resultMessage = "Silenciada durante 24 horas.";
         } else if (kind === "verified_ban") {
+          if (await isProtectedModerationTarget(ctx, groupId, userId)) {
+            await ctx.answerCallbackQuery({
+              text: "⛔ No se puede banear a esta persona.",
+              show_alert: true,
+            });
+            return;
+          }
           const result = await banUser(
             ctx,
             groupId,
@@ -1033,6 +1169,34 @@ moderationActions.on("callback_query:data", async (ctx) => {
 
     if (parts[0] === "ia") {
       const title = ctx.session.user.selectedGroupTitle;
+      if (kind === "live") {
+        await ctx.answerCallbackQuery();
+        await renderPanel(ctx, buildInactivityLiveConfirmPanel(title));
+        return;
+      }
+      if (kind === "live-confirm" || kind === "simulation") {
+        const data = await getGroupData(groupId);
+        const previousMode = data.inactivity.simulationMode;
+        data.inactivity.simulationMode = kind !== "live-confirm";
+        try {
+          await saveGroupData(groupId, data);
+          await flushStorage();
+        } catch (error) {
+          data.inactivity.simulationMode = previousMode ?? true;
+          console.error(
+            `[INACTIVITY] No se pudo guardar el modo groupId=${groupId}: ${error instanceof Error ? error.name : "unknown"}`,
+          );
+          await ctx.answerCallbackQuery("No se pudo guardar el modo de depuración.");
+          return;
+        }
+        await ctx.answerCallbackQuery(
+          data.inactivity.simulationMode
+            ? "🧪 Simulación activada; no se expulsará a nadie."
+            : "⚠️ Modo real activado tras confirmación.",
+        );
+        await renderPanel(ctx, buildInactivityPanel(data.inactivity, title));
+        return;
+      }
       if (kind === "toggle") {
         const data = await getGroupData(groupId);
         data.inactivity.enabled = !data.inactivity.enabled;
@@ -1061,8 +1225,15 @@ moderationActions.on("callback_query:data", async (ctx) => {
         return;
       }
       if (kind === "clean") {
+        const data = await getGroupData(groupId);
         await ctx.answerCallbackQuery();
-        await renderPanel(ctx, buildInactivityCleanConfirmPanel(title));
+        await renderPanel(
+          ctx,
+          buildInactivityCleanConfirmPanel(
+            title,
+            data.inactivity.simulationMode !== false,
+          ),
+        );
         return;
       }
       if (kind === "user") {
@@ -1081,7 +1252,13 @@ moderationActions.on("callback_query:data", async (ctx) => {
         const userId = Number(parts[2]);
         const result = await removeInactiveUser(ctx, groupId, userId);
         await ctx.answerCallbackQuery(
-          result === "removed" ? "✅ Usuario expulsado." : "⛔ No se pudo expulsar.",
+          result === "removed"
+            ? "✅ Usuario expulsado."
+            : result === "simulated"
+              ? "🧪 Elegible en simulación; no fue expulsado."
+              : result === "skipped"
+                ? "ℹ️ Usuario omitido por la política de seguridad."
+                : "⛔ No se pudo expulsar.",
         );
         await renderPanel(ctx, buildInactivityPanel((await getGroupData(groupId)).inactivity, title));
         return;
@@ -1089,20 +1266,27 @@ moderationActions.on("callback_query:data", async (ctx) => {
       if (kind === "confirm") {
         const users = await getInactiveUsers(ctx, groupId);
         let removed = 0;
+        let simulated = 0;
         let skipped = 0;
         let errors = 0;
         for (const user of users) {
           const result = await removeInactiveUser(ctx, groupId, user.id);
           if (result === "removed") removed += 1;
+          else if (result === "simulated") simulated += 1;
           else if (result === "skipped") skipped += 1;
           else errors += 1;
         }
-        await ctx.answerCallbackQuery("✅ Limpieza completada.");
+        await ctx.answerCallbackQuery(
+          `✅ ${simulated ? `Simulación: ${simulated} elegibles; ` : ""}` +
+            `expulsados=${removed}, omitidos=${skipped}, errores=${errors}.`,
+        );
         await renderPanel(
           ctx,
           buildInactivityPanel((await getGroupData(groupId)).inactivity, title),
         );
-        console.log(`[INACTIVITY] groupId=${groupId} removed=${removed} skipped=${skipped} errors=${errors}`);
+        console.log(
+          `[INACTIVITY] groupId=${groupId} simulated=${simulated} removed=${removed} skipped=${skipped} errors=${errors}`,
+        );
         return;
       }
       if (kind === "cancel") {
@@ -1560,6 +1744,13 @@ moderationActions.on("callback_query:data", async (ctx) => {
         return;
       }
       const who = await getTrackedUserName(ctx, groupId, userId);
+      if (await isProtectedModerationTarget(ctx, groupId, userId)) {
+        await ctx.answerCallbackQuery({
+          text: "⛔ No se puede silenciar a esta persona.",
+          show_alert: true,
+        });
+        return;
+      }
       const result = await muteUser(ctx, groupId, userId, minutes, who);
       if (result.ok) {
         await ctx.answerCallbackQuery({
@@ -1624,6 +1815,13 @@ moderationActions.on("callback_query:data", async (ctx) => {
         return;
       }
       const who = await getTrackedUserName(ctx, groupId, userId);
+      if (await isProtectedModerationTarget(ctx, groupId, userId)) {
+        await ctx.answerCallbackQuery({
+          text: "⛔ No se puede banear a esta persona.",
+          show_alert: true,
+        });
+        return;
+      }
       const result = await banUser(ctx, groupId, userId, who);
       if (result.ok) {
         await ctx.answerCallbackQuery({

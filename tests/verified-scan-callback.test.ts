@@ -44,6 +44,11 @@ globalThis.fetch = async (input, init) => {
   const objectResponse = headers.get("accept")?.includes("vnd.pgrst.object") ?? false;
   const route = url.pathname.split("/").pop();
 
+  if (route === "system_owner" && method === "GET") {
+    const owner = { owner_user_id: ACTOR_ID };
+    return response(objectResponse ? owner : [owner]);
+  }
+
   if (route === "verified_users" && method === "GET") {
     return response(
       verifiedRows.filter((row) => {
@@ -347,4 +352,3 @@ test("si Telegram no deja listar administradores se informa el problema de permi
   );
   assert.equal(reviewRows.length, 0);
 });
-

@@ -22,7 +22,12 @@ import {
   buildWarningsPanel,
   type Panel,
 } from "../menus/panels.js";
-import { muteUser, unmuteUser, warnUser } from "../moderation/actions.js";
+import {
+  isProtectedModerationTarget,
+  muteUser,
+  unmuteUser,
+  warnUser,
+} from "../moderation/actions.js";
 import type { MyContext, PickAction } from "../types.js";
 import { consumeRecoveryKey } from "../services/system-owner.js";
 import { automaticMessageScheduler } from "../services/automatic-messages.js";
@@ -30,11 +35,13 @@ import { normalizeConfiguredVerifiedMarkers } from "../services/verified-marker-
 import {
   getVerifiedUserRecord,
 } from "../services/verified-users.js";
+import { isActiveVerifiedRecord } from "../services/verified-user-policy.js";
 import {
   isActiveVerifiedGroupMember,
   resolveVerifiedUserInput,
   VerifiedUserRegistrationError,
 } from "../services/verified-user-registration.js";
+import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 
 const MAX_MUTE_MINUTES = 527040;
 
@@ -46,20 +53,33 @@ const MAX_MUTE_MINUTES = 527040;
  */
 export const privateInput = new Composer<MyContext>();
 
-privateInput.on("message:text", async (ctx) => {
+privateInput.on("message:text", async (ctx, next) => {
   if (ctx.chat?.type !== "private" || !ctx.from || !ctx.message) {
+    await next();
     return;
   }
 
   const text = ctx.message.text.trim();
   if (!text || text.startsWith("/")) {
-    return; // Los comandos (/start, /menu…) siguen su flujo normal.
+    await next();
+    return;
   }
 
   const pending = ctx.session.user.pendingAction;
   if (!pending) {
+    await next();
     return;
   }
+
+  if (
+    pending.kind !== "recoveryKey" &&
+    !(await isAuthorizedPanelUser(ctx.from.id))
+  ) {
+    ctx.session.user.pendingAction = undefined;
+    await ctx.reply("⛔ No autorizado para continuar esta acción.");
+    return;
+  }
+
   console.log(
     `[PRIVATE INPUT] received userId=${ctx.from.id} ` +
       `pendingKind=${pending.kind} text=${
@@ -77,7 +97,9 @@ privateInput.on("message:text", async (ctx) => {
         text,
         requesterId,
         async () =>
-          ctx.chat?.type === "private" && ctx.from?.id === requesterId,
+          ctx.chat?.type === "private" &&
+          ctx.chat.id === requesterId &&
+          ctx.from?.id === requesterId,
       );
       await ctx.reply(
         recovered
@@ -115,10 +137,10 @@ privateInput.on("message:text", async (ctx) => {
       }
 
       const existing = await getVerifiedUserRecord(pending.groupId, member.user.id);
-      if (existing?.verified && existing.revoked_at === null) {
+      if (isActiveVerifiedRecord(existing)) {
         ctx.session.user.pendingAction = undefined;
         await ctx.reply(
-          "ℹ️ Esta persona ya está verificada. No se modificó su vigencia ni se publicó otro anuncio.",
+          "ℹ️ Esta persona ya tiene una verificación vigente. No se modificó su vigencia ni se publicó otro anuncio.",
         );
         return;
       }
@@ -458,6 +480,11 @@ async function handleMuteMinutes(
   const data = await getGroupData(groupId);
   const tracked = getTrackedUser(data, userId);
   const who = tracked.name || tracked.username;
+
+  if (await isProtectedModerationTarget(ctx, groupId, userId)) {
+    await ctx.reply("⛔ No se puede silenciar a esta persona.");
+    return true;
+  }
 
   const result = await muteUser(ctx, groupId, userId, minutes, who);
   await ctx.reply(

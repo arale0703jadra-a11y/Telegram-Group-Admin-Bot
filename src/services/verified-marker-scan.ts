@@ -5,6 +5,7 @@ import { findConfiguredVerifiedMarker } from "./verified-marker-detection.js";
 import {
   getVerifiedUserRecord,
 } from "./verified-users.js";
+import { isActiveVerifiedRecord } from "./verified-user-policy.js";
 import {
   getVerifiedTagReview,
   recordVerifiedTagObservation,
@@ -315,7 +316,7 @@ export async function scanObservedVerifiedMarkers(
     const existing = await runScanStage("verified_record_lookup", () =>
       getVerifiedUserRecord(groupId, userId),
     );
-    if (existing?.verified && existing.revoked_at === null) continue;
+    if (isActiveVerifiedRecord(existing, new Date(now * 1000))) continue;
 
     const priorReview = await runScanStage("review_lookup", () =>
       getVerifiedTagReview(groupId, userId),

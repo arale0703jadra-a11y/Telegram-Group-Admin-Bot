@@ -389,3 +389,46 @@ test("reconoce títulos con mayúsculas y espacios, sin duplicar y mostrando el 
   );
 });
 
+test("el escaneo revisa vencidas y revocadas, y omite vigentes y legadas sin fecha", async () => {
+  enableSupabaseMock();
+  const now = Math.floor(Date.parse("2026-10-22T00:00:00.000Z") / 1000);
+  verifiedRows.push(
+    {
+      ...activeVerifiedRecord(GROUP_ID, 650),
+      valid_until: "2026-10-21T23:59:59.999Z",
+    },
+    {
+      ...activeVerifiedRecord(GROUP_ID, 651),
+      valid_until: "2026-10-23T00:00:00.000Z",
+    },
+    {
+      ...activeVerifiedRecord(GROUP_ID, 652),
+      verified: false,
+      revoked_at: "2026-10-20T00:00:00.000Z",
+      valid_until: "2026-10-23T00:00:00.000Z",
+    },
+    {
+      ...activeVerifiedRecord(GROUP_ID, 653),
+      valid_until: null,
+    },
+  );
+  const verifiedSnapshot = structuredClone(verifiedRows);
+  const api = mockAdminListApi([
+    makeAdmin(650, "Verificada"),
+    makeAdmin(651, "Verificada"),
+    makeAdmin(652, "Verificada"),
+    makeAdmin(653, "Verificada"),
+  ]);
+
+  const result = await scanObservedVerifiedMarkers(api, GROUP_ID, scanData(), now);
+
+  assert.equal(result.newCandidates, 2);
+  assert.deepEqual(
+    reviewRows.map((row) => row.user_id).sort((left, right) =>
+      Number(left) - Number(right),
+    ),
+    [650, 652],
+  );
+  assert.ok(reviewRows.every((row) => row.status === "pending"));
+  assert.deepEqual(verifiedRows, verifiedSnapshot);
+});

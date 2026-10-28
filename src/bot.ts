@@ -2,6 +2,8 @@ import { Bot, Context } from "grammy";
 import { validateConfig, BOT_NAME } from "./config.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import { registerCommands } from "./commands/index.js";
+import { deleteGroupCommand } from "./commands/delete-group-command.js";
+import { COMMANDS } from "./commands/definitions.js";
 import {
   cleanServiceMessages,
   initializeServiceMessageCleanup,
@@ -78,6 +80,7 @@ async function main(): Promise<void> {
 
   bot.use(cleanServiceMessages);
   bot.use(sessionMiddleware);
+  bot.use(deleteGroupCommand);
   bot.use(deletedAccounts);
   bot.use(adminGuardian);
   bot.use(botAdditionGuard);
@@ -138,7 +141,7 @@ async function main(): Promise<void> {
     }
   });
 
-  bot.command("admin", async (ctx) => {
+  bot.command(COMMANDS.admin, async (ctx) => {
     if (ctx.chat.type === "private") {
       await openPrivatePanel(ctx);
       return;

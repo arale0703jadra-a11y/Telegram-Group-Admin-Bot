@@ -118,4 +118,5 @@ test("recovery integrates rate limiting, failure clearing, and rejection audit",
   assert.match(migration, /RECOVERY_REJECTED/);
   assert.match(migration, /TRANSACTION_FAILED/);
   assert.match(migration, /set invalidated_at = now\(\)/);
+  assert.match(systemOwner, /\.is\("used_at", null\)[\s\S]*\.is\("revoked_at", null\)/);
 });

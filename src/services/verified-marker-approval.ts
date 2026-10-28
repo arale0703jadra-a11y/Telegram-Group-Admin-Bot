@@ -16,11 +16,12 @@ import {
   isActiveVerifiedGroupMember,
   VerifiedUserRegistrationError,
 } from "./verified-user-registration.js";
+import { isActiveVerifiedRecord } from "./verified-user-policy.js";
 import { markUserVerified, unmarkUserVerified } from "./user-registry.js";
 
 export class VerifiedMarkerApprovalError extends Error {
   constructor(
-    readonly code: "USER_NOT_IN_GROUP",
+    readonly code: "USER_NOT_IN_GROUP" | "REACTIVATION_REQUIRED",
     message: string,
   ) {
     super(message);
@@ -94,7 +95,17 @@ export async function approveVerifiedMarkerCandidate(input: {
     }
 
     const existing = await getVerifiedUserRecord(input.groupId, input.userId);
-    const alreadyVerified = existing?.verified && existing.revoked_at === null;
+    const alreadyVerified = isActiveVerifiedRecord(existing);
+    if (
+      existing?.verified &&
+      existing.revoked_at === null &&
+      !alreadyVerified
+    ) {
+      throw new VerifiedMarkerApprovalError(
+        "REACTIVATION_REQUIRED",
+        "La verificación existente no está vigente. Renueva explícitamente la verificación desde gestión antes de aprobar esta candidata.",
+      );
+    }
     if (!alreadyVerified) {
       await addVerifiedUser({
         groupId: input.groupId,

@@ -5,7 +5,7 @@ import type { ModerationType } from "../storage/types.js";
 export interface EventLogInfo {
   targetId?: number;
   targetName?: string;
-  result: "ok" | "queued" | "error";
+  result: "ok" | "queued" | "rejected" | "error";
   detail?: string;
 }
 
@@ -40,7 +40,10 @@ export async function logEvent(
       data.events = data.events.slice(-MAX_EVENTS_PER_GROUP);
     }
     await saveGroupData(chatId, data);
-  } catch {
-    // El registro no debe romper la acción de moderación.
+  } catch (error) {
+    console.error(
+      `[MODERATION_AUDIT] No se pudo persistir type=${type} chatId=${chatId} ` +
+        `result=${info.result} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
   }
 }

@@ -118,7 +118,7 @@ export function initialEmergencyConfig(): EmergencyConfig {
 }
 
 export function initialInactivityConfig(): InactivityConfig {
-  return { enabled: false, inactivityDays: 21 };
+  return { enabled: false, inactivityDays: 21, simulationMode: true };
 }
 
 export function initialCleanupConfig(): CleanupConfig {

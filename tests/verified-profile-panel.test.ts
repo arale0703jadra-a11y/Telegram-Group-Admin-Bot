@@ -65,7 +65,7 @@ test("verified profile shows IDs, Telegram membership, sanctions, and available 
   );
 
   assert.match(panel.text, /ID: 456/);
-  assert.match(panel.text, /✅ Verificada/);
+  assert.match(panel.text, /✅ Verificación activa/);
   assert.match(panel.text, /Grupo ID: -100123/);
   assert.match(panel.text, /@current\\_name/);
   assert.match(panel.text, /Estado Telegram: 👤 Miembro; En el grupo/);
@@ -80,16 +80,23 @@ test("verified profile shows IDs, Telegram membership, sanctions, and available 
   );
 });
 
-test("verified profile keeps its badge after the informational validity date", () => {
+test("expired verified profile is shown as inactive and offers explicit renewal", () => {
   const panel = buildVerifiedUserPanel(
     verifiedUser({
       valid_until: "2020-01-01T00:00:00.000Z",
     }),
     "Test group",
     "member",
+    undefined,
+    new Date("2026-01-01T00:00:00.000Z"),
   );
-  assert.match(panel.text, /✅ Verificada/);
-  assert.match(panel.text, /la verificación sigue activa/);
+  assert.match(panel.text, /⛔ Verificación no activa/);
+  assert.match(panel.text, /caducada el/);
+  assert.ok(
+    panel.keyboard.inline_keyboard.flat().some(
+      (button) => buttonCallbackData(button)?.startsWith("vu:reactivate-confirm:456:"),
+    ),
+  );
 });
 
 test("non-functional link and fixed promotion permissions are informative, not toggle controls", () => {

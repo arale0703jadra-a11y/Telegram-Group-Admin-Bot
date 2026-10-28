@@ -81,3 +81,16 @@ test("user activity migration restricts its table to service_role", async () => 
     /create policy security_user_activity_service_role_access\s+on public\.security_user_activity\s+for all to service_role\s+using \(true\)\s+with check \(true\)/iu,
   );
 });
+
+test("verified renewal migration treats expired rows as requiring explicit reactivation", async () => {
+  const sql = await readFile(
+    resolve(root, "supabase/migrations/016_expired_verified_user_renewal.sql"),
+    "utf8",
+  );
+  assert.match(
+    sql,
+    /existing_user\.verified\s+and existing_user\.revoked_at is null\s+and\s*\(\s*existing_user\.valid_until is null\s+or existing_user\.valid_until > p_activated_at\s*\)/iu,
+  );
+  assert.match(sql, /if not p_reactivate then\s+return jsonb_build_object\('status', 'reactivation_required'\)/iu);
+  assert.match(sql, /valid_until = p_valid_until/iu);
+});

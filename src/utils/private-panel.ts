@@ -1,6 +1,7 @@
 import type { MyContext } from "../types.js";
 import { getAdministrableGroups } from "./groups.js";
 import { buildGroupPickerPanel, buildMainPanel } from "../menus/panels.js";
+import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 
 const NO_GROUPS_MESSAGE =
   "⛔ No tienes ningún grupo administrable con este bot.\n\n" +
@@ -17,6 +18,11 @@ const NO_GROUPS_MESSAGE =
  * - Varios grupos: muestra el selector de grupos.
  */
 export async function openPrivatePanel(ctx: MyContext): Promise<void> {
+  if (!ctx.from || !(await isAuthorizedPanelUser(ctx.from.id))) {
+    await ctx.reply("⛔ No autorizado para acceder al panel de ZEUS.");
+    return;
+  }
+
   const groups = await getAdministrableGroups(ctx);
 
   if (groups.length === 0) {

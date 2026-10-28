@@ -16,9 +16,11 @@ import {
   buildCleanupSettingsPanel,
   buildAutomaticMessagePanel,
   buildUsersPanel,
+  buildCommandListPanel,
 } from "./panels.js";
 import { renderPanel } from "./render.js";
 import { recordObservedUser } from "../services/user-registry.js";
+import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 import {
   handleActivitySummary,
   isActivityPanelAction,
@@ -31,13 +33,14 @@ const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
   "Primero selecciona el grupo que quieres administrar.";
 
-type MenuKind = "main" | "home" | "sub" | "action" | "groups" | "group";
+type MenuKind = "main" | "home" | "sub" | "action" | "groups" | "group" | "commands";
 
 interface ParsedMenuAction {
   kind: MenuKind;
   section?: string;
   item?: string;
   groupId?: number;
+  page?: number;
 }
 
 /**
@@ -57,6 +60,12 @@ export function parseMenuAction(data: string): ParsedMenuAction | undefined {
   if (kind === "group") {
     const groupId = Number(parts[2]);
     return Number.isInteger(groupId) ? { kind: "group", groupId } : undefined;
+  }
+  if (kind === "commands") {
+    const page = Number(parts[2] ?? 0);
+    return Number.isSafeInteger(page) && page >= 0
+      ? { kind, page }
+      : undefined;
   }
   if (kind === "main" || kind === "home") {
     return { kind };
@@ -98,11 +107,24 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
     return;
   }
 
+  const isRecoveryStart =
+    action.kind === "action" &&
+    action.section === "ayuda" &&
+    action.item === "recuperar";
+  if (
+    ctx.chat?.type !== "private" ||
+    !ctx.from ||
+    (!isRecoveryStart && !(await isAuthorizedPanelUser(ctx.from.id)))
+  ) {
+    await ctx.answerCallbackQuery(
+      isRecoveryStart
+        ? "⛔ Disponible solo en el chat privado del bot."
+        : "⛔ No autorizado para acceder al panel de ZEUS.",
+    );
+    return;
+  }
+
   if (action.kind === "action" && action.section === "ayuda") {
-    if (ctx.chat?.type !== "private" || !ctx.from) {
-      await ctx.answerCallbackQuery("⛔ Disponible solo en el chat privado del bot.");
-      return;
-    }
     if (action.item === "recuperar") {
       ctx.session.user.pendingAction = { kind: "recoveryKey" };
       await ctx.answerCallbackQuery();
@@ -216,6 +238,16 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
 
   if (!(await isUserAdminOf(ctx, selectedGroupId))) {
     await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
+    return;
+  }
+
+  if (action.kind === "commands") {
+    ctx.session.user.pendingAction = undefined;
+    await ctx.answerCallbackQuery();
+    await renderPanel(
+      ctx,
+      buildCommandListPanel(action.page ?? 0, ctx.session.user.selectedGroupTitle),
+    );
     return;
   }
 

@@ -13,8 +13,12 @@ export function isActiveVerifiedRecord(
     revoked_at?: string | null;
     valid_until?: string | null;
   } | undefined,
+  now = new Date(),
 ): boolean {
-  return Boolean(record?.verified && !record.revoked_at);
+  if (!record?.verified || record.revoked_at != null) return false;
+  if (record.valid_until == null) return true;
+  const validUntil = Date.parse(record.valid_until);
+  return Number.isFinite(validUntil) && validUntil > now.getTime();
 }
 
 export function shouldSkipPromotionFilter(

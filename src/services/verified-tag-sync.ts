@@ -3,6 +3,7 @@ import {
   getVerifiedUserRecord,
   type VerifiedUser,
 } from "./verified-users.js";
+import { isActiveVerifiedRecord } from "./verified-user-policy.js";
 import {
   getVerifiedTagReview,
   recordVerifiedTagObservation,
@@ -45,7 +46,7 @@ export async function observeVerifiedMemberTag(input: {
   const tag = member.tag?.trim() || undefined;
   const recognized = isRecognizedVerifiedMemberTag(tag, recognizedTags);
   const existing = await getVerifiedUserRecord(groupId, userId);
-  const active = existing?.verified === true && existing.revoked_at === null;
+  const active = isActiveVerifiedRecord(existing);
   const revoked = Boolean(existing && !active);
   const priorReview = await getVerifiedTagReview(groupId, userId);
 

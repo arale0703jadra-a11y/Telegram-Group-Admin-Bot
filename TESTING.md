@@ -24,9 +24,18 @@ BOT_TOKEN=
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
 SYSTEM_OWNER_BOOTSTRAP_ID=
+OWNER_ID=
+ALEXIITA_TELEGRAM_ID=
 ```
 
 `SYSTEM_OWNER_BOOTSTRAP_ID` debe ser el ID numérico de la cuenta que hará el primer bootstrap.
+`ALEXIITA_TELEGRAM_ID` debe ser el ID numérico verificado de la cuenta secundaria.
+No se debe inferir ni aceptar este ID únicamente a partir de un username: confírmalo
+con Alexiita por un canal independiente y contrasta el ID que Telegram entrega en
+una interacción privada con el bot. Hasta configurarlo, solo el System Owner puede
+usar el panel. Tras transferir el System Owner por recuperación, el ID de la base
+de datos prevalece sobre `OWNER_ID`, que solo actúa como respaldo inicial antes
+del bootstrap.
 
 No compartir ni registrar `BOT_TOKEN` ni `SUPABASE_SERVICE_ROLE_KEY`.
 
@@ -81,17 +90,60 @@ Ctrl+C
 
 ## 4. Prueba de `/menu` y permisos
 
-1. Añadir Zeus al grupo de pruebas.
-2. Concederle permisos suficientes para la prueba.
-3. Desde la cuenta creator, enviar `/menu` en el grupo.
-4. Confirmar que Zeus valida el estado Telegram `creator`.
-5. Confirmar que abre el panel en el chat privado.
-6. Repetir con una cuenta `administrator`.
-7. Confirmar que también recibe el panel privado.
-8. Repetir con un usuario normal.
-9. Confirmar que recibe rechazo y no obtiene acceso al panel.
-10. Quitar al bot permisos de administración y repetir.
-11. Confirmar que el grupo deja de ser operable o que la acción se rechaza.
+1. Añadir Zeus al grupo de pruebas y concederle permisos suficientes.
+2. Desde el System Owner actual o la cuenta secundaria configurada, enviar `/menu`.
+3. Confirmar que el actor está autorizado por numeric ID y sigue siendo
+   administrador del grupo objetivo.
+4. Repetir con un administrador de Telegram no incluido en la lista autorizada.
+5. Confirmar que recibe rechazo y no obtiene el panel ni mediante callbacks.
+6. Repetir con un usuario normal y confirmar el mismo rechazo.
+7. Quitar al actor autorizado del grupo o quitar al bot sus permisos y repetir.
+8. Confirmar que la operación del grupo se rechaza aunque el actor global siga
+   autorizado para ZEUS.
+
+## 4.1. Comando rápido de verificadas
+
+Selecciona el grupo con `/menu` y luego, desde el chat privado:
+
+```text
+/verificada @usuario
+/verificada @usuario activar
+/verificada @usuario free
+/verificada <Telegram ID> revocar
+```
+
+El objetivo se resuelve con el username observado por ZEUS o con el numeric ID
+que Telegram confirma en el grupo. El comando sin acción solo consulta el estado;
+`activar` prepara una confirmación explícita de alta/renovación, y `free` o
+`revocar` prepara una confirmación explícita de baja.
+
+## 4.2. Moderación rápida y Lista de comandos
+
+Los comandos de moderación se ejecutan en el grupo objetivo y requieren una
+identidad autorizada por ZEUS, permisos actuales de administrador de Telegram y
+los permisos de bot requeridos por cada operación:
+
+```text
+/ban <ID|@usuario> [motivo]
+/mute <ID|@usuario> <duración> [motivo]
+/desmute <ID|@usuario>
+/unmute <ID|@usuario>
+/unban <ID|@usuario>
+```
+
+También se puede responder al mensaje del objetivo para `/ban`, `/mute`,
+`/desmute`, `/unmute` y `/unban`; en ese caso `/mute` recibe primero la duración. Las
+duraciones de mute son minutos o sufijos `m`, `h`, `d`, de 1 a 527040 minutos.
+No existe mute permanente. Los usernames solo se aceptan si coinciden
+exactamente con uno observado por ZEUS; no se resuelven usernames arbitrarios.
+Los resultados de moderación se envían en privado cuando Telegram lo permite.
+
+Los comandos de ZEUS enviados en grupos se intentan borrar antes de continuar
+con los handlers; el borrado no está garantizado por los límites y permisos de
+Telegram. Los comandos privados no se eliminan por esta política. En `/menu`,
+abre `📚 Lista de comandos` para ver sintaxis, permisos, aliases y limitaciones.
+`/verificadas` es una consulta privada y paginada de solo lectura para el grupo
+seleccionado.
 
 ## 5. Bootstrap de Zeus
 
@@ -156,7 +208,7 @@ Desde `/menu` en el chat privado comprobar:
 - Verificadas: listado, alta y permisos.
 - Configuración: consulta y cambios.
 - Mensajes automáticos: crear, activar, frecuencia, enviar y eliminar.
-- Limpieza: limpieza de mensajes recientes.
+- La categoría Limpieza no aparece en el menú principal.
 - Ayuda: Emergencias, Recovery Key y Volver.
 
 Después de cada cambio:

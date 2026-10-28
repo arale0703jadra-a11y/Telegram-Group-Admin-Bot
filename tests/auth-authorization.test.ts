@@ -28,7 +28,7 @@ const knownGroups = [
   { id: -1002, title: "Grupo secundario" },
 ];
 
-test("BOT owner and non-owner group admins can access their registered groups", async () => {
+test("registered group access is based on current Telegram administrator status", async () => {
   const owner = context({ id: 10 }, {
     "-1001:10": { status: "creator" },
     "-1002:10": { status: "member" },

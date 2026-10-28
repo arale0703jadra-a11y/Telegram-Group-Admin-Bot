@@ -40,7 +40,7 @@ export interface ModerationEvent {
   targetId?: number;
   targetName?: string;
   date: string;
-  result: "ok" | "queued" | "error";
+  result: "ok" | "queued" | "rejected" | "error";
   detail?: string;
 }
 
@@ -256,6 +256,7 @@ export interface InactivityConfig {
   enabled: boolean;
   inactivityDays: number;
   customDays?: number;
+  simulationMode?: boolean;
 }
 
 export interface CleanupConfig {

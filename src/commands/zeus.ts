@@ -7,6 +7,7 @@ import {
   isSystemOwner,
 } from "../services/system-owner.js";
 import { SYSTEM_OWNER_BOOTSTRAP_ID } from "../config.js";
+import { COMMANDS } from "./definitions.js";
 
 export const zeusCommand = new Composer<MyContext>();
 
@@ -39,7 +40,7 @@ async function bootstrap(ctx: MyContext): Promise<void> {
   }
 }
 
-zeusCommand.command("zeus-bootstrap", bootstrap);
+zeusCommand.command(COMMANDS.bootstrap, bootstrap);
 
 async function generateRecovery(ctx: MyContext): Promise<void> {
   if (!(await requireOwner(ctx))) return;
@@ -56,9 +57,9 @@ async function generateRecovery(ctx: MyContext): Promise<void> {
   }
 }
 
-zeusCommand.command("zeus-generar-recuperacion", generateRecovery);
-zeusCommand.command("generar-clave-recuperacion", generateRecovery);
-zeusCommand.command("zeus-generate-recovery-key", generateRecovery);
+zeusCommand.command(COMMANDS.generateRecovery, generateRecovery);
+zeusCommand.command(COMMANDS.generateRecoveryAlias, generateRecovery);
+zeusCommand.command(COMMANDS.generateRecoveryEnglishAlias, generateRecovery);
 
 async function beginRecovery(ctx: MyContext): Promise<void> {
   if (!privateOnly(ctx)) {
@@ -69,6 +70,6 @@ async function beginRecovery(ctx: MyContext): Promise<void> {
   await ctx.reply("🔐 Envía tu clave de recuperación de un solo uso.");
 }
 
-zeusCommand.command("zeus-recuperar", beginRecovery);
-zeusCommand.command("recuperar-zeus", beginRecovery);
-zeusCommand.command("zeus-recover", beginRecovery);
+zeusCommand.command(COMMANDS.recover, beginRecovery);
+zeusCommand.command(COMMANDS.recoverAlias, beginRecovery);
+zeusCommand.command(COMMANDS.recoverEnglishAlias, beginRecovery);

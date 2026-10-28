@@ -27,18 +27,23 @@ import type {
   VerifiedUser,
   VerifiedUserPermissions,
 } from "../services/verified-users.js";
+import { isActiveVerifiedRecord } from "../services/verified-user-policy.js";
+import {
+  COMMAND_DEFINITIONS,
+  type CommandCategory,
+} from "../commands/definitions.js";
 
 export interface Panel {
   text: string;
   keyboard: InlineKeyboard;
 }
 
-function formatVerifiedValidity(value: string): string {
+function formatVerifiedValidity(value: string, now = new Date()): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "fecha no disponible";
   const formatted = date.toLocaleDateString("es-ES", { timeZone: "UTC" });
-  return date.getTime() <= Date.now()
-    ? `cumplida el ${formatted}; la verificación sigue activa`
+  return date.getTime() <= now.getTime()
+    ? `caducada el ${formatted}`
     : `hasta el ${formatted}`;
 }
 
@@ -62,6 +67,7 @@ export const MenuAction = {
     `${MENU_PREFIX}:action:${section}:${id}`,
   groups: `${MENU_PREFIX}:groups`,
   group: (chatId: number): string => `${MENU_PREFIX}:group:${chatId}`,
+  commands: (page = 0): string => `${MENU_PREFIX}:commands:${page}`,
 };
 
 export function buildManualVerifiedConfirmPanel(input: {
@@ -79,12 +85,62 @@ export function buildManualVerifiedConfirmPanel(input: {
     text:
       `${formatGroupHeader(input.groupTitle)}\n\n👑 *CONFIRMAR ${mode} VERIFICACIÓN*\n\n` +
       `Usuaria: ${identity}\nID: ${input.userId}\n\n` +
-      "La vigencia inicial será de 30 días desde la confirmación. La fecha solo es informativa; " +
-      "al cumplirse, ZEUS no quitará la verificación ni cambiará permisos o historial.",
+      "La vigencia será de 30 días desde la confirmación. Después de vencer, " +
+      "la verificación no concederá privilegios hasta una renovación explícita.",
     keyboard: new InlineKeyboard()
       .text(
         "✅ Confirmar",
         VerifiedAction.manualConfirm(input.userId, input.reactivate),
+      )
+      .text("❌ Cancelar", "vu:manual-cancel"),
+  };
+}
+
+export function buildQuickVerifiedActivationConfirmPanel(input: {
+  groupId: number;
+  userId: number;
+  displayName: string;
+  username?: string;
+  reactivate: boolean;
+  groupTitle?: string;
+}): Panel {
+  const identity = input.username
+    ? `@${escapeLegacyMarkdown(input.username)}`
+    : escapeLegacyMarkdown(input.displayName);
+  const mode = input.reactivate ? "REACTIVAR" : "ACTIVAR";
+  return {
+    text:
+      `${formatGroupHeader(input.groupTitle)}\n\n👑 *CONFIRMAR ${mode} VERIFICACIÓN*\n\n` +
+      `Usuaria: ${identity}\nID: ${input.userId}\nGrupo: ${input.groupId}\n\n` +
+      "La vigencia será de 30 días; el vencimiento desactiva la autorización hasta una renovación explícita.",
+    keyboard: new InlineKeyboard()
+      .text(
+        "✅ Confirmar",
+        `vu:quick-activate:${input.groupId}:${input.userId}:${input.reactivate ? "reactivate" : "activate"}`,
+      )
+      .text("❌ Cancelar", "vu:manual-cancel"),
+  };
+}
+
+export function buildQuickVerifiedRevokeConfirmPanel(input: {
+  groupId: number;
+  userId: number;
+  displayName: string;
+  username?: string;
+  groupTitle?: string;
+}): Panel {
+  const identity = input.username
+    ? `@${escapeLegacyMarkdown(input.username)}`
+    : escapeLegacyMarkdown(input.displayName);
+  return {
+    text:
+      `${formatGroupHeader(input.groupTitle)}\n\n⚠️ *CONFIRMAR CONVERSIÓN A FREE*\n\n` +
+      `Usuaria: ${identity}\nID: ${input.userId}\nGrupo: ${input.groupId}\n\n` +
+      "Se revocará únicamente la autorización de verificada. La acción quedará auditada.",
+    keyboard: new InlineKeyboard()
+      .text(
+        "✅ Confirmar",
+        `vu:quick-revoke:${input.groupId}:${input.userId}`,
       )
       .text("❌ Cancelar", "vu:manual-cancel"),
   };
@@ -174,6 +230,9 @@ export const InactivityAction = {
   config: "ia:config",
   clean: "ia:clean",
   confirm: "ia:confirm",
+  live: "ia:live",
+  liveConfirm: "ia:live-confirm",
+  simulation: "ia:simulation",
   user: (id: number): string => `ia:user:${id}`,
   remove: (id: number): string => `ia:remove:${id}`,
   cancel: "ia:cancel",
@@ -227,12 +286,12 @@ interface MenuItem {
 const CATEGORIES: MenuItem[] = [
   { id: "proteccion", label: "🛡️ Centro de Protección" },
   { id: "verificadas", label: "👑 Verificadas", cb: FilterAction.verified },
+  { id: "lista-comandos", label: "📚 Lista de comandos", cb: MenuAction.commands(0) },
   { id: "mensajes-recurrentes", label: "🔁 Mensajes Recurrentes", cb: AutomaticMessageAction.home },
-  { id: "usuarios", label: "👥 Usuarios" },
+  { id: "usuarios", label: "⚖️ Moderación y usuarios" },
   { id: "filtros", label: "🚫 Filtros" },
   { id: "antispam", label: "🛡️ Anti-spam" },
   { id: "inactividad", label: "⏰ Inactividad" },
-  { id: "limpieza", label: "👻 Limpieza" },
   { id: "actividad", label: "📊 Actividad" },
   { id: "reglas", label: "📜 Reglas" },
   { id: "config", label: "⚙️ Configuración" },
@@ -274,7 +333,6 @@ const SUBMENUS: Record<string, SubmenuDef> = {
         label: "🗑️ Eliminar palabra/frase",
         cb: FilterAction.deletePage(0),
       },
-      { id: "accion", label: "⚙️ Configurar acción" },
       { id: "activar", label: "🔔 Activar/desactivar filtros", cb: FilterAction.toggle },
       { id: "ilegal", label: "🔴 Filtro de contenido ilegal", cb: FilterAction.illegal },
     ],
@@ -382,7 +440,104 @@ export function buildMainPanel(groupTitle?: string): Panel {
     text:
       `${formatGroupHeader(groupTitle)}\n\n` +
       "Selecciona una categoría para gestionar el grupo:\n\n" +
-      "ℹ️ Solo los administradores del grupo pueden usar este panel.",
+      "Estado: ZEUS está respondiendo a esta sesión; CERBERO no está comprobado (estado desconocido).\n" +
+      "ℹ️ El panel requiere una cuenta autorizada de ZEUS y permisos vigentes en el grupo.",
+    keyboard,
+  };
+}
+
+const COMMANDS_PER_PAGE = 2;
+
+export function buildCommandListPanel(page: number, groupTitle?: string): Panel {
+  const categories: CommandCategory[] = [
+    "Moderación",
+    "Verificadas",
+    "Panel y ayuda",
+    "Otros",
+  ];
+  const pages = categories.flatMap((category) => {
+    const definitions = COMMAND_DEFINITIONS.filter(
+      (definition) => definition.category === category,
+    );
+    const chunks: typeof definitions[] = [];
+    for (let index = 0; index < definitions.length; index += COMMANDS_PER_PAGE) {
+      chunks.push(definitions.slice(index, index + COMMANDS_PER_PAGE));
+    }
+    return chunks.map((commands) => ({ category, commands }));
+  });
+  const selected = pages[page];
+  if (!selected) {
+    return {
+      text: `${formatGroupHeader(groupTitle)}\n\nPágina de comandos no válida.`,
+      keyboard: new InlineKeyboard().text("⬅️ Volver", MenuAction.main),
+    };
+  }
+  const details = selected.commands.map((definition) =>
+    [
+      `${definition.command}${definition.aliases.length ? ` (alias: ${definition.aliases.join(", ")})` : ""}`,
+      definition.description,
+      `Sintaxis: ${definition.syntax}`,
+      `Ejemplo: ${definition.example}`,
+      `Respuesta a mensaje: ${definition.reply}; motivo/duración: ${definition.reasonOrDuration}.`,
+      `Permisos: ${definition.permissions}.`,
+      `Hace/no hace: ${definition.behavior}`,
+      `Límite: ${definition.limitations}`,
+    ].join("\n"),
+  ).join("\n\n");
+  const keyboard = new InlineKeyboard();
+  if (page > 0) keyboard.text("⬅️ Anterior", MenuAction.commands(page - 1));
+  if (page + 1 < pages.length) keyboard.text("Siguiente ➡️", MenuAction.commands(page + 1));
+  keyboard.row().text("🏠 Volver al panel", MenuAction.main);
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n📚 Lista de comandos — ${selected.category}\n` +
+      `Página ${page + 1}/${pages.length}\n\n${details}`,
+    keyboard,
+  };
+}
+
+export function buildVerifiedRecordsPanel(
+  records: VerifiedUser[],
+  page: number,
+  groupTitle?: string,
+  now = new Date(),
+): Panel {
+  const PAGE_SIZE = 8;
+  const pageCount = Math.max(1, Math.ceil(records.length / PAGE_SIZE));
+  const pageItems = records.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const entries = pageItems.map((record) => {
+    let status: string;
+    if (record.revoked_at !== null) {
+      const revokedAt = record.revoked_at
+        ? new Date(record.revoked_at)
+        : undefined;
+      status = `revocada${revokedAt && Number.isFinite(revokedAt.getTime()) ? ` (${revokedAt.toLocaleDateString("es-ES", { timeZone: "UTC" })})` : ""}`;
+    } else if (record.verified !== true) {
+      status = "inactiva";
+    } else if (record.valid_until == null) {
+      status = "vigente (sin fecha; legado)";
+    } else {
+      const expiry = new Date(record.valid_until);
+      status = !Number.isFinite(expiry.getTime())
+        ? "inactiva (fecha inválida)"
+        : expiry.getTime() <= now.getTime()
+          ? `vencida (${formatVerifiedValidity(record.valid_until, now)})`
+          : `vigente (${formatVerifiedValidity(record.valid_until, now)})`;
+    }
+    const identity = escapeLegacyMarkdown(
+      record.display_name || record.username || `ID ${record.user_id}`,
+    );
+    return `• ${identity} — ID ${record.user_id} — ${status}`;
+  });
+  const keyboard = new InlineKeyboard();
+  if (page > 0) keyboard.text("⬅️ Anterior", `vu:list:${page - 1}`);
+  if (page + 1 < pageCount) keyboard.text("Siguiente ➡️", `vu:list:${page + 1}`);
+  keyboard.row().text("⬅️ Verificadas", "fa:verified");
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n📋 *REGISTROS DE VERIFICADAS*\n` +
+      (entries.length ? entries.join("\n") : "No hay registros para mostrar.") +
+      `\n\nPágina ${Math.min(page + 1, pageCount)}/${pageCount}. Solo lectura.`,
     keyboard,
   };
 }
@@ -754,8 +909,8 @@ export function buildVerifiedModelsPanel(
         const identity = user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
         const validity = user.valid_until
           ? formatVerifiedValidity(user.valid_until)
-          : "sin fecha informativa";
-        return `• ✅ ${escapeLegacyMarkdown(identity)} — ID ${user.user_id}\n  Vigencia informativa: ${validity}`;
+          : "sin fecha (compatibilidad heredada)";
+        return `• ✅ ${escapeLegacyMarkdown(identity)} — ID ${user.user_id}\n  Vigente hasta: ${validity}`;
       }).join("\n")
     : "No hay usuarias verificadas activas en este grupo.";
 
@@ -766,7 +921,7 @@ export function buildVerifiedModelsPanel(
       `Revocación automática: ${autoRevocationEnabled ? "activa" : "inactiva"}\n` +
       `Marcas configuradas: ${recognizedTags.join(", ") || "ninguna"}\n\n` +
       `${list}\n\n` +
-      "La vigencia es informativa salvo cuando la revocación automática está activada; en ese caso, el vencimiento de 30 días puede cerrar la verificación de forma persistente.\n\n" +
+      "Una verificación vencida no concede privilegios, aunque la revocación automática esté desactivada. La revocación automática solo persiste el cambio de estado y el aviso; renovar requiere una acción explícita.\n\n" +
       "🔇 Silenciar durante 24 horas · ⛔ Banear · ❌ Quitar verificación" +
       (pageCount > 1 ? `\n\nPágina ${currentPage + 1} de ${pageCount}` : ""),
     keyboard,
@@ -822,13 +977,19 @@ export function buildInactivityPanel(config: InactivityConfig, groupTitle?: stri
     .text("🧹 Limpieza de usuarios", InactivityAction.clean)
     .text("⚙️ Configuración", InactivityAction.config)
     .row()
+    .text(
+      config.simulationMode !== false ? "🧪 Simulación activa" : "⚠️ Ejecución real activa",
+      config.simulationMode !== false ? InactivityAction.live : InactivityAction.simulation,
+    )
+    .row()
     .add(...buildNavRow().inline_keyboard.flat());
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n⏰ *INACTIVIDAD*\n\n` +
       `Estado: ${config.enabled ? "🟢 Activado" : "🔴 Desactivado"}\n` +
       `Candidatos manuales: ${config.customDays ?? config.inactivityDays} días\n` +
-      `Depuración automática: ${config.enabled ? "21 días, diaria" : "desactivada"}`,
+      `Depuración automática: ${config.enabled ? "21 días, diaria" : "desactivada"}\n` +
+      `Modo: ${config.simulationMode !== false ? "simulación; no expulsa ni marca cuentas" : "REAL; puede expulsar usuarios"}`,
     keyboard,
   };
 }
@@ -871,13 +1032,30 @@ export function buildInactivityConfirmPanel(userId: number, groupTitle?: string)
   };
 }
 
-export function buildInactivityCleanConfirmPanel(groupTitle?: string): Panel {
+export function buildInactivityCleanConfirmPanel(
+  groupTitle?: string,
+  simulationMode = true,
+): Panel {
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n⚠️ *CONFIRMAR LIMPIEZA*\n\n` +
-      "Se eliminarán los usuarios que superen el período configurado.",
+      (simulationMode
+        ? "Se simulará la limpieza y se mostrará el resultado. No se expulsará a nadie."
+        : "Se expulsará a los usuarios que superen el período configurado."),
     keyboard: new InlineKeyboard()
       .text("✅ Confirmar", InactivityAction.confirm)
+      .text("❌ Cancelar", InactivityAction.cancel),
+  };
+}
+
+export function buildInactivityLiveConfirmPanel(groupTitle?: string): Panel {
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n🚨 *ACTIVAR EXPULSIONES REALES*\n\n` +
+      "La depuración automática podrá expulsar miembros que cumplan el umbral. " +
+      "Confirma únicamente después de revisar los candidatos y permisos del grupo.",
+    keyboard: new InlineKeyboard()
+      .text("⚠️ Confirmar modo real", InactivityAction.liveConfirm)
       .text("❌ Cancelar", InactivityAction.cancel),
   };
 }
@@ -1599,6 +1777,7 @@ export function buildVerifiedUserPanel(
   groupTitle: string | undefined,
   telegramStatus: string,
   history?: VerifiedUserPanelHistory,
+  now = new Date(),
 ): Panel {
   const identity = history?.currentUsername
     ? `@${escapeMarkdownV2(history.currentUsername)}`
@@ -1638,11 +1817,12 @@ export function buildVerifiedUserPanel(
         (command.last_error ? `: ${command.last_error}` : ""),
     ),
   ].filter((line): line is string => Boolean(line));
-  const verifiedState = user.verified && user.revoked_at === null
-    ? `✅ Verificada${user.valid_until ? ` — vigencia informativa ${formatVerifiedValidity(user.valid_until)}` : ""}`
-    : "⛔ Verificación no activa";
+  const active = isActiveVerifiedRecord(user, now);
+  const verifiedState = active
+    ? `✅ Verificación activa${user.valid_until ? ` — vigente ${formatVerifiedValidity(user.valid_until, now)}` : ""}`
+    : `⛔ Verificación no activa${user.valid_until ? ` — ${formatVerifiedValidity(user.valid_until, now)}` : ""}`;
   const keyboard = new InlineKeyboard();
-  if (user.verified && user.revoked_at === null) {
+  if (active) {
     keyboard.text("⛔ Revocar verificación", VerifiedAction.revokeConfirm(user.user_id));
   } else {
     keyboard.text(

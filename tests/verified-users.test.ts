@@ -6,6 +6,7 @@ import {
   getVerifiedUser,
   getVerifiedUsers,
   getVerifiedUserPermissions,
+  invalidateVerifiedUserCache,
   isVerifiedUser,
   normalizeVerifiedPermissions,
   revokeVerifiedUser,
@@ -133,13 +134,42 @@ test("new and previously registered active users are recognized without title me
   assert.equal(isActiveVerifiedRecord(undefined), false);
 });
 
-test("expiry dates do not deactivate records without a persisted revocation", () => {
+test("verified validity is evaluated against a deterministic instant", () => {
+  const now = new Date("2026-06-01T00:00:00.000Z");
+  assert.equal(
+    isActiveVerifiedRecord({
+      verified: true,
+      revoked_at: null,
+      valid_until: "2026-06-01T00:00:00.001Z",
+    }, now),
+    true,
+  );
   assert.equal(
     isActiveVerifiedRecord({
       verified: true,
       revoked_at: null,
       valid_until: "2020-01-01T00:00:00.000Z",
-    }),
+    }, now),
+    false,
+  );
+  assert.equal(
+    isActiveVerifiedRecord({
+      verified: true,
+      revoked_at: null,
+      valid_until: "2026-06-01T00:00:00.000Z",
+    }, now),
+    false,
+  );
+  assert.equal(
+    isActiveVerifiedRecord({ verified: true, revoked_at: null }, now),
+    true,
+  );
+  assert.equal(
+    isActiveVerifiedRecord({
+      verified: true,
+      revoked_at: null,
+      valid_until: null,
+    }, now),
     true,
   );
   assert.equal(
@@ -147,8 +177,8 @@ test("expiry dates do not deactivate records without a persisted revocation", ()
       verified: true,
       revoked_at: null,
       valid_until: "not-a-date",
-    }),
-    true,
+    }, now),
+    false,
   );
 });
 
@@ -301,35 +331,49 @@ test("new verification persists a 30-day validity and conservative bypass defaul
   );
 });
 
-test("an expired record remains verified until an automatic revocation is persisted", async () => {
+test("expired records are inactive for user lookups and permissions without auto-revocation", async () => {
   mockRows.length = 0;
+  const now = new Date("2026-02-01T00:00:00.000Z");
   await addVerifiedUser({
     groupId: -10001,
     userId: 501,
     username: "still-verified",
     displayName: "Still Verified",
     createdBy: 700,
+    now,
   });
-  mockRows[0].valid_until = "2020-01-01T00:00:00.000Z";
+  mockRows[0].valid_until = "2026-01-31T23:59:59.999Z";
+  invalidateVerifiedUserCache(-10001, 501);
 
-  assert.equal(await isVerifiedUser(-10001, 501), true);
-  assert.ok(await getVerifiedUser(-10001, 501));
-  assert.equal((await getVerifiedUsers(-10001)).length, 1);
-  assert.ok(await getVerifiedUserPermissions(-10001, 501));
+  assert.equal(await isVerifiedUser(-10001, 501, now), false);
+  assert.equal(await getVerifiedUser(-10001, 501, now), undefined);
+  assert.equal((await getVerifiedUsers(-10001, undefined, now)).length, 0);
+  assert.equal(await getVerifiedUserPermissions(-10001, 501, now), undefined);
+  mockRows.length = 0;
 });
 
 test("adding an already active user reuses the verified_users row instead of duplicating it", async () => {
-  const existing = mockRows[0];
+  mockRows.length = 0;
+  const now = new Date("2026-06-01T00:00:00.000Z");
+  const existing = await addVerifiedUser({
+    groupId: -10001,
+    userId: 501,
+    username: "existing",
+    displayName: "Existing",
+    createdBy: 700,
+    now,
+  });
   const updated = await addVerifiedUser({
     groupId: existing.group_id,
     userId: existing.user_id,
     username: existing.username ?? undefined,
     displayName: existing.display_name ?? undefined,
     createdBy: 701,
+    now,
   });
   assert.equal(updated.id, existing.id);
   assert.equal(mockRows.length, 1);
-  assert.equal(await isVerifiedUser(existing.group_id, existing.user_id), true);
+  assert.equal(await isVerifiedUser(existing.group_id, existing.user_id, now), true);
 });
 
 test("reactivating a revoked verification restores the existing row and preserves its permissions", async () => {
@@ -347,6 +391,133 @@ test("reactivating a revoked verification restores the existing row and preserve
   assert.equal(reactivated.permissions.can_post, true);
   assert.equal(mockRows.length, 1);
   assert.equal(await isVerifiedUser(existing.group_id, existing.user_id), true);
+});
+
+test("an expired verification requires explicit renewal and is active only after renewal", async () => {
+  mockRows.length = 0;
+  const now = new Date("2026-06-01T00:00:00.000Z");
+  const existing = await addVerifiedUser({
+    groupId: -10001,
+    userId: 551,
+    createdBy: 700,
+    now: new Date("2026-04-01T00:00:00.000Z"),
+  });
+  mockRows[0].valid_until = "2026-05-31T23:59:59.999Z";
+  invalidateVerifiedUserCache(existing.group_id, existing.user_id);
+
+  assert.equal(await isVerifiedUser(existing.group_id, existing.user_id, now), false);
+  assert.equal(
+    await getVerifiedUserPermissions(existing.group_id, existing.user_id, now),
+    undefined,
+  );
+  await assert.rejects(
+    addVerifiedUser({
+      groupId: existing.group_id,
+      userId: existing.user_id,
+      createdBy: 701,
+      now,
+    }),
+    { message: "VERIFIED_REACTIVATION_REQUIRED" },
+  );
+
+  const renewed = await addVerifiedUser({
+    groupId: existing.group_id,
+    userId: existing.user_id,
+    createdBy: 701,
+    reactivate: true,
+    now,
+  });
+  assert.equal(renewed.id, existing.id);
+  assert.equal(renewed.activated_at, now.toISOString());
+  assert.equal(renewed.valid_until, "2026-07-01T00:00:00.000Z");
+  assert.equal(await isVerifiedUser(existing.group_id, existing.user_id, now), true);
+});
+
+test("permission cache expires at valid_until and does not grant at the boundary", async () => {
+  mockRows.length = 0;
+  const groupId = -10011;
+  const userId = 561;
+  mockRows.push({
+    id: "cache-expiry",
+    group_id: groupId,
+    user_id: userId,
+    username: "cache-expiry",
+    display_name: "Cache Expiry",
+    verified: true,
+    permissions: { ...DEFAULT_VERIFIED_PERMISSIONS, bypass_antispam: true },
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:00:00.000Z",
+    created_by: 700,
+    revoked_at: null,
+    valid_until: "2026-06-01T00:00:00.000Z",
+  });
+  invalidateVerifiedUserCache(groupId, userId);
+
+  assert.equal(
+    (await getVerifiedUserPermissions(
+      groupId,
+      userId,
+      new Date("2026-05-31T23:59:59.500Z"),
+    ))?.bypass_antispam,
+    true,
+  );
+  assert.equal(
+    await getVerifiedUserPermissions(
+      groupId,
+      userId,
+      new Date("2026-06-01T00:00:00.000Z"),
+    ),
+    undefined,
+  );
+});
+
+test("verified permissions remain isolated by group and user", async () => {
+  mockRows.length = 0;
+  const now = new Date("2026-06-01T00:00:00.000Z");
+  mockRows.push(
+    {
+      id: "scope-one",
+      group_id: -10021,
+      user_id: 571,
+      username: "one",
+      display_name: "One",
+      verified: true,
+      permissions: { ...DEFAULT_VERIFIED_PERMISSIONS, bypass_antispam: true },
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+      created_by: 700,
+      revoked_at: null,
+      valid_until: "2026-07-01T00:00:00.000Z",
+    },
+    {
+      id: "scope-two",
+      group_id: -10022,
+      user_id: 571,
+      username: "two",
+      display_name: "Two",
+      verified: true,
+      permissions: { ...DEFAULT_VERIFIED_PERMISSIONS, bypass_antispam: false },
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+      created_by: 700,
+      revoked_at: null,
+      valid_until: "2026-07-01T00:00:00.000Z",
+    },
+  );
+  invalidateVerifiedUserCache(-10021, 571);
+  invalidateVerifiedUserCache(-10022, 571);
+  invalidateVerifiedUserCache(-10021, 572);
+
+  assert.equal(
+    (await getVerifiedUserPermissions(-10021, 571, now))?.bypass_antispam,
+    true,
+  );
+  assert.equal(
+    (await getVerifiedUserPermissions(-10022, 571, now))?.bypass_antispam,
+    false,
+  );
+  assert.equal(await getVerifiedUserPermissions(-10021, 572, now), undefined);
+  assert.equal(await isVerifiedUser(-10022, 571, now), true);
 });
 
 test("Supabase errors reject the add instead of returning success-shaped data", async () => {
@@ -368,12 +539,19 @@ test("Supabase errors reject the add instead of returning success-shaped data", 
 });
 
 test("verification remains readable from persistent storage after a simulated service restart", async () => {
-  const storedUser = mockRows[0];
+  mockRows.length = 0;
+  const now = new Date("2026-06-01T00:00:00.000Z");
+  const storedUser = await addVerifiedUser({
+    groupId: -10004,
+    userId: 504,
+    createdBy: 700,
+    now,
+  });
   const moduleUrl = new URL("../src/services/verified-users.js", import.meta.url);
   moduleUrl.searchParams.set("simulated-restart", String(Date.now()));
   const restartedService = await import(moduleUrl.href) as typeof import("../src/services/verified-users.js");
   assert.equal(
-    await restartedService.isVerifiedUser(storedUser.group_id, storedUser.user_id),
+    await restartedService.isVerifiedUser(storedUser.group_id, storedUser.user_id, now),
     true,
   );
 });
