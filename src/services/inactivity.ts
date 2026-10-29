@@ -7,7 +7,7 @@ import {
   isVerifiableMember,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
-import { ALEXIITA_TELEGRAM_ID, OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import { isSystemOwner } from "./system-owner.js";
 import { isVerifiedUser } from "./verified-users.js";
 import type { MyContext } from "../types.js";
@@ -23,7 +23,7 @@ function thresholdDays(data: Awaited<ReturnType<typeof getGroupData>>): number {
 }
 
 export async function isInactivityProtectedUser(userId: number): Promise<boolean> {
-  if (userId === OWNER_ID || userId === ALEXIITA_TELEGRAM_ID) {
+  if (isConfiguredAdminId(userId)) {
     return true;
   }
   try {

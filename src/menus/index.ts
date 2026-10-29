@@ -4,7 +4,7 @@ import { getAdministrableGroups } from "../utils/groups.js";
 import { getActivityGroupData, getGroupData } from "../storage/index.js";
 import {
   generateRecoveryKey,
-  isSystemOwner,
+  isEffectiveOwner,
 } from "../services/system-owner.js";
 import {
   buildGroupPickerPanel,
@@ -139,7 +139,7 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
       return;
     }
     if (action.item === "generar-clave") {
-      if (!(await isSystemOwner(ctx.from.id))) {
+      if (!(await isEffectiveOwner(ctx.from.id))) {
         await ctx.answerCallbackQuery("⛔ No autorizado.");
         return;
       }

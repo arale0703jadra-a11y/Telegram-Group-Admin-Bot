@@ -4,9 +4,8 @@ import {
   bootstrapSystemOwner,
   consumeRecoveryKey,
   generateRecoveryKey,
-  isSystemOwner,
+  isEffectiveOwner,
 } from "../services/system-owner.js";
-import { SYSTEM_OWNER_BOOTSTRAP_ID } from "../config.js";
 import { COMMANDS } from "./definitions.js";
 
 export const zeusCommand = new Composer<MyContext>();
@@ -16,7 +15,7 @@ function privateOnly(ctx: MyContext): boolean {
 }
 
 async function requireOwner(ctx: MyContext): Promise<boolean> {
-  if (!privateOnly(ctx) || !ctx.from || !(await isSystemOwner(ctx.from.id))) {
+  if (!privateOnly(ctx) || !ctx.from || !(await isEffectiveOwner(ctx.from.id))) {
     await ctx.reply("⛔ No autorizado.");
     return false;
   }
@@ -24,7 +23,7 @@ async function requireOwner(ctx: MyContext): Promise<boolean> {
 }
 
 async function bootstrap(ctx: MyContext): Promise<void> {
-  if (!privateOnly(ctx) || !ctx.from || SYSTEM_OWNER_BOOTSTRAP_ID !== ctx.from.id) {
+  if (!privateOnly(ctx) || !ctx.from || !(await isEffectiveOwner(ctx.from.id))) {
     await ctx.reply("⛔ Bootstrap no autorizado.");
     return;
   }

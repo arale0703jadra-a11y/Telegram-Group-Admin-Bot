@@ -1,5 +1,5 @@
 import type { ChatMember } from "@grammyjs/types";
-import { OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import { isProtectedMember } from "../moderation/actions.js";
 import type { GroupData } from "../storage/types.js";
 
@@ -25,7 +25,7 @@ export function isExemptFromAutomaticSanction(
   userId: number,
   member: ChatMember | undefined,
 ): boolean {
-  if (OWNER_ID === userId) {
+  if (isConfiguredAdminId(userId)) {
     return true;
   }
   if (isTrustedUser(data, userId)) {

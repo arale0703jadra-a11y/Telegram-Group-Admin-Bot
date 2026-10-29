@@ -1,6 +1,6 @@
 import type { Api } from "grammy";
 import type { ChatMemberAdministrator } from "@grammyjs/types";
-import { OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import {
   canRevokeVerifiedAdministrator,
 } from "./verified-user-policy.js";
@@ -66,13 +66,13 @@ async function registerAndDemoteVerifiedAdministrator(
     status: admin.status,
     isBot: admin.user.is_bot,
     isVerified: true,
-    isProtected: admin.user.id === OWNER_ID,
+    isProtected: isConfiguredAdminId(admin.user.id),
     botCanPromote: canDemote,
   });
   if (!allowed) {
     console.warn(
       `[VERIFIED_TITLE] No se pudo degradar userId=${admin.user.id} groupId=${groupId}; ` +
-        `botCanPromote=${canDemote} protected=${admin.user.id === OWNER_ID}`,
+        `botCanPromote=${canDemote} protected=${isConfiguredAdminId(admin.user.id)}`,
     );
     return false;
   }

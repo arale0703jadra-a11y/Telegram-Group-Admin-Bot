@@ -1,6 +1,11 @@
 import { Composer } from "grammy";
 import type { ChatMember, ChatMemberAdministrator } from "@grammyjs/types";
-import { OWNER_ID } from "../config.js";
+import {
+  ALEXIITA_TELEGRAM_ID,
+  OWNER_ID,
+  SYSTEM_OWNER_BOOTSTRAP_ID,
+  isConfiguredAdminId,
+} from "../config.js";
 import { getMemberSafely } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
 import { invalidateSecurityCaches } from "../utils/member-cache.js";
@@ -89,6 +94,59 @@ function targetDisplay(ctx: MyContext): string {
   return `${name || "Usuario"}${target.username ? ` (@${target.username})` : ""} (ID ${target.id})`;
 }
 
+type AdminGuardianAlertSender = (
+  userId: number,
+  text: string,
+) => Promise<unknown>;
+
+function isValidAlertRecipient(id: number | undefined): id is number {
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0;
+}
+
+/**
+ * Destinatarios de las alertas privadas de ADMIN_GUARDIAN: las tres
+ * identidades administrativas configuradas (OWNER_ID, ALEXIITA_TELEGRAM_ID y
+ * SYSTEM_OWNER_BOOTSTRAP_ID), validadas y deduplicadas. Esta lista solo
+ * dirige avisos: no concede permisos ni participa en la autorización.
+ */
+export function getAdminGuardianAlertRecipients(): number[] {
+  return [
+    ...new Set(
+      [OWNER_ID, ALEXIITA_TELEGRAM_ID, SYSTEM_OWNER_BOOTSTRAP_ID].filter(
+        isValidAlertRecipient,
+      ),
+    ),
+  ];
+}
+
+/**
+ * Envía la alerta a cada destinatario de forma independiente: un fallo en una
+ * cuenta no impide intentar el resto. Los ID ausentes o inválidos se omiten
+ * sin registrar sus valores.
+ */
+export async function deliverAdminGuardianAlert(
+  send: AdminGuardianAlertSender,
+  text: string,
+  recipients: readonly (number | undefined)[] = getAdminGuardianAlertRecipients(),
+): Promise<void> {
+  const uniqueRecipients = [...new Set(recipients.filter(isValidAlertRecipient))];
+  if (uniqueRecipients.length === 0) {
+    console.error(
+      "[ADMIN_GUARDIAN] Sin identidades administrativas configuradas; alerta privada omitida.",
+    );
+    return;
+  }
+  for (const userId of uniqueRecipients) {
+    try {
+      await send(userId, text);
+    } catch (error) {
+      console.error(
+        `[ADMIN_GUARDIAN] No se pudo enviar una alerta privada; se continúa con los demás destinatarios (error=${error instanceof Error ? error.name : "unknown"}).`,
+      );
+    }
+  }
+}
+
 export const adminGuardian = new Composer<MyContext>();
 
 adminGuardian.on("chat_member", async (ctx, next) => {
@@ -118,7 +176,7 @@ adminGuardian.on("chat_member", async (ctx, next) => {
 
   const actorId = ctx.from?.id;
   let actorAuthorized =
-    typeof OWNER_ID === "number" && actorId === OWNER_ID;
+    actorId !== undefined && isConfiguredAdminId(actorId);
   if (actorId !== undefined && actorId !== target.user.id) {
     invalidateSecurityCaches(ctx.chat.id, actorId);
     const actor = await getMemberSafely(ctx, ctx.chat.id, actorId);
@@ -160,34 +218,18 @@ adminGuardian.on("chat_member", async (ctx, next) => {
         `actorId=${actorId ?? "unknown"}; ${reason}`,
     });
 
-    const ownerId = OWNER_ID;
-    if (
-      typeof ownerId !== "number" ||
-      !Number.isSafeInteger(ownerId) ||
-      ownerId <= 0
-    ) {
-      console.error("[ADMIN_GUARDIAN] OWNER_ID no está configurado; alerta privada omitida.");
-    } else {
-      const action = assessment.promoted
-        ? "Nuevo administrador detectado"
-        : "Cambio sospechoso de permisos administrativos";
-      try {
-        await ctx.api.sendMessage(
-          ownerId,
-          `🛡️ ZEUS — ${action}\n` +
-            `Grupo: ${ctx.chat.title ?? ctx.chat.id} (ID ${ctx.chat.id})\n` +
-            `Objetivo: ${targetDisplay(ctx)}\n` +
-            `Actor: ${actorDisplay(ctx)}\n` +
-            `Motivo: ${reason}\n` +
-            "Revisa manualmente el cambio en Telegram; ZEUS no revoca administradores automáticamente.",
-        );
-      } catch (error) {
-        console.error(
-          `[ADMIN_GUARDIAN] No se pudo notificar al propietario por privado (groupId=${ctx.chat.id}):`,
-          error,
-        );
-      }
-    }
+    const action = assessment.promoted
+      ? "Nuevo administrador detectado"
+      : "Cambio sospechoso de permisos administrativos";
+    await deliverAdminGuardianAlert(
+      (userId, text) => ctx.api.sendMessage(userId, text),
+      `🛡️ ZEUS — ${action}\n` +
+        `Grupo: ${ctx.chat.title ?? ctx.chat.id} (ID ${ctx.chat.id})\n` +
+        `Objetivo: ${targetDisplay(ctx)}\n` +
+        `Actor: ${actorDisplay(ctx)}\n` +
+        `Motivo: ${reason}\n` +
+        "Revisa manualmente el cambio en Telegram; ZEUS no revoca administradores automáticamente.",
+    );
   }
 
   await next();

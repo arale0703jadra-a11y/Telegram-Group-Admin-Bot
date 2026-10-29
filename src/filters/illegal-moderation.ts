@@ -9,7 +9,7 @@ import {
   isVerifiableMember,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
-import { OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import { isGroupChat } from "../utils/permissions.js";
 import { CooldownTracker, KeyedMutex } from "../utils/safety.js";
 import { detectIllegalContent } from "./illegal-detector.js";
@@ -95,7 +95,7 @@ illegalModeration.on(["message", "edited_message"], async (ctx, next) => {
 
   const member = await getMemberSafely(ctx, chatId, userId);
   const protectedUser =
-    OWNER_ID === userId || (member ? isProtectedMember(member) : false);
+    isConfiguredAdminId(userId) || (member ? isProtectedMember(member) : false);
   const verifiable = Boolean(member) && isVerifiableMember(member!);
   const rights = await getBotRights(ctx, chatId);
   data.illegalContent.events += 1;

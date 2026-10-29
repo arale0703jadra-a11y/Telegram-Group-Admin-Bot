@@ -1,6 +1,6 @@
 import type { ChatMember, ChatPermissions } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
-import { ALEXIITA_TELEGRAM_ID, OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
 import { callWithRetryAfter, runChatActionExclusive } from "../utils/safety.js";
 import {
@@ -138,9 +138,7 @@ export async function isProtectedModerationTarget(
   if (member && isProtectedMember(member)) return true;
   try {
     const ownerId = await ownerLookup();
-    return userId === ownerId ||
-      userId === ALEXIITA_TELEGRAM_ID ||
-      (ownerId === undefined && userId === OWNER_ID);
+    return userId === ownerId || isConfiguredAdminId(userId);
   } catch (error) {
     console.error(
       `[MODERATION] No se pudo comprobar el propietario groupId=${chatId} ` +
@@ -187,7 +185,7 @@ export async function warnUser(
     !member ||
     member.user.is_bot ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId ||
+    isConfiguredAdminId(userId) ||
     isProtectedMember(member)
   ) {
     return {
@@ -376,7 +374,7 @@ export async function muteUser(
   if (
     member.user.is_bot ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId ||
+    isConfiguredAdminId(userId) ||
     isProtectedMember(member)
   ) {
     await logEvent(ctx, chatId, "MUTE", {
@@ -583,7 +581,7 @@ export async function banUser(
   if (
     member.user.is_bot ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId ||
+    isConfiguredAdminId(userId) ||
     isProtectedMember(member)
   ) {
     await logEvent(ctx, chatId, "BAN", {

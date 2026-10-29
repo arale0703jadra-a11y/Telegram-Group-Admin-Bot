@@ -1,6 +1,6 @@
 import type { ChatMember, ChatPermissions } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
-import { OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import type { GroupData } from "../storage/types.js";
 import {
   getBotRights,
@@ -129,7 +129,7 @@ export async function restrictRecentMembers(
     if (
       !Number.isSafeInteger(userId) ||
       userId <= 0 ||
-      userId === OWNER_ID ||
+      isConfiguredAdminId(userId) ||
       data.emergency.restrictedUsers[userKey] ||
       !isRecentEmergencyMember(tracked.joinedAt, now) ||
       tracked.joinedAt === undefined

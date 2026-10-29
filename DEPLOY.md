@@ -34,7 +34,8 @@ npm test
 npm start
 ```
 
-`npm start` ejecuta `dist/bot.js`; por ello, compila después de cada
+`npm start` ejecuta el artefacto compilado de cada proyecto (`dist/bot.js` en
+ZEUS y CERBERO; `dist/main.js` en AFRODITA); por ello, compila después de cada
 actualización antes de reiniciar. No hay un script `npm run prod` definido en
 los `package.json` actuales.
 

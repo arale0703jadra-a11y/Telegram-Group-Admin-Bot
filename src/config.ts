@@ -7,10 +7,13 @@ import "dotenv/config";
 export const BOT_TOKEN = process.env.BOT_TOKEN;
 
 function parseTelegramUserId(value: string | undefined): number | undefined {
-  if (!value || !/^[1-9]\d*$/.test(value.trim())) {
+  // Tolera comillas sobrantes de configuración ("123456") sin aceptar
+  // formatos no numéricos: la identidad es siempre el ID numérico de Telegram.
+  const normalized = value?.trim().replace(/^["']+|["']+$/g, "").trim();
+  if (!normalized || !/^[1-9]\d*$/.test(normalized)) {
     return undefined;
   }
-  const parsed = Number(value);
+  const parsed = Number(normalized);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
@@ -22,6 +25,23 @@ export const SYSTEM_OWNER_BOOTSTRAP_ID = parseTelegramUserId(
 export const ALEXIITA_TELEGRAM_ID = parseTelegramUserId(
   process.env.ALEXIITA_TELEGRAM_ID,
 );
+
+/**
+ * Identidades administrativas autorizadas: OWNER_ID, ALEXIITA_TELEGRAM_ID y
+ * SYSTEM_OWNER_BOOTSTRAP_ID son las TRES cuentas con idéntica jerarquía y
+ * permisos. La identidad es siempre el ID numérico de Telegram (los usernames
+ * no autorizan). Ninguna comprobación debe dar privilegios exclusivos a una
+ * de las tres ni excluirla de una función administrativa.
+ */
+export function isConfiguredAdminId(userId: number): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0) return false;
+  return (
+    (OWNER_ID !== undefined && userId === OWNER_ID) ||
+    (ALEXIITA_TELEGRAM_ID !== undefined && userId === ALEXIITA_TELEGRAM_ID) ||
+    (SYSTEM_OWNER_BOOTSTRAP_ID !== undefined &&
+      userId === SYSTEM_OWNER_BOOTSTRAP_ID)
+  );
+}
 
 function parseCommaSeparatedValues(value: string | undefined): string[] {
   return value

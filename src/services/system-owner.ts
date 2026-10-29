@@ -1,5 +1,6 @@
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { isConfiguredAdminId } from "../config.js";
 
 const KEY_LENGTH = 64;
 const SCRYPT_OPTIONS = { N: 16_384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
@@ -72,6 +73,25 @@ export async function isSystemOwner(userId: number): Promise<boolean> {
   return (await getSystemOwnerId()) === userId;
 }
 
+/**
+ * Identidad administrativa autorizada con acceso total (igualdad entre las
+ * tres cuentas configuradas), unida a la propiedad técnica persistida en la
+ * BD `system_owner` (registro de transferencia, alcanzable solo mediante el
+ * flujo de clave explícito y auditado o el bootstrap inicial). Ante un fallo
+ * de la BD se conservan las identidades configuradas; nunca se amplía el
+ * conjunto. La re-alineación de OWNER_ID tras una transferencia sigue
+ * siendo un paso manual externo (el código no modifica la configuración).
+ */
+export async function isEffectiveOwner(userId: number): Promise<boolean> {
+  if (!Number.isSafeInteger(userId) || userId <= 0) return false;
+  if (isConfiguredAdminId(userId)) return true;
+  try {
+    return (await getSystemOwnerId()) === userId;
+  } catch {
+    return false;
+  }
+}
+
 export async function bootstrapSystemOwner(userId: number): Promise<boolean> {
   if (!Number.isSafeInteger(userId) || userId <= 0) return false;
   const { data, error } = await getClient().rpc("zeus_bootstrap_system_owner", {
@@ -88,10 +108,7 @@ export async function generateRecoveryKey(actorUserId: number): Promise<string> 
   const db = getClient();
   const plaintext = randomBytes(32).toString("base64url");
   const stored = await hashRecoveryKey(plaintext);
-  const { data: owner, error: ownerError } = await db.from("system_owner")
-    .select("owner_user_id").eq("singleton", true).maybeSingle();
-  if (ownerError) throw ownerError;
-  if (!owner || owner.owner_user_id !== actorUserId) throw new Error("No autorizado.");
+  if (!(await isEffectiveOwner(actorUserId))) throw new Error("No autorizado.");
   const { data: inserted, error } = await db.rpc("zeus_generate_recovery_key", {
     p_actor_user_id: actorUserId,
     p_key_salt: stored.salt,
@@ -124,6 +141,17 @@ export async function consumeRecoveryKey(
       p_actor_user_id: newOwnerId,
       p_key_id: null,
       p_reason: "rate_limited",
+    });
+    if (audit.error) throw audit.error;
+    return false;
+  }
+  // La transferencia solo puede recaer en una identidad administrativa
+  // autorizada: nunca crea una cuarta plaza ni otorga acceso a un externo.
+  if (!(await isEffectiveOwner(newOwnerId))) {
+    const audit = await db.rpc("zeus_record_recovery_rejection", {
+      p_actor_user_id: newOwnerId,
+      p_key_id: null,
+      p_reason: "unauthorized_target",
     });
     if (audit.error) throw audit.error;
     return false;
@@ -186,10 +214,7 @@ export async function revokeRecoveryKey(id: string, actorUserId: number): Promis
     throw new Error("No autorizado.");
   }
   const db = getClient();
-  const { data: owner, error: ownerError } = await db.from("system_owner")
-    .select("owner_user_id").eq("singleton", true).maybeSingle();
-  if (ownerError) throw ownerError;
-  if (!owner || owner.owner_user_id !== actorUserId) throw new Error("No autorizado.");
+  if (!(await isEffectiveOwner(actorUserId))) throw new Error("No autorizado.");
   const { data: key, error: lookupError } = await db.from("system_owner_recovery_keys")
     .select("id").eq("id", id).is("used_at", null).maybeSingle();
   if (lookupError) throw lookupError;

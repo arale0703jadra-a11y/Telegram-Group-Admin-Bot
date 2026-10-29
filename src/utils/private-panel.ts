@@ -3,6 +3,13 @@ import { getAdministrableGroups } from "./groups.js";
 import { buildGroupPickerPanel, buildMainPanel } from "../menus/panels.js";
 import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 
+const UNAUTHORIZED_MESSAGE =
+  "⛔ No autorizado para acceder al panel de ZEUS.\n\n" +
+  "Si eres una de las cuentas autorizadas y perdiste el acceso (por ejemplo, " +
+  "tras eliminar tu cuenta de Telegram), inicia la recuperación con " +
+  "/zeus-recuperar y envía tu clave de autorización de un solo uso en este chat privado.\n\n" +
+  "La clave solo se acepta aquí, en privado. Nunca la escribas en grupos ni la compartas.";
+
 const NO_GROUPS_MESSAGE =
   "⛔ No tienes ningún grupo administrable con este bot.\n\n" +
   "Para empezar:\n" +
@@ -19,7 +26,7 @@ const NO_GROUPS_MESSAGE =
  */
 export async function openPrivatePanel(ctx: MyContext): Promise<void> {
   if (!ctx.from || !(await isAuthorizedPanelUser(ctx.from.id))) {
-    await ctx.reply("⛔ No autorizado para acceder al panel de ZEUS.");
+    await ctx.reply(UNAUTHORIZED_MESSAGE);
     return;
   }
 

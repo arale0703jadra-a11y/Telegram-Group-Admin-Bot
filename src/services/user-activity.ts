@@ -1,5 +1,5 @@
 import type { ChatMember } from "@grammyjs/types";
-import { OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import {
   getMemberSafely,
   isProtectedMember,
@@ -92,7 +92,7 @@ export function shouldTrackUserActivity(
       !member.user.is_bot &&
       isVerifiableMember(member) &&
       !isProtectedMember(member) &&
-      userId !== Number(OWNER_ID) &&
+      !isConfiguredAdminId(userId) &&
       !isVerified,
   );
 }

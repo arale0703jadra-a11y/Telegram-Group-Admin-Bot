@@ -1,6 +1,6 @@
 import type { ChatMember, User } from "@grammyjs/types";
 import { Composer } from "grammy";
-import { OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import { getBotRights, getMemberSafely } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
 import { callWithRetryAfter, runChatActionExclusive } from "../utils/safety.js";
@@ -13,7 +13,7 @@ export function isAuthorizedBotAdder(
 ): boolean {
   return (
     member !== undefined &&
-    (adderId === OWNER_ID ||
+    (isConfiguredAdminId(adderId) ||
       member.status === "creator" ||
       member.status === "administrator")
   );

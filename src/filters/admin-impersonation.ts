@@ -1,6 +1,6 @@
 import type { ChatMember, User } from "@grammyjs/types";
 import { Composer } from "grammy";
-import { OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import {
   banUser,
   getMemberSafely,
@@ -258,7 +258,7 @@ async function inspectUser(
     !isGroupChat(ctx) ||
     typeof chatId !== "number" ||
     !Number.isSafeInteger(profile.id) ||
-    profile.id === OWNER_ID
+    isConfiguredAdminId(profile.id)
   ) {
     return;
   }

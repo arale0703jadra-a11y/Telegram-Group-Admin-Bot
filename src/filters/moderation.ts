@@ -7,7 +7,7 @@ import {
   muteUser,
 } from "../moderation/actions.js";
 import { logEvent } from "../moderation/events.js";
-import { OWNER_ID } from "../config.js";
+import { isConfiguredAdminId } from "../config.js";
 import { isGroupChat } from "../utils/permissions.js";
 import { buildPromotionMessage } from "./messages.js";
 import { detectPromotion } from "./detector.js";
@@ -56,7 +56,7 @@ promotionModeration.on("message", async (ctx, next) => {
     !member ||
     member.user.is_bot ||
     !isVerifiableMember(member) ||
-    OWNER_ID === userId
+    isConfiguredAdminId(userId)
   ) {
     await logEvent(ctx, chatId, "DELETE", {
       targetId: userId,

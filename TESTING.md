@@ -32,10 +32,25 @@ ALEXIITA_TELEGRAM_ID=
 `ALEXIITA_TELEGRAM_ID` debe ser el ID numérico verificado de la cuenta secundaria.
 No se debe inferir ni aceptar este ID únicamente a partir de un username: confírmalo
 con Alexiita por un canal independiente y contrasta el ID que Telegram entrega en
-una interacción privada con el bot. Hasta configurarlo, solo el System Owner puede
-usar el panel. Tras transferir el System Owner por recuperación, el ID de la base
-de datos prevalece sobre `OWNER_ID`, que solo actúa como respaldo inicial antes
-del bootstrap.
+una interacción privada con el bot.
+
+Política de permisos vigente: las tres identidades configuradas
+(`OWNER_ID`, `ALEXIITA_TELEGRAM_ID` y `SYSTEM_OWNER_BOOTSTRAP_ID`) tienen
+exactamente la misma jerarquía y los mismos permisos administrativos dentro de
+ZEUS (paneles, comandos, callbacks y funciones administrativas cubiertas por la
+política de autorización, incluidas la generación/revocación de Recovery Key y
+`/zeus-bootstrap`). La autorización se comprueba siempre por ID numérico de
+Telegram, no por el nombre de usuario ni por ser administrador de un grupo.
+La igualdad de permisos de la aplicación no implica que Telegram ni Supabase
+otorguen privilegios técnicos que no estén configurados. La propiedad técnica
+persistida en la base de datos (`system_owner`) es un registro de transferencia
+distinto de la autorización administrativa y no introduce jerarquías entre las
+tres cuentas. Las transferencias de propiedad técnica solo pueden recaer en una
+identidad ya autorizada y nunca convierten a una cuenta externa en una cuarta
+identidad autorizada; recuperar una cuenta cuya identidad de Telegram cambió o
+fue eliminada puede requerir volver a configurar una identidad autorizada en el
+entorno. Las pruebas locales con mocks no demuestran que Telegram o Supabase
+funcionen en producción.
 
 No compartir ni registrar `BOT_TOKEN` ni `SUPABASE_SERVICE_ROLE_KEY`.
 
@@ -91,7 +106,7 @@ Ctrl+C
 ## 4. Prueba de `/menu` y permisos
 
 1. Añadir Zeus al grupo de pruebas y concederle permisos suficientes.
-2. Desde el System Owner actual o la cuenta secundaria configurada, enviar `/menu`.
+2. Desde cualquiera de las tres cuentas autorizadas, enviar `/menu`.
 3. Confirmar que el actor está autorizado por numeric ID y sigue siendo
    administrador del grupo objetivo.
 4. Repetir con un administrador de Telegram no incluido en la lista autorizada.
@@ -147,7 +162,7 @@ seleccionado.
 
 ## 5. Bootstrap de Zeus
 
-1. Desde la cuenta cuyo ID está en `SYSTEM_OWNER_BOOTSTRAP_ID`, abrir el chat privado.
+1. Desde una de las tres cuentas autorizadas, abrir el chat privado.
 2. Ejecutar:
 
 ```text
@@ -157,14 +172,14 @@ seleccionado.
 3. Confirmar el mensaje de System Owner establecido.
 4. Ejecutar el comando una segunda vez.
 5. Confirmar que no reemplaza al propietario.
-6. Intentar el comando desde otra cuenta.
+6. Intentar el comando desde una cuenta no autorizada.
 7. Confirmar que se rechaza.
 8. Intentar el comando dentro de un grupo.
 9. Confirmar que se rechaza.
 
 ## 6. Recovery Key
 
-1. Desde el System Owner actual, ejecutar:
+1. Desde cualquiera de las tres cuentas autorizadas, ejecutar:
 
 ```text
 /zeus-generar-recuperacion
@@ -172,7 +187,8 @@ seleccionado.
 
 2. Guardar la clave fuera de Telegram para la prueba.
 3. Confirmar que Zeus solo la muestra una vez.
-4. Desde la cuenta nueva, abrir el chat privado.
+4. Desde otra de las tres cuentas autorizadas (o la misma, para transferirse la
+   propiedad técnica), abrir el chat privado.
 5. Ejecutar:
 
 ```text
@@ -186,14 +202,17 @@ También se puede iniciar desde:
 ```
 
 6. Introducir la Recovery Key correcta.
-7. Confirmar que la cuenta nueva pasa a ser System Owner.
-8. Confirmar que la cuenta anterior deja de ser System Owner.
+7. Confirmar que la propiedad técnica (System Owner persistido) pasa a la cuenta indicada.
+8. Confirmar que la propiedad técnica anterior queda reemplazada y que ninguna cuenta externa queda autorizada.
 9. Repetir con la misma clave y confirmar el rechazo.
 10. Probar una clave incorrecta y confirmar el rechazo.
 11. Probar una clave revocada y confirmar el rechazo.
 12. Probar un challenge expirado y confirmar el rechazo.
 13. Repetir intentos fallidos hasta activar el rate limit.
 14. Confirmar que un usuario bloqueado no puede iniciar otra recuperación.
+15. Intentar la recuperación hacia una cuenta no autorizada y confirmar el rechazo
+    auditado; recuperar una cuenta eliminada puede requerir volver a configurar
+    una identidad autorizada en el entorno.
 
 ## 7. Panel privado
 

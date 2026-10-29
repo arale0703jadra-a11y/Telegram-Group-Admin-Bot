@@ -6,30 +6,31 @@
 - [ ] Confirmar que el bot tenga permisos suficientes: borrar mensajes, restringir usuarios, expulsar/banear y administrar el grupo según las pruebas.
 - [ ] Confirmar que Zeus tenga configurados `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` en el entorno de pruebas.
 - [ ] Confirmar que la migración 008 haya sido revisada y aplicada únicamente en la base de pruebas autorizada.
-- [ ] Usar dos cuentas de Telegram: la cuenta bootstrap/owner inicial y una cuenta nueva para recuperación.
+- [ ] Usar cuentas de Telegram autorizadas para el flujo de propiedad técnica y una cuenta no autorizada para las pruebas de rechazo.
 - [ ] Guardar evidencias de cada prueba: captura de Telegram, hora, grupo, usuario y resultado.
 
 ## Zeus y System Owner
 
 ### Bootstrap
 
-- [ ] Desde el chat privado, ejecutar `/zeus-bootstrap` con el Telegram ID configurado en `SYSTEM_OWNER_BOOTSTRAP_ID`.
+- [ ] Desde el chat privado de una de las tres cuentas autorizadas (por ejemplo, el Telegram ID configurado en `SYSTEM_OWNER_BOOTSTRAP_ID`), ejecutar `/zeus-bootstrap`.
 - [ ] Confirmar que se crea el primer System Owner.
 - [ ] Confirmar que el bot responde con éxito.
 - [ ] Ejecutar `/zeus-bootstrap` otra vez y confirmar que no reemplaza al propietario.
 - [ ] Ejecutar `/zeus-bootstrap` desde un grupo y confirmar que se rechaza.
-- [ ] Ejecutar `/zeus-bootstrap` desde una cuenta distinta y confirmar que se rechaza.
+- [ ] Ejecutar `/zeus-bootstrap` desde una cuenta no autorizada y confirmar que se rechaza.
 - [ ] Confirmar que el bootstrap no autoriza automáticamente ningún grupo.
 
 ### Recovery Key
 
-- [ ] Como System Owner, ejecutar `/zeus-generar-recuperacion`.
+- [ ] Desde cualquiera de las tres cuentas autorizadas, ejecutar `/zeus-generar-recuperacion`.
 - [ ] Confirmar que la clave se muestra una sola vez en el chat privado.
 - [ ] Confirmar que el secreto original no se vuelve a mostrar.
-- [ ] Desde una cuenta nueva, ejecutar `/zeus-recuperar` o usar `Ayuda → Recovery Key → Recuperar System Owner`.
+- [ ] Desde otra de las tres cuentas autorizadas (o la misma), ejecutar `/zeus-recuperar` o usar `Ayuda → Recovery Key → Recuperar System Owner`.
 - [ ] Introducir la Recovery Key correcta.
-- [ ] Confirmar que la cuenta nueva pasa a ser System Owner.
-- [ ] Confirmar que la cuenta anterior deja de ser System Owner.
+- [ ] Confirmar que la propiedad técnica (System Owner persistido) pasa a la cuenta indicada.
+- [ ] Confirmar que la propiedad técnica anterior queda reemplazada y que ninguna cuenta externa queda autorizada.
+- [ ] Intentar la recuperación hacia una cuenta no autorizada y confirmar el rechazo auditado.
 - [ ] Confirmar que la Recovery Key queda consumida.
 - [ ] Repetir la recuperación con la misma clave y confirmar el rechazo.
 - [ ] Intentar recuperar con una clave incorrecta y confirmar el rechazo.
