@@ -28,6 +28,7 @@ test("el submenú Filtros solo expone acciones cableadas (sin callbacks menu:act
     "fa:view:0",
     "fa:add",
     "fa:deletepage:0",
+    "fa:action",
     "fa:toggle",
     "fa:illegal",
   ]) {
@@ -35,8 +36,8 @@ test("el submenú Filtros solo expone acciones cableadas (sin callbacks menu:act
   }
   assert.equal(
     callbacks.filter((cb) => cb.startsWith("fa:")).length,
-    6,
-    "los seis callbacks fa: del submenú deben estar presentes",
+    7,
+    "los siete callbacks fa: del submenú deben estar presentes",
   );
   assert.ok(
     callbacks.every((cb) => cb.startsWith("fa:") || cb.startsWith("menu:")),

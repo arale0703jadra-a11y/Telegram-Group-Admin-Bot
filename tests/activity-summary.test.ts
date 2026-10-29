@@ -19,6 +19,7 @@ import { parseMenuAction } from "../src/menus/index.js";
 import {
   buildActivityPanel,
   buildActivityUnavailablePanel,
+  buildSubmenuPanel,
   MenuAction,
 } from "../src/menus/panels.js";
 import { calculateActivity } from "../src/services/activity.js";
@@ -82,6 +83,18 @@ test("the exact activity summary callback routes to its handler", () => {
       item: "resumen",
     }),
     false,
+  );
+});
+
+test("the activity submenu only advertises its implemented summary action", () => {
+  const panel = buildSubmenuPanel("actividad", "Grupo de prueba");
+  assert.ok(panel);
+  assert.deepEqual(
+    panel.keyboard.inline_keyboard
+      .flat()
+      .map((button) => buttonCallbackData(button))
+      .filter((callback): callback is string => callback !== undefined),
+    [MenuAction.action("actividad", "resumen"), "menu:main", "menu:home"],
   );
 });
 

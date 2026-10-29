@@ -1,17 +1,14 @@
 import { Composer } from "grammy";
 import { isGroupChat, isUserAdmin } from "../utils/permissions.js";
-import {
-  buildGroupPickerPanel,
-  buildMainPanel,
-} from "../menus/panels.js";
+import { buildMainPanel } from "../menus/panels.js";
 import {
   markUserAsAdmin,
   registerGroup,
 } from "../services/group-registry.js";
-import { getAdministrableGroups } from "../utils/groups.js";
 import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 import type { MyContext } from "../types.js";
 import { COMMANDS } from "./definitions.js";
+import { openPrivatePanel } from "../utils/private-panel.js";
 
 export const menuCommand = new Composer<MyContext>();
 
@@ -34,10 +31,12 @@ menuCommand.command(COMMANDS.menu, async (ctx) => {
   }
 
   try {
+    if (chat.type === "private") {
+      await openPrivatePanel(ctx);
+      return;
+    }
+
     if (!(await isAuthorizedPanelUser(from.id))) {
-      if (chat.type === "private") {
-        await ctx.reply("⛔ No autorizado para acceder al panel de ZEUS.");
-      }
       return;
     }
 
@@ -57,23 +56,6 @@ menuCommand.command(COMMANDS.menu, async (ctx) => {
       await sendPrivatePanel(ctx, from.id, buildMainPanel(groupTitle));
       return;
     }
-
-    const groups = await getAdministrableGroups(ctx);
-    if (groups.length === 0) {
-      return;
-    }
-
-    if (groups.length === 1) {
-      const group = groups[0];
-      ctx.session.user = {
-        selectedGroupId: group.id,
-        selectedGroupTitle: group.title,
-      };
-      await sendPrivatePanel(ctx, from.id, buildMainPanel(group.title));
-      return;
-    }
-
-    await sendPrivatePanel(ctx, from.id, buildGroupPickerPanel(groups));
   } catch (error) {
     console.error(
       `[MENU] No se pudo autorizar o entregar el panel userId=${from.id} chatId=${chat.id} error=${error instanceof Error ? error.name : "unknown"}`,

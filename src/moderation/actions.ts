@@ -19,6 +19,7 @@ export interface ActionResult {
 export interface CleanResult {
   attempted: number;
   deleted: number;
+  failed: number;
 }
 
 function reasonDetail(reason?: string): string {
@@ -742,7 +743,7 @@ export async function cleanRecentMessages(
   const data = await getGroupData(chatId);
   const ids = data.recentMessages.slice(-count);
   if (ids.length === 0) {
-    return { attempted: 0, deleted: 0 };
+    return { attempted: 0, deleted: 0, failed: 0 };
   }
 
   let deleted = 0;
@@ -752,5 +753,9 @@ export async function cleanRecentMessages(
       deleted += 1;
     }
   }
-  return { attempted: ids.length, deleted };
+  return {
+    attempted: ids.length,
+    deleted,
+    failed: ids.length - deleted,
+  };
 }

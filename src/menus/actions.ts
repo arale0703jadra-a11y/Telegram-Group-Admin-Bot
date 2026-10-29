@@ -1,6 +1,7 @@
 import { Composer, InlineKeyboard } from "grammy";
 import { isUserAdminOf } from "../utils/permissions.js";
 import { flushStorage, getGroupData, saveGroupData } from "../storage/index.js";
+import { toggleRecurrenceMuteMinutes } from "../storage/initial.js";
 import {
   banUser,
   cleanRecentMessages,
@@ -24,6 +25,7 @@ import {
   buildFilterConfirmPanel,
   buildFilterListPanel,
   buildFiltersPanel,
+  buildPromotionActionPanel,
   buildPromotionInfoPanel,
   buildPromotionSettingsPanel,
   buildIllegalCategoriesPanel,
@@ -1155,6 +1157,26 @@ moderationActions.on("callback_query:data", async (ctx) => {
       await renderPanel(ctx, buildPromotionSettingsPanel(data.promotion, title));
       return;
     }
+    if (parts[0] === "fa" && kind === "action") {
+      const data = await getGroupData(groupId);
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildPromotionActionPanel(data.promotion, title));
+      return;
+    }
+    if (parts[0] === "fa" && kind === "action_toggle") {
+      const data = await getGroupData(groupId);
+      data.promotion.recurrenceMuteMinutes = toggleRecurrenceMuteMinutes(
+        data.promotion.recurrenceMuteMinutes,
+      );
+      await saveGroupData(groupId, data);
+      await ctx.answerCallbackQuery(
+        data.promotion.recurrenceMuteMinutes.length > 0
+          ? "🔇 Escalado de silencio activado (15/60/240/1440 min)."
+          : "🔇 Escalado de silencio desactivado: solo se elimina el mensaje.",
+      );
+      await renderPanel(ctx, buildPromotionActionPanel(data.promotion, title));
+      return;
+    }
     if (kind === "add") {
       ctx.session.user.pendingAction = { kind: "filterAdd", groupId };
       await ctx.answerCallbackQuery();
@@ -1885,14 +1907,19 @@ moderationActions.on("callback_query:data", async (ctx) => {
       const result = await cleanRecentMessages(ctx, groupId, count);
 
       await logEvent(ctx, groupId, "CLEAN", {
-        result: "ok",
-        detail: `${result.deleted}/${result.attempted} mensajes`,
+        result: result.failed > 0 ? "error" : "ok",
+        detail:
+          `${result.deleted}/${result.attempted} mensajes; ` +
+          `fallidos=${result.failed}`,
       });
 
       const note =
         result.attempted === 0
           ? "🤔 El bot no ha registrado mensajes recientes para limpiar."
-          : `✅ Se eliminaron *${result.deleted} de ${result.attempted}* mensajes localizados.`;
+          : result.failed > 0
+            ? `⚠️ Se eliminaron *${result.deleted} de ${result.attempted}* mensajes localizados; ` +
+              `${result.failed} no se pudieron borrar.`
+            : `✅ Se eliminaron *${result.deleted} de ${result.attempted}* mensajes localizados.`;
 
       await renderPanel(ctx, buildCleanupPanel(note));
       return;

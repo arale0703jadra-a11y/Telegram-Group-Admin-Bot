@@ -44,13 +44,23 @@ export const DEFAULT_PROMOTION_STATISTICS = {
   allowedVerified: 0,
 };
 
+export const DEFAULT_RECURRENCE_MUTE_MINUTES = [15, 60, 240, 1440];
+
+/**
+ * Alterna la acción de reincidencia de promociones: escalado de silencio
+ * (ladder por defecto) o solo eliminación del mensaje (lista vacía).
+ */
+export function toggleRecurrenceMuteMinutes(current: readonly number[]): number[] {
+  return current.length > 0 ? [] : [...DEFAULT_RECURRENCE_MUTE_MINUTES];
+}
+
 export function initialPromotionConfig(): PromotionConfig {
   return {
     enabled: true,
     dictionary: [...PROMOTION_DICTIONARY],
     verificationContacts: ["@DanielRF25", "@ChrisUzca2406"],
     verifiedUsers: {},
-    recurrenceMuteMinutes: [15, 60, 240, 1440],
+    recurrenceMuteMinutes: [...DEFAULT_RECURRENCE_MUTE_MINUTES],
     messages: { ...DEFAULT_PROMOTION_MESSAGES },
     infractions: {},
     statistics: { ...DEFAULT_PROMOTION_STATISTICS },

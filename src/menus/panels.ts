@@ -199,6 +199,8 @@ export const FilterAction = {
   verifiedBan: (userId: number): string => `${FILTER_PREFIX}:verified_ban:${userId}`,
   verifiedRevoke: (userId: number): string => `${FILTER_PREFIX}:verified_revoke:${userId}`,
   settings: `${FILTER_PREFIX}:settings`,
+  action: `${FILTER_PREFIX}:action`,
+  actionToggle: `${FILTER_PREFIX}:action_toggle`,
   deletePage: (page: number): string => `${FILTER_PREFIX}:deletepage:${page}`,
   delete: (index: number, page: number): string =>
     `${FILTER_PREFIX}:delete:${index}:${page}`,
@@ -293,8 +295,6 @@ const CATEGORIES: MenuItem[] = [
   { id: "antispam", label: "🛡️ Anti-spam" },
   { id: "inactividad", label: "⏰ Inactividad" },
   { id: "actividad", label: "📊 Actividad" },
-  { id: "reglas", label: "📜 Reglas" },
-  { id: "config", label: "⚙️ Configuración" },
   { id: "ayuda", label: "❓ Ayuda" },
 ];
 
@@ -333,6 +333,7 @@ const SUBMENUS: Record<string, SubmenuDef> = {
         label: "🗑️ Eliminar palabra/frase",
         cb: FilterAction.deletePage(0),
       },
+      { id: "accion", label: "⚙️ Configurar acción", cb: FilterAction.action },
       { id: "activar", label: "🔔 Activar/desactivar filtros", cb: FilterAction.toggle },
       { id: "ilegal", label: "🔴 Filtro de contenido ilegal", cb: FilterAction.illegal },
     ],
@@ -371,36 +372,13 @@ const SUBMENUS: Record<string, SubmenuDef> = {
   actividad: {
     icon: "📊",
     title: "Actividad",
-    description: "Estadísticas y registro de eventos del grupo.",
+    description: "Resumen de mensajes y usuarios activos registrados por ZEUS.",
     items: [
-      { id: "estadisticas", label: "📈 Estadísticas del grupo" },
-      { id: "activos", label: "👥 Usuarios más activos" },
-      { id: "mensajes", label: "📨 Mensajes registrados" },
-      { id: "moderacion", label: "🛡️ Acciones de moderación" },
-      { id: "eventos", label: "📋 Registro de eventos" },
-    ],
-  },
-  reglas: {
-    icon: "📜",
-    title: "Reglas",
-    description: "Gestiona las reglas publicadas del grupo.",
-    items: [
-      { id: "ver", label: "📜 Ver reglas" },
-      { id: "editar", label: "✏️ Editar reglas" },
-      { id: "publicar", label: "📌 Publicar reglas" },
-      { id: "eliminar", label: "🗑️ Eliminar reglas" },
-    ],
-  },
-  config: {
-    icon: "⚙️",
-    title: "Configuración",
-    description: "Ajustes generales y avanzados del bot en este grupo.",
-    items: [
-      { id: "grupo", label: "🌐 Configuración del grupo" },
-      { id: "moderacion", label: "🛡️ Configuración de moderación" },
-      { id: "admins", label: "👥 Administradores" },
-      { id: "notificaciones", label: "🔔 Notificaciones" },
-      { id: "avanzado", label: "⚙️ Configuración avanzada" },
+      {
+        id: "resumen",
+        label: "📊 Resumen de actividad",
+        cb: MenuAction.action("actividad", "resumen"),
+      },
     ],
   },
   ayuda: {
@@ -786,6 +764,46 @@ export function buildPromotionSettingsPanel(
       "⚙️ *CONFIGURACIÓN DE PROMOCIONES*\n\n" +
       "Las palabras personalizadas son señales contextuales, no reglas de venta por sí solas.\n" +
       `Señales contextuales configuradas: ${config.dictionary.length}`,
+    keyboard,
+  };
+}
+
+/**
+ * Acción aplicada al detectar una promoción no autorizada.
+ * Primera infracción: eliminación + invitación a verificarse.
+ * Reincidencias: silencio escalado según `recurrenceMuteMinutes`
+ * (lista vacía = solo eliminación).
+ */
+export function buildPromotionActionPanel(
+  config: PromotionConfig,
+  groupTitle?: string,
+): Panel {
+  const escalation = config.recurrenceMuteMinutes;
+  const enabled = escalation.length > 0;
+  const ladder = enabled
+    ? escalation.map((minutes) => `${minutes} min`).join(" → ")
+    : "desactivado";
+  const keyboard = new InlineKeyboard()
+    .text(
+      enabled
+        ? "🔇 Escalado de silencio: activado"
+        : "🔇 Escalado de silencio: desactivado",
+      FilterAction.actionToggle,
+    )
+    .row()
+    .text("⬅️ Volver", MenuAction.sub("filtros"));
+
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "⚙️ *ACCIÓN AL DETECTAR FILTROS*\n\n" +
+      "• Primera infracción: se elimina el mensaje y se invita a verificarse.\n" +
+      `• Reincidencias: ${
+        enabled
+          ? `silencio escalado (${ladder})`
+          : "solo se elimina el mensaje"
+      }.\n\n` +
+      "El contador de reincidencias es por usuario y grupo.",
     keyboard,
   };
 }

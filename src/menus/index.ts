@@ -101,8 +101,15 @@ async function getGroupTitle(
 export const menuNavigation = new Composer<MyContext>();
 
 menuNavigation.on("callback_query:data", async (ctx, next) => {
-  const action = parseMenuAction(ctx.callbackQuery.data);
+  const callbackData = ctx.callbackQuery.data;
+  const action = parseMenuAction(callbackData);
   if (!action) {
+    if (callbackData.startsWith("menu:")) {
+      await ctx.answerCallbackQuery(
+        "⚠️ Este botón ya no es válido. Abre /menu nuevamente.",
+      );
+      return;
+    }
     await next();
     return;
   }
