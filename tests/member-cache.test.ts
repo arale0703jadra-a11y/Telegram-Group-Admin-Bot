@@ -140,6 +140,7 @@ test("a 429 pauses member lookups for the chat until retry_after elapses", async
     assert.equal(await caches.getCachedChatMember(api, -100, 7), undefined);
     assert.equal(api.calls, 1);
     assert.ok(warnings.some((warning) => warning.includes("429")));
+    assert.ok(warnings.every((warning) => !warning.includes("-100")));
 
     // Durante la pausa no se llama a la API para ningún usuario del chat.
     assert.equal(await caches.getCachedChatMember(api, -100, 8), undefined);

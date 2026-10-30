@@ -19,7 +19,7 @@ menuCommand.command(COMMANDS.menu, async (ctx) => {
   if (ctx.message && chat.type === "private") {
     void ctx.deleteMessage().catch((error: unknown) => {
       console.warn(
-        `[COMMAND_DELETE] No se pudo borrar /menu privado userId=${from?.id ?? "unknown"} ` +
+        `[COMMAND_DELETE] No se pudo borrar /menu privado ` +
           `error=${error instanceof Error ? error.name : "unknown"}`,
       );
     });
@@ -36,11 +36,16 @@ menuCommand.command(COMMANDS.menu, async (ctx) => {
     }
 
     if (!(await isAuthorizedPanelUser(from.id))) {
+      await replySafely(
+        ctx,
+        "⛔ No autorizado para acceder al panel de ZEUS.",
+      );
       return;
     }
 
     if (isGroupChat(ctx)) {
       if (!(await isUserAdmin(ctx))) {
+        console.info(JSON.stringify({ event: "group_admin_denied" }));
         await ctx
           .reply("⛔ Este comando solo está disponible para administradores del grupo.")
           .catch(() => undefined);
@@ -84,7 +89,7 @@ menuCommand.command(COMMANDS.menu, async (ctx) => {
       ? error.name
       : "unknown";
     console.error(
-      `[MENU] No se pudo autorizar o entregar el panel userId=${from.id} chatId=${chat.id} error=${detail}`,
+      `[MENU] No se pudo autorizar o entregar el panel error=${detail}`,
     );
     await replySafely(
       ctx,
@@ -150,7 +155,7 @@ async function sendPrivatePanel(
       ? error.name
       : "unknown";
     console.error(
-      `[MENU] No se pudo entregar el panel privado userId=${userId} error=${detail}`,
+      `[MENU] No se pudo entregar el panel privado error=${detail}`,
     );
     return false;
   }

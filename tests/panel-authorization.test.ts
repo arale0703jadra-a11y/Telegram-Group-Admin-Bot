@@ -26,9 +26,9 @@ test("invalid Telegram ids are never authorized", () => {
 });
 
 test("owner lookup failures are logged without exposing details and keep configured identities", async () => {
-  const originalError = console.error;
+  const originalWarn = console.warn;
   const logs: string[] = [];
-  console.error = (...values: unknown[]) => logs.push(values.join(" "));
+  console.warn = (...values: unknown[]) => logs.push(values.join(" "));
   try {
     // Sin identidades configuradas en el entorno de pruebas, un usuario ajeno
     // sigue denegado aunque falle la consulta del propietario.
@@ -43,11 +43,12 @@ test("owner lookup failures are logged without exposing details and keep configu
     assert.equal(isAuthorizedPanelUserId(90, undefined, 90, 200), true);
     assert.equal(isAuthorizedPanelUserId(300, undefined, 90, 200), false);
   } finally {
-    console.error = originalError;
+    console.warn = originalWarn;
   }
 
   assert.equal(logs.length, 1);
-  assert.match(logs[0] ?? "", /access=configured-fallback/);
+  assert.match(logs[0] ?? "", /"event":"owner_lookup_failed"/);
+  assert.match(logs[0] ?? "", /"result":"identity_denied"/);
   assert.doesNotMatch(logs[0] ?? "", /sensitive database detail/);
 });
 
@@ -65,4 +66,23 @@ test("authorization consults the persistent owner source on every call", async (
   assert.equal(await isAuthorizedPanelUser(100, lookup), true);
   assert.equal(await isAuthorizedPanelUser(100, lookup), true);
   assert.equal(calls, 2, "sin lista en memoria: la autorización se reevalúa y sobrevive a reinicios");
+});
+
+test("authorization logs outcomes and owner presence without identities", async () => {
+  const originalInfo = console.info;
+  const logs: string[] = [];
+  console.info = (...values: unknown[]) => logs.push(values.join(" "));
+  try {
+    assert.equal(await isAuthorizedPanelUser(100, async () => 100), true);
+    assert.equal(await isAuthorizedPanelUser(300, async () => undefined), false);
+  } finally {
+    console.info = originalInfo;
+  }
+
+  assert.equal(logs.length, 2);
+  assert.match(logs[0] ?? "", /"event":"granted"/);
+  assert.match(logs[0] ?? "", /"systemOwnerPersisted":true/);
+  assert.match(logs[1] ?? "", /"event":"identity_denied"/);
+  assert.match(logs[1] ?? "", /"systemOwnerPersisted":false/);
+  assert.doesNotMatch(logs.join(" "), /\b100\b|\b300\b/);
 });

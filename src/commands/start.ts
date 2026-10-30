@@ -13,7 +13,21 @@ startCommand.command(COMMANDS.start, async (ctx) => {
     typeof ctx.match === "string" &&
     ctx.match.trim() === "menu"
   ) {
-    await openPrivatePanel(ctx);
+    try {
+      await openPrivatePanel(ctx);
+    } catch (error) {
+      const detail = error instanceof Error ? error.name : "unknown";
+      console.error(
+        `[START] No se pudo abrir el panel desde el enlace de acceso error=${detail}`,
+      );
+      try {
+        await ctx.reply(
+          "⚠️ No pude abrir el panel en este momento. Inténtalo de nuevo más tarde.",
+        );
+      } catch {
+        // Un segundo fallo al responder no debe escapar sin controlar.
+      }
+    }
     return;
   }
 

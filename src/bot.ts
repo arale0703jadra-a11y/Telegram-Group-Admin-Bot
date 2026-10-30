@@ -1,5 +1,9 @@
 import { Bot, Context } from "grammy";
-import { validateConfig, BOT_NAME } from "./config.js";
+import {
+  validateConfig,
+  BOT_NAME,
+  getIdentityConfigurationDiagnostics,
+} from "./config.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import { registerCommands } from "./commands/index.js";
 import { deleteGroupCommand } from "./commands/delete-group-command.js";
@@ -54,6 +58,12 @@ import {
 const VERIFIED_MARKER_RESCAN_INTERVAL_MS = 5 * 60 * 1000;
 
 async function main(): Promise<void> {
+  console.info(
+    JSON.stringify({
+      event: "identity_configuration_diagnostic",
+      ...getIdentityConfigurationDiagnostics(),
+    }),
+  );
   validateConfig();
 
   const bot = new Bot<MyContext>(process.env.BOT_TOKEN as string);

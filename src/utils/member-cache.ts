@@ -174,7 +174,7 @@ export function createSecurityCaches(options?: {
     if (info.code !== 429) return;
     cooldowns.pause(String(chatId), info.retryAfterSeconds ?? 5);
     console.warn(
-      `[ZEUS] Límite de llamadas (429) en el chat ${chatId}; consultas en pausa ${Math.min(info.retryAfterSeconds ?? 5, 30)}s.`,
+      `[ZEUS] Límite de llamadas (429) al consultar Telegram; consultas en pausa ${Math.min(info.retryAfterSeconds ?? 5, 30)}s.`,
     );
   }
 

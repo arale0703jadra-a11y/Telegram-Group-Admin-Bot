@@ -42,19 +42,36 @@ export async function isAuthorizedPanelUser(
   ownerLookup: () => Promise<number | undefined> = getSystemOwnerId,
 ): Promise<boolean> {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
+    console.info(
+      JSON.stringify({
+        event: "identity_denied",
+        systemOwnerLookup: "not_attempted",
+      }),
+    );
     return false;
   }
 
   try {
     const currentOwnerId = await ownerLookup();
-    return isAuthorizedPanelUserId(userId, currentOwnerId);
-  } catch (error) {
+    const granted = isAuthorizedPanelUserId(userId, currentOwnerId);
+    console.info(
+      JSON.stringify({
+        event: granted ? "granted" : "identity_denied",
+        systemOwnerPersisted: currentOwnerId !== undefined,
+      }),
+    );
+    return granted;
+  } catch {
     // Sin acceso a la BD no se amplía el conjunto: se conservan las
     // identidades configuradas en el entorno (mismo límite de 3 usuarios).
-    console.error(
-      `[PANEL_AUTH] No se pudo comprobar el propietario actual userId=${userId} ` +
-        `error=${error instanceof Error ? error.name : "unknown"} access=configured-fallback`,
+    const granted = isAuthorizedPanelUserId(userId, undefined);
+    console.warn(
+      JSON.stringify({
+        event: "owner_lookup_failed",
+        fallback: "configured_identities",
+        result: granted ? "granted" : "identity_denied",
+      }),
     );
-    return isAuthorizedPanelUserId(userId, undefined);
+    return granted;
   }
 }

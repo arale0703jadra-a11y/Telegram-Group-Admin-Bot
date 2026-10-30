@@ -34,6 +34,9 @@ const { menuNavigation } = await import("../src/menus/index.js");
 const { verifiedCommand } = await import("../src/commands/verified.js");
 const { registerGroup } = await import("../src/services/group-registry.js");
 const { resetSecurityCaches } = await import("../src/utils/member-cache.js");
+const { isAuthorizedPanelUser } = await import(
+  "../src/security/panel-authorization.js"
+);
 
 const OWNER = 900000031;
 const ALEXIITA = 900000032;
@@ -129,6 +132,32 @@ test("los tres usuarios autorizados conservan el panel con un System Owner disti
       `el usuario ${fromId} debe conservar el panel; respuestas: ${h.replies.join(" | ")}`,
     );
   }
+});
+
+test("un fallo de consulta del propietario conserva las tres identidades y deniega una cuarta", async () => {
+  const originalWarn = console.warn;
+  const logs: string[] = [];
+  console.warn = (...values: unknown[]) => logs.push(values.join(" "));
+  try {
+    const lookupFailure = async (): Promise<number | undefined> => {
+      throw new Error("sensitive persistence detail");
+    };
+    for (const id of ADMIN_IDS) {
+      assert.equal(await isAuthorizedPanelUser(id, lookupFailure), true);
+    }
+    assert.equal(await isAuthorizedPanelUser(900999999, lookupFailure), false);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(logs.length, ADMIN_IDS.length + 1);
+  assert.ok(logs.every((line) => /"event":"owner_lookup_failed"/u.test(line)));
+  assert.ok(
+    logs.every(
+      (line) =>
+        !/sensitive persistence detail|90000003[1-3]|900999999/u.test(line),
+    ),
+  );
 });
 
 test("un administrador de grupo sin autorización global no abre el panel", async () => {

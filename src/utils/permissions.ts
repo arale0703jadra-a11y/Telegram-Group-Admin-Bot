@@ -53,8 +53,10 @@ export async function checkUserAdminOf(
     !Number.isInteger(userId)
   ) {
     console.warn(
-      `[AUTH] userId=${userId ?? "unknown"} groupId=${chatId} ` +
-        "telegramStatus=invalid access=error",
+      JSON.stringify({
+        event: "group_admin_check_failed",
+        reason: "invalid_identifiers",
+      }),
     );
     return { isAdmin: false, error: "invalid-identifiers" };
   }
@@ -64,24 +66,31 @@ export async function checkUserAdminOf(
     const member = await getCachedChatMember(ctx.api, chatId, userId);
     if (!member) {
       console.error(
-        `[AUTH] userId=${userId} groupId=${chatId} ` +
-          "telegramError=unavailable access=error",
+        JSON.stringify({
+          event: "group_admin_check_failed",
+          reason: "member_lookup_unavailable",
+        }),
       );
       return { isAdmin: false, error: "member-lookup-unavailable" };
     }
     const status = String(member.status).trim().toLowerCase();
     const isAdmin = isAdminStatus(status);
-    console.log(
-      `[AUTH] userId=${userId} groupId=${chatId} ` +
-        `telegramStatus=${status} access=${isAdmin ? "granted" : "denied"}`,
+    console.info(
+      JSON.stringify({
+        event: "group_admin_check",
+        result: isAdmin ? "granted" : "denied",
+        status,
+      }),
     );
     return { isAdmin, status: member.status };
-  } catch (error) {
+  } catch {
     // Defensa en profundidad: getCachedChatMember no lanza, pero si algo
     // inesperado falla, se deniega sin volcar contenido del error.
     console.error(
-      `[AUTH] userId=${userId} groupId=${chatId} ` +
-        `telegramError=${error instanceof Error ? error.name : "unknown"} access=error`,
+      JSON.stringify({
+        event: "group_admin_check_failed",
+        reason: "unexpected_error",
+      }),
     );
     return { isAdmin: false, error: "unexpected-error" };
   }

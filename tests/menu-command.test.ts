@@ -54,11 +54,13 @@ function createMenuCtx(options: {
   commandText?: string;
   memberStatus?: ChatMember["status"];
   replyThrowsFirst?: boolean;
+  replyThrowsAlways?: boolean;
   dmThrows?: boolean;
   dmError?: Error;
   botUsername?: string | null;
   getMeError?: Error;
   getMeUsername?: string;
+  memberLookupError?: Error;
 }): Harness {
   const commandText = options.commandText ?? "/menu";
   const spaceIndex = commandText.indexOf(" ");
@@ -106,7 +108,7 @@ function createMenuCtx(options: {
     session: { user: {}, group: {} },
     reply: async (text: string, other?: { reply_markup?: unknown }) => {
       replyCalls += 1;
-      if (options.replyThrowsFirst && replyCalls === 1) {
+      if (options.replyThrowsAlways || (options.replyThrowsFirst && replyCalls === 1)) {
         throw new Error("400: Bad Request: can't parse entities");
       }
       replies.push({
@@ -140,11 +142,18 @@ function createMenuCtx(options: {
           username: options.getMeUsername,
         };
       },
-      getChatMember: async (_chatId: number | string, userId: number): Promise<ChatMember> =>
-        ({
+      getChatMember: async (
+        _chatId: number | string,
+        userId: number,
+      ): Promise<ChatMember> => {
+        if (options.memberLookupError) {
+          throw options.memberLookupError;
+        }
+        return ({
           status: userId === options.fromId ? (options.memberStatus ?? "member") : "member",
           user: { id: userId, is_bot: false, first_name: "User" },
-        }) as ChatMember,
+        }) as ChatMember;
+      },
     },
   } as unknown as MyContext;
   return {
@@ -268,7 +277,20 @@ test("usuario sin permisos no obtiene el panel administrativo", async () => {
   });
   await runMenu(unauthorizedGroupUser.ctx);
   assert.equal(unauthorizedGroupUser.sentDms.length, 0);
-  assert.equal(unauthorizedGroupUser.replies.length, 0);
+  assert.equal(
+    unauthorizedGroupUser.replies.length,
+    1,
+    "la denegación de un usuario no autorizado debe ser visible",
+  );
+  assert.match(
+    unauthorizedGroupUser.replies[0]?.text ?? "",
+    /No autorizado para acceder al panel/u,
+  );
+  assert.ok(
+    !unauthorizedGroupUser.replies.some((r) =>
+      r.text.includes("PANEL DE ADMINISTRACIÓN")
+    ),
+  );
 });
 
 test("/menu@zeus_test abre el panel igual que /menu", async () => {
@@ -549,4 +571,118 @@ test("bot.ts registra los comandos en el arranque real y /menu llega al panel", 
     h.replies.some((r) => r.text.includes("PANEL DE ADMINISTRACIÓN")),
     "la cadena real de registro debe entregar el panel de /menu",
   );
+});
+
+test("/menu en grupo falla cerrado cuando no se puede comprobar la administración", async () => {
+  resetSecurityCaches();
+  const h = createMenuCtx({
+    chatType: "supergroup",
+    chatId: -910018,
+    fromId: OWNER,
+    memberStatus: "administrator",
+    memberLookupError: new Error("Telegram unavailable"),
+  });
+  await runMenu(h.ctx);
+  assert.equal(h.sentDms.length, 0, "sin panel privado si la comprobación falla");
+  assert.equal(h.replies.length, 1);
+  assert.match(h.replies[0]?.text ?? "", /solo está disponible para administradores/u);
+});
+
+test("/menu en un chat de tipo group envía el panel por privado al administrador", async () => {
+  resetSecurityCaches();
+  const h = createMenuCtx({
+    chatType: "group",
+    chatId: -910019,
+    fromId: OWNER,
+    memberStatus: "administrator",
+  });
+  await runMenu(h.ctx);
+  assert.equal(h.sentDms.length, 1, "el panel debe enviarse por privado");
+  assert.ok(h.sentDms[0]?.text.includes("PANEL DE ADMINISTRACIÓN"));
+  assert.match(h.replies[0]?.text ?? "", /enviado.*por privado/u);
+});
+
+test("/menu registra la denegación de administrador sin IDs", async () => {
+  resetSecurityCaches();
+  const logs: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...values: unknown[]) => logs.push(values.join(" "));
+  try {
+    const h = createMenuCtx({
+      chatType: "group",
+      chatId: -910020,
+      fromId: OWNER,
+      memberStatus: "member",
+    });
+    await runMenu(h.ctx);
+    assert.equal(h.sentDms.length, 0);
+    assert.match(h.replies[0]?.text ?? "", /solo está disponible para administradores/u);
+  } finally {
+    console.info = originalInfo;
+  }
+
+  assert.ok(logs.some((line) => /"event":"group_admin_denied"/u.test(line)));
+  assert.doesNotMatch(logs.join(" "), /900000031|-910020/u);
+});
+
+test("/start menu avisa cuando openPrivatePanel lanza una excepción", async () => {
+  resetSecurityCaches();
+  registerGroup(-910017, "Grupo con error de panel");
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]): void => {
+    errors.push(args.join(" "));
+  };
+  try {
+    const h = createMenuCtx({
+      chatType: "private",
+      chatId: OWNER,
+      fromId: OWNER,
+      commandText: "/start menu",
+      memberStatus: "administrator",
+      replyThrowsFirst: true,
+    });
+    await startCommand.middleware()(h.ctx, async () => undefined);
+    assert.ok(
+      h.replies.some((r) => /No pude abrir el panel/u.test(r.text)),
+      `respuestas: ${h.replies.map((r) => r.text.slice(0, 40)).join(" | ")}`,
+    );
+    assert.ok(
+      !h.replies.some((r) => r.text.includes("PANEL DE ADMINISTRACIÓN")),
+      "el panel no llegó; solo debe verse el aviso de error",
+    );
+    assert.ok(
+      errors.some((line) => /\[START\]/u.test(line)),
+      "el error debe quedar registrado",
+    );
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("/start menu contiene el fallo secundario al enviar el aviso de error", async () => {
+  resetSecurityCaches();
+  registerGroup(-910021, "Grupo con doble error");
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]): void => {
+    errors.push(args.join(" "));
+  };
+  try {
+    const h = createMenuCtx({
+      chatType: "private",
+      chatId: OWNER,
+      fromId: OWNER,
+      commandText: "/start menu",
+      memberStatus: "administrator",
+      replyThrowsAlways: true,
+    });
+    await assert.doesNotReject(async () => {
+      await startCommand.middleware()(h.ctx, async () => undefined);
+    });
+    assert.equal(h.replies.length, 0);
+    assert.ok(errors.some((line) => /\[START\]/u.test(line)));
+  } finally {
+    console.error = originalError;
+  }
 });

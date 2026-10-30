@@ -17,14 +17,45 @@ function parseTelegramUserId(value: string | undefined): number | undefined {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
-export const OWNER_ID = parseTelegramUserId(process.env.OWNER_ID);
-
-export const SYSTEM_OWNER_BOOTSTRAP_ID = parseTelegramUserId(
-  process.env.SYSTEM_OWNER_BOOTSTRAP_ID,
-);
-export const ALEXIITA_TELEGRAM_ID = parseTelegramUserId(
+const configuredIdentityValues = [
+  process.env.OWNER_ID,
   process.env.ALEXIITA_TELEGRAM_ID,
+  process.env.SYSTEM_OWNER_BOOTSTRAP_ID,
+] as const;
+
+export const OWNER_ID = parseTelegramUserId(configuredIdentityValues[0]);
+export const ALEXIITA_TELEGRAM_ID = parseTelegramUserId(
+  configuredIdentityValues[1],
 );
+export const SYSTEM_OWNER_BOOTSTRAP_ID = parseTelegramUserId(
+  configuredIdentityValues[2],
+);
+
+export interface IdentityConfigurationDiagnostics {
+  dotenvImportBeforeEvaluation: true;
+  configuredValidDistinctIdentities: number;
+  missingOrInvalidIdentities: number;
+  identitiesAvailableAtEvaluation: boolean;
+}
+
+export function getIdentityConfigurationDiagnostics(
+  values: readonly (string | undefined)[] = configuredIdentityValues,
+): IdentityConfigurationDiagnostics {
+  const parsed = values.map(parseTelegramUserId);
+  const configuredValidDistinctIdentities = new Set(
+    parsed.filter((id): id is number => id !== undefined),
+  ).size;
+  const missingOrInvalidIdentities = parsed.filter(
+    (id) => id === undefined,
+  ).length;
+
+  return {
+    dotenvImportBeforeEvaluation: true,
+    configuredValidDistinctIdentities,
+    missingOrInvalidIdentities,
+    identitiesAvailableAtEvaluation: configuredValidDistinctIdentities > 0,
+  };
+}
 
 /**
  * Identidades administrativas autorizadas: OWNER_ID, ALEXIITA_TELEGRAM_ID y
