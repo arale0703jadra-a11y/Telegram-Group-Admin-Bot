@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
 import type { MyContext } from "../src/types.js";
+
+const originalCwd = process.cwd();
+const testDataDirectory = await mkdtemp(join(tmpdir(), "zeus-recovery-tests-"));
+process.chdir(testDataDirectory);
+after(async () => {
+  process.chdir(originalCwd);
+  await rm(testDataDirectory, { recursive: true, force: true });
+});
 
 process.env.OWNER_ID = "900000031";
 process.env.ALEXIITA_TELEGRAM_ID = "900000032";
@@ -63,7 +75,7 @@ function createCtx(options: {
   text: string;
   asCommand?: boolean;
   pendingAction?: unknown;
-}): { ctx: MyContext; replies: string[] } {
+}): { ctx: MyContext; replies: string[]; deletedMessageIds: number[] } {
   const message = {
     message_id: 1,
     date: 0,
@@ -81,6 +93,7 @@ function createCtx(options: {
       : {}),
   };
   const replies: string[] = [];
+  const deletedMessageIds: number[] = [];
   const chat =
     options.chatType === "private"
       ? { id: options.fromId, type: "private" as const }
@@ -97,7 +110,10 @@ function createCtx(options: {
       replies.push(text);
       return { message_id: 100 };
     },
-    deleteMessage: async () => true,
+    deleteMessage: async () => {
+      deletedMessageIds.push(message.message_id);
+      return true;
+    },
     api: {
       sendMessage: async () => ({ message_id: 2 }),
       getChatMember: async () => ({
@@ -106,7 +122,7 @@ function createCtx(options: {
       }),
     },
   } as unknown as MyContext;
-  return { ctx, replies };
+  return { ctx, replies, deletedMessageIds };
 }
 
 function resetScenario(): void {
@@ -142,6 +158,67 @@ test("/zeus-recuperar solo funciona en privado y pide la clave sin mostrarla", a
   assert.equal(pending?.kind, "recoveryKey");
 });
 
+test("el comando con argumento no procesa la clave inline y borra ese mensaje", async () => {
+  resetScenario();
+  const inline = createCtx({
+    fromId: 900000032,
+    chatType: "private",
+    text: "/zeus-recuperar argumento-sintetico",
+    asCommand: true,
+  });
+
+  await zeusCommand.middleware()(inline.ctx, async () => undefined);
+
+  assert.deepEqual(inline.deletedMessageIds, [1]);
+  assert.ok(inline.replies.some((reply) => /mensaje privado separado/u.test(reply)));
+  assert.ok(inline.replies.every((reply) => !reply.includes("argumento-sintetico")));
+  assert.equal(
+    (inline.ctx.session.user as { pendingAction?: unknown }).pendingAction,
+    undefined,
+  );
+  assert.ok(!rpcCalls.some((call) =>
+    call.name.startsWith("zeus_recovery_") ||
+    call.name === "zeus_begin_recovery" ||
+    call.name === "zeus_recover_system_owner"
+  ));
+});
+
+test("comando y clave en mensajes separados completan el flujo simulado", async () => {
+  resetScenario();
+  const syntheticKey = randomBytes(32).toString("base64url");
+  const hashed = await hashRecoveryKey(syntheticKey);
+  keysResponse = [{ id: "synthetic-key-id", key_salt: hashed.salt, key_hash: hashed.hash }];
+
+  const command = createCtx({
+    fromId: 900000032,
+    chatType: "private",
+    text: "/zeus-recuperar",
+    asCommand: true,
+  });
+  await zeusCommand.middleware()(command.ctx, async () => undefined);
+  const pendingAction = (command.ctx.session.user as {
+    pendingAction?: unknown;
+  }).pendingAction;
+  assert.ok(pendingAction);
+
+  const keyMessage = createCtx({
+    fromId: 900000032,
+    chatType: "private",
+    text: syntheticKey,
+    pendingAction,
+  });
+  await privateInput.middleware()(keyMessage.ctx, async () => undefined);
+
+  assert.ok(keyMessage.replies.some((reply) => /System Owner recuperado/u.test(reply)));
+  assert.ok(keyMessage.replies.every((reply) => !reply.includes(syntheticKey)));
+  assert.ok(rpcCalls.some((call) => call.name === "zeus_begin_recovery"));
+  assert.ok(rpcCalls.some((call) => call.name === "zeus_recover_system_owner"));
+  assert.equal(
+    (keyMessage.ctx.session.user as { pendingAction?: unknown }).pendingAction,
+    undefined,
+  );
+});
+
 test("una clave incorrecta no concede acceso y queda auditada", async () => {
   resetScenario();
   const good = await hashRecoveryKey("TEST-KEY-REAL");
@@ -156,6 +233,29 @@ test("una clave incorrecta no concede acceso y queda auditada", async () => {
     "el intento fallido debe quedar registrado",
   );
   assert.ok(!rpcCalls.some((c) => c.name === "zeus_begin_recovery"));
+});
+
+test("una clave válida con challenge ausente o caducado no cambia el propietario", async () => {
+  resetScenario();
+  const syntheticKey = randomBytes(32).toString("base64url");
+  const hashed = await hashRecoveryKey(syntheticKey);
+  keysResponse = [{ id: "synthetic-key-id", key_salt: hashed.salt, key_hash: hashed.hash }];
+  recoverResult = false;
+
+  const recovered = await consumeRecoveryKey(
+    syntheticKey,
+    900000032,
+    async () => true,
+  );
+
+  assert.equal(recovered, false);
+  assert.equal(mockDbOwnerId, 100);
+  assert.ok(rpcCalls.some((call) => call.name === "zeus_begin_recovery"));
+  assert.ok(rpcCalls.some((call) => call.name === "zeus_recover_system_owner"));
+  assert.ok(rpcCalls.some((call) =>
+    call.name === "zeus_record_recovery_rejection" &&
+    call.body.p_reason === "recovery_rejected"
+  ));
 });
 
 test("una clave válida ejecuta la transferencia y confirma solo al final", async () => {

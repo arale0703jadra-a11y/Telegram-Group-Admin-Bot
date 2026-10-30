@@ -65,6 +65,7 @@ test("migration contains atomic bootstrap and one-time challenge recovery", () =
   assert.match(migration, /revoked_at is null/);
   assert.match(migration, /set used_at = now\(\)/);
   assert.match(migration, /set consumed_at = now\(\)/);
+  assert.match(migration, /expires_at > now\(\)/);
   assert.match(migration, /zeus_cleanup_recovery_challenges/);
   assert.match(migration, /c\.expires_at <= now\(\)/);
   assert.match(migration, /k\.revoked_at is not null/);

@@ -668,9 +668,9 @@ function buildHelpPanel(groupTitle?: string): Panel {
     text:
       `${formatGroupHeader(groupTitle)}\n\n❓ *AYUDA Y COMANDOS*\n\n` +
       "🚨 Emergencias\n" +
-      "La recuperación de System Owner solo debe usarse si perdiste el acceso a la cuenta propietaria.\n\n" +
+      "La recuperación de System Owner solo debe usarse si perdiste el acceso a una identidad autorizada. No autoriza cuentas nuevas ni cambia los permisos de grupo.\n\n" +
       "🔐 Recovery Key: genera una clave de un solo uso con /zeus-generar-recuperacion.\n" +
-      "🔐 Recuperar System Owner: envía /zeus-recuperar y luego la clave desde el chat privado del bot.\n\n" +
+      "🔐 Recuperar System Owner: envía /zeus-recuperar sin argumentos y luego la clave en otro mensaje, desde el chat privado del bot.\n\n" +
       "Para eliminar un mensaje responde a él con:\n   /borrar\n\n" +
       "/mute, /unmute, /ban, /unban y /kick no están implementados en el grupo.",
     keyboard,

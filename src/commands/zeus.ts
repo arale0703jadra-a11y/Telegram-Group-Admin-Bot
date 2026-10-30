@@ -65,8 +65,25 @@ async function beginRecovery(ctx: MyContext): Promise<void> {
     await ctx.reply("🔐 La recuperación solo está disponible en el chat privado del bot.");
     return;
   }
+  if (typeof ctx.match === "string" && ctx.match.trim()) {
+    ctx.session.user.pendingAction = undefined;
+    try {
+      await ctx.deleteMessage();
+    } catch (error) {
+      console.warn(
+        `[RECOVERY] No se pudo borrar el comando con argumentos userId=${ctx.from?.id ?? "unknown"} ` +
+          `error=${error instanceof Error ? error.name : "unknown"}`,
+      );
+    }
+    await ctx.reply(
+      "⛔ No incluyas la clave junto al comando. Envíala en un mensaje privado separado después de iniciar la recuperación.",
+    );
+    return;
+  }
   ctx.session.user.pendingAction = { kind: "recoveryKey" };
-  await ctx.reply("🔐 Envía tu clave de recuperación de un solo uso.");
+  await ctx.reply(
+    "🔐 Envía tu clave de recuperación de un solo uso en un mensaje privado separado.",
+  );
 }
 
 zeusCommand.command(COMMANDS.recover, beginRecovery);

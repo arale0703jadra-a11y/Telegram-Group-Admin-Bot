@@ -8,6 +8,15 @@ import { COMMANDS } from "./definitions.js";
 export const startCommand = new Composer<MyContext>();
 
 startCommand.command(COMMANDS.start, async (ctx) => {
+  if (
+    ctx.chat.type === "private" &&
+    typeof ctx.match === "string" &&
+    ctx.match.trim() === "menu"
+  ) {
+    await openPrivatePanel(ctx);
+    return;
+  }
+
   const firstName = ctx.from?.first_name ?? "";
   const name = firstName ? `, ${firstName}` : "";
 

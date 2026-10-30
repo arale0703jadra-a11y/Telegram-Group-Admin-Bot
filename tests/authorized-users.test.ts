@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
 import type { ChatMember } from "@grammyjs/types";
 import type { MyContext } from "../src/types.js";
+
+const originalCwd = process.cwd();
+const testDataDirectory = await mkdtemp(join(tmpdir(), "zeus-authorized-user-tests-"));
+process.chdir(testDataDirectory);
+after(async () => {
+  process.chdir(originalCwd);
+  await rm(testDataDirectory, { recursive: true, force: true });
+});
 
 process.env.OWNER_ID = "900000031";
 process.env.ALEXIITA_TELEGRAM_ID = "900000032";

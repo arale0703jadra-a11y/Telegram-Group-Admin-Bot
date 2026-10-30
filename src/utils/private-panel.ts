@@ -5,10 +5,9 @@ import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 
 const UNAUTHORIZED_MESSAGE =
   "⛔ No autorizado para acceder al panel de ZEUS.\n\n" +
-  "Si eres una de las cuentas autorizadas y perdiste el acceso (por ejemplo, " +
-  "tras eliminar tu cuenta de Telegram), inicia la recuperación con " +
-  "/zeus-recuperar y envía tu clave de autorización de un solo uso en este chat privado.\n\n" +
-  "La clave solo se acepta aquí, en privado. Nunca la escribas en grupos ni la compartas.";
+  "El panel global solo está disponible para las identidades autorizadas por configuración o registradas como System Owner. Ser administrador de un grupo no concede por sí solo acceso al panel.\n\n" +
+  "La recuperación no autoriza cuentas nuevas ni cambia los permisos de grupo. Si esta cuenta ya está autorizada, escribe /zeus-recuperar sin argumentos y luego envía la clave en otro mensaje privado.\n\n" +
+  "Nunca escribas la clave en grupos ni la compartas.";
 
 const NO_GROUPS_MESSAGE =
   "⛔ No tienes ningún grupo administrable con este bot.\n\n" +
