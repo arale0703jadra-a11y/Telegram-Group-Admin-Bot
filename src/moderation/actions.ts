@@ -105,7 +105,9 @@ export interface BotRights {
 export async function getBotRights(
   ctx: MyContext,
   chatId: number,
+  options: { fresh?: boolean } = {},
 ): Promise<BotRights> {
+  if (options.fresh) invalidateSecurityCaches(chatId, ctx.me.id);
   return getCachedBotRights(ctx.api, chatId, ctx.me.id);
 }
 
@@ -350,7 +352,7 @@ export async function muteUser(
     });
     return { ok: false, error: "La duración debe estar entre 1 y 527040 minutos." };
   }
-  const { canRestrict } = await getBotRights(ctx, chatId);
+  const { canRestrict } = await getBotRights(ctx, chatId, { fresh: true });
   if (!canRestrict) {
     await logEvent(ctx, chatId, "MUTE", {
       targetId: userId,
@@ -478,7 +480,7 @@ export async function unmuteUser(
   targetName?: string,
 ): Promise<ActionResult> {
   const name = targetName ?? String(userId);
-  const { canRestrict } = await getBotRights(ctx, chatId);
+  const { canRestrict } = await getBotRights(ctx, chatId, { fresh: true });
   if (!canRestrict) {
     await logEvent(ctx, chatId, "UNMUTE", {
       targetId: userId,
@@ -557,7 +559,7 @@ export async function banUser(
   reason?: string,
 ): Promise<ActionResult> {
   const name = targetName ?? String(userId);
-  const { canRestrict } = await getBotRights(ctx, chatId);
+  const { canRestrict } = await getBotRights(ctx, chatId, { fresh: true });
   if (!canRestrict) {
     await logEvent(ctx, chatId, "BAN", {
       targetId: userId,
@@ -645,7 +647,7 @@ export async function unbanUser(
   targetName?: string,
 ): Promise<ActionResult> {
   const name = targetName ?? String(userId);
-  const { canRestrict } = await getBotRights(ctx, chatId);
+  const { canRestrict } = await getBotRights(ctx, chatId, { fresh: true });
   if (!canRestrict) {
     await logEvent(ctx, chatId, "UNBAN", {
       targetId: userId,

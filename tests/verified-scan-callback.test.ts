@@ -133,6 +133,7 @@ function createScanContext(input: {
   groupId: number;
   admins: ChatMember[] | Error;
   userId?: number;
+  callbackData?: string;
 }): { ctx: MyContext; replies: string[]; answers: string[] } {
   const userId = input.userId ?? ACTOR_ID;
   const actor = { id: userId, is_bot: false, first_name: "PanelAdmin" };
@@ -157,14 +158,14 @@ function createScanContext(input: {
         id: "cb-1",
         chat_instance: "ci",
         from: actor,
-        data: "vu:scan_now",
+        data: input.callbackData ?? "vu:scan_now",
       },
     },
     callbackQuery: {
       id: "cb-1",
       chat_instance: "ci",
       from: actor,
-      data: "vu:scan_now",
+      data: input.callbackData ?? "vu:scan_now",
     },
     chat: { id: PANEL_CHAT_ID, type: "private", first_name: "PanelAdmin" },
     from: actor,
@@ -209,7 +210,36 @@ async function withCapturedLogs(action: () => Promise<void>): Promise<string[]> 
   return captured;
 }
 
-test("el botón del panel de Verificadas usa el callback vu:scan_now", () => {
+test("legacy direct approval callbacks cannot verify without a session-bound confirmation", async () => {
+  reviewRows.push({
+    group_id: GROUP_ID,
+    user_id: 9001,
+    username: "candidate",
+    display_name: "Candidate",
+    observed_tag: "Verificada",
+    status: "pending",
+    first_seen_at: new Date(0).toISOString(),
+    last_seen_at: new Date(0).toISOString(),
+    reviewed_at: null,
+    reviewed_by: null,
+    review_claim_token: null,
+    review_claim_expires_at: null,
+    review_claim_previous_status: null,
+  });
+  const { ctx, answers } = createScanContext({
+    groupId: GROUP_ID,
+    admins: [],
+    callbackData: "vu:apply:approve:9001",
+  });
+
+  await moderationActions.middleware()(ctx, async () => {});
+
+  assert.ok(answers.some((answer) => /confirmación expiró|no pertenece/u.test(answer)));
+  assert.equal(verifiedRows.length, 0);
+  assert.equal(reviewRows[0]?.status, "pending");
+});
+
+test("el panel de gestión manual no expone un escaneo como acción de verificación", () => {
   const panel = buildVerifiedModelsPanel(
     [],
     0,
@@ -217,12 +247,9 @@ test("el botón del panel de Verificadas usa el callback vu:scan_now", () => {
     ["Verificada"],
     true,
   );
-  const button = panel.keyboard.inline_keyboard
-    .flat()
-    .find((entry) => entry.text.includes("Escanear / Detectar Verificadas"));
-
-  assert.ok(button, "el botón de escaneo debe existir en el panel");
-  assert.equal(buttonCallbackData(button), "vu:scan_now");
+  const callbacks = panel.keyboard.inline_keyboard.flat().map(buttonCallbackData);
+  assert.ok(!callbacks.includes("vu:scan_now"));
+  assert.ok(callbacks.includes("vu:candidates:0"));
 });
 
 test("vu:scan_now ejecuta el escaneo, registra candidatas y no duplica al repetir", async () => {
@@ -273,7 +300,7 @@ test("vu:scan_now ejecuta el escaneo, registra candidatas y no duplica al repeti
     ["Verificada"],
     true,
   );
-  assert.match(verifiedPanel.text, /No hay usuarias verificadas activas en este grupo/);
+  assert.match(verifiedPanel.text, /Aún no hay usuarias verificadas en este grupo/);
 
   replies.length = 0;
   await withCapturedLogs(async () => {

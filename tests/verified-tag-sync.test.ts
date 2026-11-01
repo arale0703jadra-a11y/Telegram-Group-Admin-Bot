@@ -387,9 +387,20 @@ test("review panels expose an empty state and only actionable review statuses", 
     review_claim_previous_status: null,
   };
   const panel = buildVerifiedTagCandidatesPanel([review], 0, "Grupo");
-  assert.ok(panel.keyboard.inline_keyboard.flat().some((button) =>
-    buttonCallbackData(button) === "vu:apply:approve:501",
-  ));
+  const callbacks = panel.keyboard.inline_keyboard.flat().map(buttonCallbackData);
+  assert.ok(callbacks.includes("vu:review:approve:501"));
+  assert.ok(!callbacks.includes("vu:apply:approve:501"));
+  const confirmation = buildVerifiedTagReviewConfirmPanel(
+    review,
+    "approve",
+    "Grupo",
+    "single-use-token",
+  );
+  assert.ok(
+    confirmation.keyboard.inline_keyboard.flat().some((button) =>
+      buttonCallbackData(button) === "vu:apply:approve:501:single-use-token",
+    ),
+  );
   assert.ok(panel.keyboard.inline_keyboard.flat().some((button) =>
     buttonCallbackData(button) === "vu:review:reject:501",
   ));
@@ -431,28 +442,26 @@ test("candidates panel navigation stays within the verified module", () => {
   assert.ok(callbacks.includes("vu:review-list:0"));
 });
 
-test("the verified panel has detection, list, manual add, label, and back actions", () => {
+test("the verified landing page directs administrators to manual-only management", () => {
   const panel = buildVerifiedTitleConfigPanel(
     "Grupo",
     ["Verificada"],
     true,
   );
-  assert.match(panel.text, /Detección automática: 🟢 Activada/);
-  assert.match(panel.text, /Etiqueta actual: "Verificada"/);
-  assert.match(panel.text, /generan candidatas para revisión/);
+  assert.match(panel.text, /GESTIÓN DE VERIFICADAS/);
+  assert.match(panel.text, /exclusivamente manuales/);
+  assert.match(panel.text, /ninguna detección crea verificaciones/);
   const buttons = panel.keyboard.inline_keyboard.flat();
-  assert.equal(buttons.length, 5);
+  assert.equal(buttons.length, 2);
   assert.deepEqual(
     buttons.map((button) => button.text),
     [
-      "🟢 Detección: ACTIVADA",
-      "👥 Lista de Verificadas",
-      "➕ Añadir verificada",
-      '🏷️ Etiqueta actual: "Verificada"',
+      "👑 Ver y gestionar",
       "⬅️ Volver al Menú Principal",
     ],
   );
-  assert.ok(buttons.some((button) => buttonCallbackData(button) === "cfg:verified_tags_toggle"));
+  assert.ok(buttons.some((button) => buttonCallbackData(button) === "fa:verified"));
+  assert.ok(!buttons.some((button) => buttonCallbackData(button) === "cfg:verified_tags_toggle"));
 });
 
 test("a recognized tag creates one review candidate and never a verified record", async () => {

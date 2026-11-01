@@ -145,8 +145,10 @@ export async function consumeRecoveryKey(
     if (audit.error) throw audit.error;
     return false;
   }
-  // La transferencia solo puede recaer en una identidad administrativa
-  // autorizada: nunca crea una cuarta plaza ni otorga acceso a un externo.
+  // La transferencia solo puede recaer en una identidad administrativa ya
+  // autorizada (configurada en entorno o propietario persistido): la clave no
+  // crea una cuarta plaza ni otorga propiedad a un externo. Una pérdida total
+  // se recupera con la identidad configurada, que siempre supera esta guarda.
   if (!(await isEffectiveOwner(newOwnerId))) {
     const audit = await db.rpc("zeus_record_recovery_rejection", {
       p_actor_user_id: newOwnerId,

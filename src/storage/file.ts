@@ -2,6 +2,7 @@ import {
   existsSync,
   copyFileSync,
   mkdirSync,
+  renameSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
@@ -140,6 +141,28 @@ export class FileStore implements PersistenceStore {
       this.timer = undefined;
     }
     await this.flushAll();
+  }
+
+  async moveGroupData(fromChatId: number, toChatId: number): Promise<boolean> {
+    if (fromChatId === toChatId) return true;
+    await this.flushForced();
+
+    const source = this.filePath(fromChatId);
+    const destination = this.filePath(toChatId);
+    if (existsSync(destination)) return false;
+    const sourceWasCorrupt = this.corruptGroups.has(fromChatId);
+    if (existsSync(source)) {
+      mkdirSync(dirname(destination), { recursive: true });
+      renameSync(source, destination);
+    }
+
+    const sourceData = this.cache.get(fromChatId);
+    if (sourceData) this.cache.set(toChatId, sourceData);
+    this.cache.delete(fromChatId);
+    this.corruptGroups.delete(fromChatId);
+    if (sourceWasCorrupt) this.corruptGroups.add(toChatId);
+    if (this.corruptGroups.has(toChatId)) return false;
+    return true;
   }
 }
 

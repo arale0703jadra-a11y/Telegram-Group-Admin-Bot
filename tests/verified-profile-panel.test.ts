@@ -4,6 +4,7 @@ import {
   buildVerifiedActionConfirmPanel,
   buildVerifiedPermissionConfirmPanel,
   buildRevokedVerifiedUsersPanel,
+  buildVerifiedRecordsPanel,
   buildVerifiedUserPanel,
   VerifiedAction,
   verifiedPermissionsSnapshot,
@@ -65,7 +66,7 @@ test("verified profile shows IDs, Telegram membership, sanctions, and available 
   );
 
   assert.match(panel.text, /ID: 456/);
-  assert.match(panel.text, /✅ Verificación activa/);
+  assert.match(panel.text, /✅ VERIFICADA/);
   assert.match(panel.text, /Grupo ID: -100123/);
   assert.match(panel.text, /@current\\_name/);
   assert.match(panel.text, /Estado Telegram: 👤 Miembro; En el grupo/);
@@ -90,13 +91,55 @@ test("expired verified profile is shown as inactive and offers explicit renewal"
     undefined,
     new Date("2026-01-01T00:00:00.000Z"),
   );
-  assert.match(panel.text, /⛔ Verificación no activa/);
+  assert.match(panel.text, /⛔ VERIFICACIÓN VENCIDA/);
   assert.match(panel.text, /caducada el/);
   assert.ok(
     panel.keyboard.inline_keyboard.flat().some(
       (button) => buttonCallbackData(button)?.startsWith("vu:reactivate-confirm:456:"),
     ),
   );
+});
+
+test("revoked and expired records have distinct persisted states", () => {
+  const revoked = buildVerifiedUserPanel(
+    verifiedUser({
+      verified: false,
+      revoked_at: "2026-02-01T00:00:00.000Z",
+    }),
+    "Test group",
+    "unknown",
+  );
+  const expired = buildVerifiedUserPanel(
+    verifiedUser({ valid_until: "2020-01-01T00:00:00.000Z" }),
+    "Test group",
+    "unknown",
+    undefined,
+    new Date("2026-01-01T00:00:00.000Z"),
+  );
+
+  assert.match(revoked.text, /⛔ VERIFICACIÓN REVOCADA/);
+  assert.match(expired.text, /VERIFICACIÓN VENCIDA/);
+  assert.match(expired.text, /Estado Telegram: ❔ No disponible/);
+});
+
+test("verified record list supports searchable profile links and group-scoped status", () => {
+  const record = verifiedUser({
+    valid_until: "2020-01-01T00:00:00.000Z",
+  });
+  const panel = buildVerifiedRecordsPanel(
+    [record],
+    0,
+    "Test group",
+    new Date("2026-01-01T00:00:00.000Z"),
+    "sample",
+  );
+  const callbacks = panel.keyboard.inline_keyboard.flat().map(buttonCallbackData);
+
+  assert.match(panel.text, /Búsqueda: sample/);
+  assert.match(panel.text, /vencida/);
+  assert.ok(callbacks.includes("vu:profile:456"));
+  assert.ok(callbacks.includes("vu:search"));
+  assert.ok(callbacks.includes("vu:search-clear"));
 });
 
 test("non-functional link and fixed promotion permissions are informative, not toggle controls", () => {

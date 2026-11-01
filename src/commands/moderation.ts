@@ -307,7 +307,7 @@ moderationCommand.command(COMMANDS.borrar, async (ctx) => {
     return;
   }
 
-  const { canDelete } = await getBotRights(ctx, chatId);
+  const { canDelete } = await getBotRights(ctx, chatId, { fresh: true });
   if (!canDelete) {
     await notifyActor(ctx, "⛔ El bot no tiene permisos para borrar mensajes en este grupo.");
     return;

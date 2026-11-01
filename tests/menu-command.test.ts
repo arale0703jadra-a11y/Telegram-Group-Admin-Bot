@@ -33,7 +33,7 @@ globalThis.fetch = (async () =>
 const { menuCommand } = await import("../src/commands/menu.js");
 const { startCommand } = await import("../src/commands/start.js");
 const { registerCommands } = await import("../src/commands/index.js");
-const { registerGroup } = await import("../src/services/group-registry.js");
+const { markUserAsAdmin, registerGroup } = await import("../src/services/group-registry.js");
 const { resetSecurityCaches } = await import("../src/utils/member-cache.js");
 
 const OWNER = 900000031;
@@ -43,7 +43,8 @@ interface Harness {
   ctx: MyContext;
   replies: Array<{ text: string; hasKeyboard: boolean; replyMarkup?: unknown }>;
   sentDms: Array<{ userId: number; text: string }>;
-  deleted: number;
+  originalCommandDeleteCalls: number;
+  scheduledDeletes: Array<{ chatId: number; messageId: number }>;
   getMeCalls: number;
 }
 
@@ -57,6 +58,7 @@ function createMenuCtx(options: {
   replyThrowsAlways?: boolean;
   dmThrows?: boolean;
   dmError?: Error;
+  deleteError?: Error;
   botUsername?: string | null;
   getMeError?: Error;
   getMeUsername?: string;
@@ -73,8 +75,10 @@ function createMenuCtx(options: {
   };
   const replies: Harness["replies"] = [];
   const sentDms: Harness["sentDms"] = [];
+  const scheduledDeletes: Harness["scheduledDeletes"] = [];
   let replyCalls = 0;
   let getMeCalls = 0;
+  let originalCommandDeleteCalls = 0;
   const chat =
     options.chatType === "private"
       ? { id: options.chatId, type: "private" as const }
@@ -118,7 +122,10 @@ function createMenuCtx(options: {
       });
       return { message_id: 100 + replyCalls };
     },
-    deleteMessage: async () => true,
+    deleteMessage: async () => {
+      originalCommandDeleteCalls += 1;
+      return true;
+    },
     api: {
       sendMessage: async (userId: number, text: string) => {
         if (options.dmThrows) {
@@ -129,6 +136,13 @@ function createMenuCtx(options: {
         }
         sentDms.push({ userId, text });
         return { message_id: 200 };
+      },
+      deleteMessage: async (chatId: number, messageId: number) => {
+        scheduledDeletes.push({ chatId, messageId });
+        if (options.deleteError) {
+          throw options.deleteError;
+        }
+        return true;
       },
       getMe: async () => {
         getMeCalls += 1;
@@ -149,18 +163,39 @@ function createMenuCtx(options: {
         if (options.memberLookupError) {
           throw options.memberLookupError;
         }
+        if (userId === BOT_ID) {
+          return ({
+            status: "administrator",
+            user: { id: BOT_ID, is_bot: true, first_name: "ZEUS" },
+            can_manage_chat: true,
+            can_delete_messages: true,
+            can_restrict_members: true,
+            can_promote_members: false,
+            can_invite_users: true,
+            can_pin_messages: false,
+            can_manage_topics: false,
+          }) as ChatMember;
+        }
         return ({
           status: userId === options.fromId ? (options.memberStatus ?? "member") : "member",
           user: { id: userId, is_bot: false, first_name: "User" },
         }) as ChatMember;
       },
+      getChat: async () => ({
+        id: options.chatId,
+        type: "supergroup",
+        title: "Grupo Uno",
+      }),
     },
   } as unknown as MyContext;
   return {
     ctx,
     replies,
     sentDms,
-    deleted: 0,
+    scheduledDeletes,
+    get originalCommandDeleteCalls() {
+      return originalCommandDeleteCalls;
+    },
     get getMeCalls() {
       return getMeCalls;
     },
@@ -185,6 +220,31 @@ test("/menu en privado con grupos administrables abre el panel", async () => {
     h.replies.some((r) => r.text.includes("PANEL DE ADMINISTRACIÓN") && r.hasKeyboard),
     `respuestas: ${h.replies.map((r) => r.text.slice(0, 40)).join(" | ")}`,
   );
+});
+
+test("/menu permite al System Owner persistido abrir el panel", async () => {
+  const persistedOwnerId = 900999999;
+  simulatedSystemOwnerId = persistedOwnerId;
+  try {
+    resetSecurityCaches();
+    registerGroup(-910017, "Grupo de propietario persistido");
+    markUserAsAdmin(-910017, persistedOwnerId);
+    const h = createMenuCtx({
+      chatType: "private",
+      chatId: persistedOwnerId,
+      fromId: persistedOwnerId,
+      memberStatus: "administrator",
+    });
+
+    await runMenu(h.ctx);
+
+    assert.ok(h.replies.some((reply) =>
+      reply.text.includes("PANEL DE ADMINISTRACIÓN")
+    ));
+  } finally {
+    simulatedSystemOwnerId = OWNER;
+    resetSecurityCaches();
+  }
 });
 
 test("en privado autoriza ctx.from.id, no ctx.chat.id", async () => {
@@ -293,6 +353,60 @@ test("usuario sin permisos no obtiene el panel administrativo", async () => {
   );
 });
 
+test("la denegación grupal elimina solo la respuesta del bot después de cinco segundos", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  resetSecurityCaches();
+  const h = createMenuCtx({
+    chatType: "supergroup",
+    chatId: -910018,
+    fromId: 900999999,
+    memberStatus: "administrator",
+  });
+
+  await runMenu(h.ctx);
+
+  assert.equal(h.replies.length, 1);
+  assert.match(h.replies[0]?.text ?? "", /No autorizado/u);
+  assert.equal(h.originalCommandDeleteCalls, 0, "el comando original no se borra");
+  assert.deepEqual(h.scheduledDeletes, []);
+
+  t.mock.timers.tick(4_999);
+  await Promise.resolve();
+  assert.deepEqual(h.scheduledDeletes, []);
+
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+  assert.deepEqual(h.scheduledDeletes, [{ chatId: -910018, messageId: 101 }]);
+  assert.equal(h.originalCommandDeleteCalls, 0, "solo se elimina el mensaje del bot");
+});
+
+test("un error al eliminar el rechazo queda capturado y no interrumpe el bot", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  resetSecurityCaches();
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...values: unknown[]) => warnings.push(values.join(" "));
+  try {
+    const h = createMenuCtx({
+      chatType: "group",
+      chatId: -910019,
+      fromId: 900999999,
+      deleteError: Object.assign(new Error("Forbidden"), { error_code: 403 }),
+    });
+
+    await runMenu(h.ctx);
+    t.mock.timers.tick(5_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(h.scheduledDeletes, [{ chatId: -910019, messageId: 101 }]);
+    assert.equal(h.originalCommandDeleteCalls, 0);
+    assert.ok(warnings.some((warning) => /No se pudo eliminar el rechazo/u.test(warning)));
+    assert.ok(warnings.every((warning) => !/-910019|900999999/u.test(warning)));
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("/menu@zeus_test abre el panel igual que /menu", async () => {
   resetSecurityCaches();
   registerGroup(-910001, "Grupo Uno");
@@ -322,8 +436,8 @@ test("si falla el envío privado, se ofrece el deep link sin atribuir una causa"
   await runMenu(h.ctx);
   assert.equal(h.sentDms.length, 0);
   assert.equal(h.replies.length, 1);
-  assert.match(h.replies[0]?.text ?? "", /No pude enviar el panel directamente/u);
-  assert.doesNotMatch(h.replies[0]?.text ?? "", /nunca inició|te bloqueó/u);
+  assert.match(h.replies[0]?.text ?? "", /Pulsa «Abrir ZEUS».*Start/u);
+  assert.doesNotMatch(h.replies[0]?.text ?? "", /No autorizado/u);
   assert.ok(h.replies[0]?.replyMarkup instanceof InlineKeyboard);
   const markup = h.replies[0]?.replyMarkup as InlineKeyboard;
   const linkButton = markup.inline_keyboard[0]?.[0];
@@ -351,7 +465,7 @@ test("el deep link usa getMe del mismo cliente si ctx.me no contiene username", 
   const linkButton = markup.inline_keyboard[0]?.[0];
   assert.ok(linkButton && "url" in linkButton);
   assert.equal(linkButton.url, "https://t.me/zeus_test?start=menu");
-  assert.doesNotMatch(h.replies[0]?.text ?? "", /nunca inició|bloqueó/u);
+  assert.match(h.replies[0]?.text ?? "", /Start \(Iniciar\)/u);
 });
 
 test("no inventa un enlace si getMe falla", async () => {
@@ -373,7 +487,7 @@ test("no inventa un enlace si getMe falla", async () => {
     assert.equal(h.getMeCalls, 1);
     assert.equal(h.replies.length, 1);
     assert.equal(h.replies[0]?.hasKeyboard, false);
-    assert.match(h.replies[0]?.text ?? "", /ni obtener un enlace/u);
+    assert.match(h.replies[0]?.text ?? "", /no tengo un enlace directo/u);
     assert.ok(errors.some((line) => /nombre del bot/u.test(line)));
   } finally {
     console.error = originalError;
@@ -395,7 +509,7 @@ test("no genera un deep link si getMe devuelve un username vacío", async () => 
   assert.equal(h.getMeCalls, 1);
   assert.equal(h.replies.length, 1);
   assert.equal(h.replies[0]?.hasKeyboard, false);
-  assert.match(h.replies[0]?.text ?? "", /ni obtener un enlace/u);
+  assert.match(h.replies[0]?.text ?? "", /no tengo un enlace directo/u);
 });
 
 test("no genera un deep link si el username del bot es inválido", async () => {
@@ -412,7 +526,7 @@ test("no genera un deep link si el username del bot es inválido", async () => {
   assert.equal(h.sentDms.length, 0);
   assert.equal(h.replies.length, 1);
   assert.equal(h.replies[0]?.hasKeyboard, false);
-  assert.match(h.replies[0]?.text ?? "", /ni obtener un enlace/u);
+  assert.match(h.replies[0]?.text ?? "", /no tengo un enlace directo/u);
 });
 
 test("/start menu abre el panel autorizado sin duplicar la bienvenida", async () => {

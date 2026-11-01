@@ -3,14 +3,17 @@ import { isGroupChat, isUserAdmin } from "../utils/permissions.js";
 import { buildMainPanel } from "../menus/panels.js";
 import {
   markUserAsAdmin,
-  registerGroup,
+  reconcileRegisteredBotMembership,
 } from "../services/group-registry.js";
+import { invalidateSecurityCaches } from "../utils/member-cache.js";
 import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 import type { MyContext } from "../types.js";
 import { COMMANDS } from "./definitions.js";
 import { openPrivatePanel } from "../utils/private-panel.js";
 
 export const menuCommand = new Composer<MyContext>();
+
+const UNAUTHORIZED_REPLY_DELETE_DELAY_MS = 5_000;
 
 menuCommand.command(COMMANDS.menu, async (ctx) => {
   const from = ctx.from;
@@ -36,10 +39,13 @@ menuCommand.command(COMMANDS.menu, async (ctx) => {
     }
 
     if (!(await isAuthorizedPanelUser(from.id))) {
-      await replySafely(
+      const denial = await replySafely(
         ctx,
         "⛔ No autorizado para acceder al panel de ZEUS.",
       );
+      if (denial && isGroupChat(ctx)) {
+        scheduleOwnReplyDeletion(ctx, chat.id, denial.message_id);
+      }
       return;
     }
 
@@ -58,8 +64,19 @@ menuCommand.command(COMMANDS.menu, async (ctx) => {
         selectedGroupId: groupId,
         selectedGroupTitle: groupTitle,
       };
-      registerGroup(groupId, groupTitle);
-      markUserAsAdmin(groupId, from.id);
+      try {
+        invalidateSecurityCaches(groupId);
+        const botMember = await ctx.api.getChatMember(groupId, ctx.me.id);
+        if (reconcileRegisteredBotMembership(groupId, groupTitle, botMember)) {
+          markUserAsAdmin(groupId, from.id);
+        }
+      } catch (error) {
+        console.warn(
+          `[MENU] No se pudo verificar el estado administrativo de ZEUS error=${
+            error instanceof Error ? error.name : "unknown"
+          }`,
+        );
+      }
       const sent = await sendPrivatePanel(ctx, from.id, buildMainPanel(groupTitle));
       if (sent) {
         await replySafely(
@@ -73,13 +90,13 @@ menuCommand.command(COMMANDS.menu, async (ctx) => {
       if (startLink) {
         await replySafely(
           ctx,
-          "⛔ No pude enviar el panel directamente. Puedes abrir ZEUS por privado e intentarlo de nuevo.",
+          "⛔ No pude enviarte el panel por privado. Pulsa «Abrir ZEUS» y luego Start (Iniciar) en el chat privado para abrir el panel.",
           new InlineKeyboard().url("Abrir ZEUS", startLink),
         );
       } else {
         await replySafely(
           ctx,
-          "⛔ No pude enviar el panel ni obtener un enlace de ZEUS. Inténtalo de nuevo más tarde.",
+          "⛔ No pude enviarte el panel y no tengo un enlace directo. Abre el chat privado de ZEUS y pulsa Start (Iniciar); después vuelve a intentarlo.",
         );
       }
       return;
@@ -127,16 +144,40 @@ async function replySafely(
   ctx: MyContext,
   text: string,
   replyMarkup?: InlineKeyboard,
-): Promise<void> {
+): Promise<{ message_id: number } | undefined> {
   try {
-    await ctx.reply(text, replyMarkup ? { reply_markup: replyMarkup } : undefined);
+    const sent = await ctx.reply(
+      text,
+      replyMarkup ? { reply_markup: replyMarkup } : undefined,
+    );
+    return { message_id: sent.message_id };
   } catch (error) {
     console.error(
       `[MENU] No se pudo enviar la respuesta error=${
         error instanceof Error ? error.name : "unknown"
       }`,
     );
+    return undefined;
   }
+}
+
+function scheduleOwnReplyDeletion(
+  ctx: MyContext,
+  chatId: number,
+  messageId: number,
+): void {
+  const timer = setTimeout(() => {
+    void Promise.resolve()
+      .then(() => ctx.api.deleteMessage(chatId, messageId))
+      .catch((error: unknown) => {
+        console.warn(
+          `[MENU] No se pudo eliminar el rechazo enviado por ZEUS error=${
+            error instanceof Error ? error.name : "unknown"
+          }`,
+        );
+      });
+  }, UNAUTHORIZED_REPLY_DELETE_DELAY_MS);
+  timer.unref();
 }
 
 async function sendPrivatePanel(

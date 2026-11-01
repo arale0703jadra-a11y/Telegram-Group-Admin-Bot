@@ -27,7 +27,11 @@ import type {
   VerifiedUser,
   VerifiedUserPermissions,
 } from "../services/verified-users.js";
-import { isActiveVerifiedRecord } from "../services/verified-user-policy.js";
+import {
+  formatVerifiedBadge,
+  getVerifiedDisplayState,
+  isActiveVerifiedRecord,
+} from "../services/verified-user-policy.js";
 import {
   COMMAND_DEFINITIONS,
   type CommandCategory,
@@ -76,6 +80,7 @@ export function buildManualVerifiedConfirmPanel(input: {
   username?: string;
   reactivate: boolean;
   groupTitle?: string;
+  confirmationToken?: string;
 }): Panel {
   const identity = input.username
     ? `@${escapeLegacyMarkdown(input.username)}`
@@ -90,7 +95,11 @@ export function buildManualVerifiedConfirmPanel(input: {
     keyboard: new InlineKeyboard()
       .text(
         "✅ Confirmar",
-        VerifiedAction.manualConfirm(input.userId, input.reactivate),
+        VerifiedAction.manualConfirm(
+          input.userId,
+          input.reactivate,
+          input.confirmationToken,
+        ),
       )
       .text("❌ Cancelar", "vu:manual-cancel"),
   };
@@ -103,6 +112,7 @@ export function buildQuickVerifiedActivationConfirmPanel(input: {
   username?: string;
   reactivate: boolean;
   groupTitle?: string;
+  confirmationToken?: string;
 }): Panel {
   const identity = input.username
     ? `@${escapeLegacyMarkdown(input.username)}`
@@ -116,7 +126,8 @@ export function buildQuickVerifiedActivationConfirmPanel(input: {
     keyboard: new InlineKeyboard()
       .text(
         "✅ Confirmar",
-        `vu:quick-activate:${input.groupId}:${input.userId}:${input.reactivate ? "reactivate" : "activate"}`,
+        `vu:quick-activate:${input.groupId}:${input.userId}:${input.reactivate ? "reactivate" : "activate"}` +
+          (input.confirmationToken ? `:${input.confirmationToken}` : ""),
       )
       .text("❌ Cancelar", "vu:manual-cancel"),
   };
@@ -128,6 +139,7 @@ export function buildQuickVerifiedRevokeConfirmPanel(input: {
   displayName: string;
   username?: string;
   groupTitle?: string;
+  confirmationToken?: string;
 }): Panel {
   const identity = input.username
     ? `@${escapeLegacyMarkdown(input.username)}`
@@ -140,7 +152,8 @@ export function buildQuickVerifiedRevokeConfirmPanel(input: {
     keyboard: new InlineKeyboard()
       .text(
         "✅ Confirmar",
-        `vu:quick-revoke:${input.groupId}:${input.userId}`,
+        `vu:quick-revoke:${input.groupId}:${input.userId}` +
+          (input.confirmationToken ? `:${input.confirmationToken}` : ""),
       )
       .text("❌ Cancelar", "vu:manual-cancel"),
   };
@@ -479,10 +492,12 @@ export function buildVerifiedRecordsPanel(
   page: number,
   groupTitle?: string,
   now = new Date(),
+  searchTerm?: string,
 ): Panel {
   const PAGE_SIZE = 8;
   const pageCount = Math.max(1, Math.ceil(records.length / PAGE_SIZE));
-  const pageItems = records.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const currentPage = Math.max(0, Math.min(page, pageCount - 1));
+  const pageItems = records.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
   const entries = pageItems.map((record) => {
     let status: string;
     if (record.revoked_at !== null) {
@@ -505,17 +520,32 @@ export function buildVerifiedRecordsPanel(
     const identity = escapeLegacyMarkdown(
       record.display_name || record.username || `ID ${record.user_id}`,
     );
-    return `• ${identity} — ID ${record.user_id} — ${status}`;
+    return {
+      line: `• ${identity} — ID ${record.user_id} — ${status}`,
+      record,
+    };
   });
   const keyboard = new InlineKeyboard();
-  if (page > 0) keyboard.text("⬅️ Anterior", `vu:list:${page - 1}`);
-  if (page + 1 < pageCount) keyboard.text("Siguiente ➡️", `vu:list:${page + 1}`);
-  keyboard.row().text("⬅️ Verificadas", "fa:verified");
+  for (const { record } of entries) {
+    const identity = record.display_name || record.username || `ID ${record.user_id}`;
+    keyboard
+      .text(identity.slice(0, 40), `vu:profile:${record.user_id}`)
+      .row();
+  }
+  if (currentPage > 0) keyboard.text("⬅️ Anterior", `vu:list:${currentPage - 1}`);
+  if (currentPage + 1 < pageCount) keyboard.text("Siguiente ➡️", `vu:list:${currentPage + 1}`);
+  keyboard
+    .row()
+    .text("🔎 Buscar", "vu:search")
+    .text("🧹 Limpiar búsqueda", "vu:search-clear")
+    .row()
+    .text("⬅️ Verificadas", "fa:verified");
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n📋 *REGISTROS DE VERIFICADAS*\n` +
-      (entries.length ? entries.join("\n") : "No hay registros para mostrar.") +
-      `\n\nPágina ${Math.min(page + 1, pageCount)}/${pageCount}. Solo lectura.`,
+      (searchTerm ? `Búsqueda: ${escapeLegacyMarkdown(searchTerm)}\n` : "") +
+      (entries.length ? entries.map(({ line }) => line).join("\n") : "No hay registros para mostrar.") +
+      `\n\nPágina ${currentPage + 1}/${pageCount}.`,
     keyboard,
   };
 }
@@ -874,18 +904,28 @@ export function buildVerifiedModelsPanel(
   tagDetectionEnabled = false,
   autoRevocationEnabled = false,
 ): Panel {
+  // Parametros de deteccion conservados solo por compatibilidad de firma:
+  // la gestion de verificadas es exclusivamente manual (sin UI de deteccion).
+  void recognizedTags;
+  void tagDetectionEnabled;
   const pageSize = 5;
   const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
   const currentPage = Math.max(0, Math.min(page, pageCount - 1));
   const pageUsers = users.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
   const keyboard = new InlineKeyboard();
+  const now = new Date();
+  const activeCount = users.filter((user) => isActiveVerifiedRecord(user, now)).length;
+  const inactiveCount = users.length - activeCount;
 
   for (const user of pageUsers) {
     const userId = String(user.user_id);
+    const identity = user.display_name || user.username || `ID ${user.user_id}`;
     keyboard
+      .text(`👤 ${identity.slice(0, 34)}`, `vu:profile:${user.user_id}`)
+      .row()
       .text(`🔇 24 h · ${userId}`, FilterAction.verifiedMute(user.user_id))
       .text(`⛔ · ${userId}`, FilterAction.verifiedBan(user.user_id))
-      .text(`❌ · ${userId}`, FilterAction.verifiedRevoke(user.user_id))
+      .text(`❌ · ${userId}`, `vu:revoke-confirm:${user.user_id}`)
       .row();
   }
 
@@ -900,10 +940,10 @@ export function buildVerifiedModelsPanel(
     keyboard.row();
   }
   keyboard
-    .text(
-      tagDetectionEnabled ? "🔴 Pausar detección" : "🟢 Activar detección",
-      "cfg:verified_tags_toggle",
-    )
+    .text("➕ Añadir verificada", "vu:add")
+    .text("🔎 Buscar usuaria", VerifiedAction.search)
+    .row()
+    .text("🧾 Revisar candidatas", "vu:candidates:0")
     .row()
     .text(
       autoRevocationEnabled
@@ -912,11 +952,8 @@ export function buildVerifiedModelsPanel(
       "vu:auto-revoke-toggle",
     )
     .row()
-    .text("🔍 Escanear / Detectar Verificadas", "vu:scan_now")
-    .row()
-    .text("➕ Añadir verificada", "vu:add")
-    .row()
-    .text("✏️ Etiquetas", "vu:edit")
+    .text("📜 Historial / Revocadas", "vu:revoked-list:0")
+    .text("🔄 Actualizar", FilterAction.verified)
     .row()
     .text("⬅️ Volver al Menú Principal", MenuAction.main)
     .row()
@@ -924,28 +961,35 @@ export function buildVerifiedModelsPanel(
 
   const list = pageUsers.length
     ? pageUsers.map((user) => {
-        const identity = user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
+        const identity =
+          user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
+        const badge = formatVerifiedBadge(getVerifiedDisplayState(user, { now }));
         const validity = user.valid_until
           ? formatVerifiedValidity(user.valid_until)
           : "sin fecha (compatibilidad heredada)";
-        return `• ✅ ${escapeLegacyMarkdown(identity)} — ID ${user.user_id}\n  Vigente hasta: ${validity}`;
+        return (
+          `• ${escapeLegacyMarkdown(identity)} — ID ${user.user_id}` +
+          `\n  ${badge || "✅ VERIFICADA"}` +
+          `\n  Vigencia: ${validity}`
+        );
       }).join("\n")
-    : "No hay usuarias verificadas activas en este grupo.";
+    : users.length === 0
+      ? "🌟 Aún no hay usuarias verificadas en este grupo.\n" +
+        "Usa «➕ Añadir verificada» o responde a un mensaje con /verificada para registrar la primera."
+      : "No hay registros en esta página.";
 
   return {
     text:
-      `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n` +
-      `Detección de marcas: ${tagDetectionEnabled ? "activa" : "inactiva"}\n` +
-      `Revocación automática: ${autoRevocationEnabled ? "activa" : "inactiva"}\n` +
-      `Marcas configuradas: ${recognizedTags.join(", ") || "ninguna"}\n\n` +
+      `${formatGroupHeader(groupTitle)}\n\n🛡️ *GESTIÓN DE VERIFICADAS*\n\n` +
+      `Estados reales: ${activeCount} activa(s) · ${inactiveCount} inactiva(s) · ${users.length} registro(s)\n` +
+      `Revocación automática: ${autoRevocationEnabled ? "activa" : "inactiva"}\n\n` +
       `${list}\n\n` +
-      "Una verificación vencida no concede privilegios, aunque la revocación automática esté desactivada. La revocación automática solo persiste el cambio de estado y el aviso; renovar requiere una acción explícita.\n\n" +
+      "Las altas son exclusivamente manuales: ninguna detección concede verificación.\n" +
       "🔇 Silenciar durante 24 horas · ⛔ Banear · ❌ Quitar verificación" +
       (pageCount > 1 ? `\n\nPágina ${currentPage + 1} de ${pageCount}` : ""),
     keyboard,
   };
 }
-
 function escapeLegacyMarkdown(value: string): string {
   return value.replace(/([_*`\[\]\\])/g, "\\$1");
 }
@@ -1709,14 +1753,27 @@ export function buildActivityUnavailablePanel(groupTitle?: string): Panel {
 }
 
 export const VerifiedAction = {
-  manualConfirm: (userId: number, reactivate: boolean): string =>
-    `vu:manual-confirm:${userId}:${reactivate ? "reactivate" : "activate"}`,
+  profile: (userId: number): string => `vu:profile:${userId}`,
+  search: "vu:search",
+  manualConfirm: (
+    userId: number,
+    reactivate: boolean,
+    confirmationToken?: string,
+  ): string =>
+    `vu:manual-confirm:${userId}:${reactivate ? "reactivate" : "activate"}` +
+    (confirmationToken ? `:${confirmationToken}` : ""),
   revokeConfirm: (userId: number): string => `vu:revoke-confirm:${userId}`,
-  revokeApply: (userId: number): string => `vu:revoke:${userId}`,
+  revokeApply: (userId: number, confirmationToken?: string): string =>
+    `vu:revoke:${userId}` + (confirmationToken ? `:${confirmationToken}` : ""),
   reactivateConfirm: (userId: number, permissions: string): string =>
     `vu:reactivate-confirm:${userId}:${permissions}`,
-  reactivateApply: (userId: number, permissions: string): string =>
-    `vu:reactivate:${userId}:${permissions}`,
+  reactivateApply: (
+    userId: number,
+    permissions: string,
+    confirmationToken?: string,
+  ): string =>
+    `vu:reactivate:${userId}:${permissions}` +
+    (confirmationToken ? `:${confirmationToken}` : ""),
   permissionConfirm: (
     userId: number,
     permission: keyof VerifiedUserPermissions,
@@ -1774,6 +1831,13 @@ export interface VerifiedUserPanelHistory {
     resultState: string;
     last_error: string | null;
   }>;
+  verificationEvents?: Array<{
+    event_type: "activated" | "reactivated" | "revoked";
+    created_at: string;
+    activated_at: string | null;
+    valid_until: string | null;
+  }>;
+  verificationHistoryUnavailable?: boolean;
 }
 
 const VERIFIED_PERMISSION_LABELS: Record<keyof VerifiedUserPermissions, string> = {
@@ -1786,10 +1850,6 @@ const VERIFIED_PERMISSION_LABELS: Record<keyof VerifiedUserPermissions, string> 
   bypass_automatic_deletion: "Exención de eliminación automática",
 };
 
-function escapeMarkdownV2(value: string): string {
-  return value.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
-}
-
 export function buildVerifiedUserPanel(
   user: VerifiedUser,
   groupTitle: string | undefined,
@@ -1798,8 +1858,8 @@ export function buildVerifiedUserPanel(
   now = new Date(),
 ): Panel {
   const identity = history?.currentUsername
-    ? `@${escapeMarkdownV2(history.currentUsername)}`
-    : user.display_name ?? user.username ?? `ID ${user.user_id}`;
+    ? `@${escapeLegacyMarkdown(history.currentUsername)}`
+    : escapeLegacyMarkdown(user.display_name ?? user.username ?? `ID ${user.user_id}`);
   const memberStatus: Record<string, string> = {
     member: "👤 Miembro; En el grupo",
     administrator: "🛡️ Administrador; En el grupo",
@@ -1807,7 +1867,7 @@ export function buildVerifiedUserPanel(
     restricted: "⚠️ Restringido",
     left: "🚪 Fuera del grupo",
     kicked: "⛔ Expulsado",
-    unknown: "❔ Desconocido",
+    unknown: "❔ No disponible",
   };
   const permissionLines = Object.entries(VERIFIED_PERMISSION_LABELS)
     .map(([key, label]) => {
@@ -1828,17 +1888,21 @@ export function buildVerifiedUserPanel(
       (warning) => `Advertencia ${warning.date}${warning.reason ? `: ${warning.reason}` : ""}`,
     ),
     ...(history?.events ?? []).map(
-    (event) => `Evento ${escapeMarkdownV2(event.eventType)} (${event.createdAt})`,
+    (event) => `Evento ${escapeLegacyMarkdown(event.eventType)} (${event.createdAt})`,
     ),
     ...(history?.commands ?? []).map(
       (command) => `Orden ${command.action} [${command.resultState}]` +
         (command.last_error ? `: ${command.last_error}` : ""),
     ),
+    ...(history?.verificationEvents ?? []).map((event) =>
+      `Verificación ${event.event_type} (${event.created_at})` +
+      (event.valid_until ? `; vigente hasta ${event.valid_until}` : ""),
+    ),
   ].filter((line): line is string => Boolean(line));
   const active = isActiveVerifiedRecord(user, now);
-  const verifiedState = active
-    ? `✅ Verificación activa${user.valid_until ? ` — vigente ${formatVerifiedValidity(user.valid_until, now)}` : ""}`
-    : `⛔ Verificación no activa${user.valid_until ? ` — ${formatVerifiedValidity(user.valid_until, now)}` : ""}`;
+  const verifiedState =
+    (formatVerifiedBadge(getVerifiedDisplayState(user, { now })) || "⛔ SIN VERIFICACIÓN ACTIVA") +
+    (user.valid_until ? ` — ${formatVerifiedValidity(user.valid_until, now)}` : "");
   const keyboard = new InlineKeyboard();
   if (active) {
     keyboard.text("⛔ Revocar verificación", VerifiedAction.revokeConfirm(user.user_id));
@@ -1860,7 +1924,11 @@ export function buildVerifiedUserPanel(
       (history ? `Grupo ID: ${history.groupId}\n` : "") +
       `Estado Telegram: ${memberStatus[telegramStatus] ?? memberStatus.unknown}\n\n` +
       `${permissionLines.join("\n")}\n\n` +
-      (details.length ? `Historial disponible:\n${details.join("\n")}` : "Sin historial adicional disponible."),
+      (history?.verificationHistoryUnavailable
+        ? "Historial de verificaciones no disponible."
+        : details.length
+          ? `Historial disponible:\n${details.join("\n")}`
+          : "Sin historial adicional disponible."),
     keyboard,
   };
 }
@@ -1869,15 +1937,16 @@ export function buildVerifiedActionConfirmPanel(
   user: VerifiedUser,
   action: "revoke" | "reactivate",
   groupTitle?: string,
+  confirmationToken?: string,
 ): Panel {
   const reactivating = action === "reactivate";
   const snapshot = verifiedPermissionsSnapshot(user.permissions);
   const keyboard = new InlineKeyboard().text(
     "✅ Confirmar",
     reactivating
-      ? VerifiedAction.reactivateApply(user.user_id, snapshot)
-      : VerifiedAction.revokeApply(user.user_id),
-  ).text("❌ Cancelar", `vu:user:${user.user_id}`);
+      ? VerifiedAction.reactivateApply(user.user_id, snapshot, confirmationToken)
+      : VerifiedAction.revokeApply(user.user_id, confirmationToken),
+  ).text("❌ Cancelar", VerifiedAction.profile(user.user_id));
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n⚠️ *CONFIRMAR ${reactivating ? "REACTIVACIÓN" : "REVOCACIÓN"}*\n\n` +
@@ -1906,7 +1975,7 @@ export function buildVerifiedPermissionConfirmPanel(
         user.permissions[permission],
       ),
     )
-    .text("❌ Cancelar", `vu:user:${user.user_id}`);
+    .text("❌ Cancelar", VerifiedAction.profile(user.user_id));
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n⚙️ *CONFIRMAR CAMBIO DE PERMISO*\n\n` +
@@ -1942,10 +2011,13 @@ export function buildRevokedVerifiedUsersPanel(
   keyboard.row().text("⬅️ Volver", `vu:list`);
   return {
     text:
-      `${formatGroupHeader(groupTitle)}\n\n📋 *VERIFICACIONES REVOCADAS*\n\n` +
+      `${formatGroupHeader(groupTitle)}\n\n📋 *VERIFICACIONES INACTIVAS / REVOCADAS*\n\n` +
       `Página ${current + 1} de ${pageCount}\n` +
       (visible.length
-        ? visible.map((user) => `• ${user.display_name ?? user.username ?? `ID ${user.user_id}`} — ID ${user.user_id}`).join("\n")
+        ? visible.map((user) =>
+            `• ${user.display_name ?? user.username ?? `ID ${user.user_id}`} — ` +
+            `ID ${user.user_id} — ${user.revoked_at ? "⛔ REVOCADA" : "⏳ VENCIDA/INACTIVA"}`,
+          ).join("\n")
         : "No hay verificaciones revocadas."),
     keyboard,
   };
@@ -1962,16 +2034,18 @@ export function buildVerifiedTagCandidatesPanel(
   const visible = reviews.slice(current * pageSize, (current + 1) * pageSize);
   const keyboard = new InlineKeyboard();
   for (const review of visible) {
-    const name = review.display_name ?? review.username ?? `ID ${review.user_id}`;
+    const name = escapeLegacyMarkdown(
+      review.display_name ?? review.username ?? `ID ${review.user_id}`,
+    );
     keyboard.text(`👤 ${name}`, `vu:review:${review.user_id}`).row();
     if (review.status === "pending") {
       keyboard
-        .text("✅ Aprobar", `vu:apply:approve:${review.user_id}`)
+        .text("✅ Revisar aprobación", `vu:review:approve:${review.user_id}`)
         .text("❌ Rechazar", `vu:review:reject:${review.user_id}`)
         .row();
     } else if (review.status === "revoked_tag") {
       keyboard
-        .text("♻️ Revisar reactivación", `vu:apply:approve:${review.user_id}`)
+        .text("♻️ Revisar reactivación", `vu:review:approve:${review.user_id}`)
         .text("❌ Rechazar", `vu:review:reject:${review.user_id}`)
         .row();
     }
@@ -1984,7 +2058,7 @@ export function buildVerifiedTagCandidatesPanel(
       `${formatGroupHeader(groupTitle)}\n\n🧾 *REVISIÓN DE ETIQUETAS VERIFICADAS*\n\n` +
       (visible.length
         ? visible.map((review) =>
-            `• ${review.display_name ?? review.username ?? `ID ${review.user_id}`} — ` +
+            `• ${escapeLegacyMarkdown(review.display_name ?? review.username ?? `ID ${review.user_id}`)} — ` +
             `${review.status}; etiqueta: ${review.observed_tag ?? "ninguna"}`,
           ).join("\n")
         : "No hay candidatas ni discrepancias."),
@@ -1996,6 +2070,7 @@ export function buildVerifiedTagReviewConfirmPanel(
   review: VerifiedTagReview,
   action: "approve" | "reject",
   groupTitle?: string,
+  confirmationToken?: string,
 ): Panel {
   const message = action === "approve"
     ? review.status === "revoked_tag"
@@ -2005,13 +2080,14 @@ export function buildVerifiedTagReviewConfirmPanel(
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n⚠️ *CONFIRMAR REVISIÓN*\n\n` +
-      `Usuario: ${review.display_name ?? review.username ?? `ID ${review.user_id}`}\n` +
+      `Usuario: ${escapeLegacyMarkdown(review.display_name ?? review.username ?? `ID ${review.user_id}`)}\n` +
       `ID: ${review.user_id}\nEstado: ${review.status}\n` +
-      `Señal observada: ${review.observed_tag ?? "ninguna"}\n\n${message}`,
+      `Señal observada: ${escapeLegacyMarkdown(review.observed_tag ?? "ninguna")}\n\n${message}`,
     keyboard: new InlineKeyboard()
       .text(
         "✅ Confirmar",
-        `vu:apply:${action}:${review.user_id}`,
+        `vu:apply:${action}:${review.user_id}` +
+          (confirmationToken ? `:${confirmationToken}` : ""),
       )
       .text("❌ Cancelar", "vu:candidates:0"),
   };
@@ -2020,31 +2096,54 @@ export function buildVerifiedTagReviewConfirmPanel(
 export function buildVerifiedTitleConfigPanel(
   groupTitle: string | undefined,
   recognizedTags: string[],
-  tagSyncEnabled: boolean,
+  tagDetectionEnabled: boolean,
 ): Panel {
-  const currentTag = recognizedTags[0] ?? "Verificada";
+  // Panel de retorno tras configuraciones: la gestion vive en «Verificadas».
+  void recognizedTags;
+  void tagDetectionEnabled;
   return {
     text:
-      `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n` +
-      `Detección automática: ${tagSyncEnabled ? "🟢 Activada" : "🔴 Desactivada"}\n` +
-      `Etiqueta actual: "${currentTag}"\n\n` +
-      "Las coincidencias en mensajes o perfil generan candidatas para revisión; " +
-      "no conceden permisos automáticamente. El escaneo manual revisa perfiles y actividad " +
-      "que ZEUS ya tiene registrados.",
+      `${formatGroupHeader(groupTitle)}\n\n🛡️ *GESTIÓN DE VERIFICADAS*\n\n` +
+      "Abre «Verificadas» para consultar el listado, añadir, buscar, revocar o revisar el historial.\n" +
+      "Las altas son exclusivamente manuales; ninguna detección crea verificaciones.",
     keyboard: new InlineKeyboard()
-      .text(
-        tagSyncEnabled
-          ? "🟢 Detección: ACTIVADA"
-          : "🔴 Detección: DESACTIVADA",
-        "cfg:verified_tags_toggle",
-      )
-      .row()
-      .text("👥 Lista de Verificadas", FilterAction.verifiedList(0))
-      .row()
-      .text("➕ Añadir verificada", "vu:add")
-      .row()
-      .text(`🏷️ Etiqueta actual: "${currentTag}"`, "vu:edit")
+      .text("👑 Ver y gestionar", FilterAction.verified)
       .row()
       .text("⬅️ Volver al Menú Principal", MenuAction.main),
+  };
+}
+
+export function buildVerifiedSearchResultsPanel(
+  results: VerifiedUser[],
+  term: string,
+  groupTitle?: string,
+): Panel {
+  const keyboard = new InlineKeyboard();
+  for (const user of results) {
+    const identity =
+      user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
+    keyboard.text(`👤 ${identity.slice(0, 34)}`, `vu:profile:${user.user_id}`).row();
+  }
+  keyboard.text("🔎 Nueva búsqueda", VerifiedAction.search).row();
+  keyboard.text("⬅️ Volver", FilterAction.verified).row();
+  keyboard.add(...buildNavRow().inline_keyboard.flat());
+  const lines = results.map((user) => {
+    const identity =
+      user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
+    const badge = formatVerifiedBadge(getVerifiedDisplayState(user));
+    return (
+      `• ${escapeLegacyMarkdown(identity)} — ID ${user.user_id}` +
+      (badge ? `\n  ${badge}` : "")
+    );
+  });
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n🔎 *RESULTADOS DE BÚSQUEDA*\n\n` +
+      `Término: ${escapeLegacyMarkdown(term.slice(0, 48))}\n` +
+      `Coincidencias: ${results.length}\n\n` +
+      (lines.length
+        ? lines.join("\n")
+        : "Sin coincidencias en este grupo. Prueba con el ID numérico exacto."),
+    keyboard,
   };
 }

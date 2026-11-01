@@ -20,7 +20,13 @@ export interface AdminCheckResult {
  * Indica si el chat actual es un grupo o supergrupo.
  */
 export function isGroupChat(ctx: Context): boolean {
-  return ctx.chat?.type === "group" || ctx.chat?.type === "supergroup";
+  return isAdministrableGroupType(ctx.chat?.type);
+}
+
+export function isAdministrableGroupType(
+  type: string | undefined,
+): type is "group" | "supergroup" {
+  return type === "group" || type === "supergroup";
 }
 
 /**

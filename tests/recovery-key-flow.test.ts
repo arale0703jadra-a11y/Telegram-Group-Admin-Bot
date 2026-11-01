@@ -29,7 +29,7 @@ let rateAllowed = true;
 let recoverResult: unknown = true;
 let recoverThrows = false;
 let keysResponse: Array<{ id: string; key_salt: string; key_hash: string }> = [];
-let mockDbOwnerId = 100;
+let mockDbOwnerId: number | undefined = 100;
 
 globalThis.fetch = (async (input: unknown, init?: { body?: unknown }) => {
   const url = String(input);
@@ -46,6 +46,14 @@ globalThis.fetch = (async (input: unknown, init?: { body?: unknown }) => {
     else if (name === "zeus_recover_system_owner") {
       if (recoverThrows) throw new Error("persistence down");
       out = recoverResult;
+      if (recoverResult === true && typeof body.p_new_owner_id === "number") {
+        mockDbOwnerId = body.p_new_owner_id;
+      }
+    } else if (name === "zeus_bootstrap_system_owner") {
+      out = true;
+      if (typeof body.p_owner_user_id === "number") {
+        mockDbOwnerId = body.p_owner_user_id;
+      }
     } else if (name === "zeus_generate_recovery_key") out = "key-id-1";
     return new Response(JSON.stringify(out), { status: 200, headers });
   }
@@ -53,7 +61,10 @@ globalThis.fetch = (async (input: unknown, init?: { body?: unknown }) => {
     return new Response(JSON.stringify(keysResponse), { status: 200, headers });
   }
   if (url.includes("system_owner")) {
-    return new Response(JSON.stringify([{ owner_user_id: mockDbOwnerId }]), {
+    const ownerRows = mockDbOwnerId === undefined
+      ? []
+      : [{ owner_user_id: mockDbOwnerId }];
+    return new Response(JSON.stringify(ownerRows), {
       status: 200,
       headers,
     });
@@ -65,7 +76,7 @@ const { consumeRecoveryKey, generateRecoveryKey, hashRecoveryKey, isEffectiveOwn
   await import("../src/services/system-owner.js");
 const { zeusCommand } = await import("../src/commands/zeus.js");
 const { privateInput } = await import("../src/commands/private-input.js");
-const { isAuthorizedPanelUserId } = await import(
+const { isAuthorizedPanelUser, isAuthorizedPanelUserId } = await import(
   "../src/security/panel-authorization.js"
 );
 
@@ -156,6 +167,42 @@ test("/zeus-recuperar solo funciona en privado y pide la clave sin mostrarla", a
   const pending = (priv.ctx.session.user as { pendingAction?: { kind?: string } })
     .pendingAction;
   assert.equal(pending?.kind, "recoveryKey");
+});
+
+test("/zeus-bootstrap permite la identidad configurada con registro vacío y deniega a externos", async () => {
+  resetScenario();
+  mockDbOwnerId = undefined;
+
+  const configuredBootstrap = createCtx({
+    fromId: 900000033,
+    chatType: "private",
+    text: "/zeus-bootstrap",
+    asCommand: true,
+  });
+  await zeusCommand.middleware()(configuredBootstrap.ctx, async () => undefined);
+  assert.ok(
+    configuredBootstrap.replies.some((reply) => /System Owner inicial establecido/u.test(reply)),
+  );
+  assert.ok(rpcCalls.some((call) => call.name === "zeus_bootstrap_system_owner"));
+
+  resetScenario();
+  mockDbOwnerId = undefined;
+  const external = createCtx({
+    fromId: 900999999,
+    chatType: "private",
+    text: "/zeus-bootstrap",
+    asCommand: true,
+  });
+  await zeusCommand.middleware()(external.ctx, async () => undefined);
+  assert.ok(external.replies.some((reply) => /Bootstrap no autorizado/u.test(reply)));
+  assert.ok(!rpcCalls.some((call) => call.name === "zeus_bootstrap_system_owner"));
+});
+
+test("una identidad sin autorización configurada ni registro no accede al panel", async () => {
+  assert.equal(
+    await isAuthorizedPanelUser(900999999, async () => undefined),
+    false,
+  );
 });
 
 test("el comando con argumento no procesa la clave inline y borra ese mensaje", async () => {
@@ -406,21 +453,63 @@ test("la transferencia entre las tres cuentas persiste y no crea cuarta plaza", 
   assert.equal(isAuthorizedPanelUserId(300, 900000032, 90, 200, 33), false, "sin cuarta plaza");
 });
 
-test("la transferencia rechaza identidades externas sin otorgarles acceso", async () => {
+test("una Recovery Key solo transfiere a una identidad ya autorizada", async () => {
   resetScenario();
+  mockDbOwnerId = undefined;
   const good = await hashRecoveryKey("TEST-KEY-REAL");
   keysResponse = [{ id: "k1", key_salt: good.salt, key_hash: good.hash }];
 
-  const recovered = await consumeRecoveryKey("TEST-KEY-REAL", 555, async () => true);
-  assert.equal(recovered, false);
+  assert.equal(await isAuthorizedPanelUser(555), false, "sin registro no hay acceso");
+  assert.equal(
+    await consumeRecoveryKey("TEST-KEY-REAL", 555, async () => false),
+    false,
+    "la identidad privada debe verificarse",
+  );
+  assert.ok(!rpcCalls.some((call) => call.name === "zeus_begin_recovery"));
+
+  assert.equal(
+    await consumeRecoveryKey("CLAVE-INCORRECTA", 555, async () => true),
+    false,
+    "una clave no válida no autoriza la recuperación",
+  );
+  assert.equal(await isAuthorizedPanelUser(555), false);
+
+  assert.equal(
+    await consumeRecoveryKey("TEST-KEY-REAL", 555, async () => true),
+    false,
+    "una identidad externa no puede autoproclamarse propietaria aunque posea la clave",
+  );
   assert.ok(
     rpcCalls.some(
-      (c) => c.name === "zeus_record_recovery_rejection" && c.body.p_reason === "unauthorized_target",
+      (c) =>
+        c.name === "zeus_record_recovery_rejection" &&
+        c.body.p_reason === "unauthorized_target",
     ),
     "el intento de transferencia a un externo queda auditado",
   );
-  assert.ok(!rpcCalls.some((c) => c.name === "zeus_begin_recovery"), "no inicia la recuperación");
-  assert.equal(isAuthorizedPanelUserId(555, 100, 90, 200, 33), false, "el externo no queda autorizado");
+  assert.ok(
+    !rpcCalls.some((c) => c.name === "zeus_recover_system_owner"),
+    "no completa la recuperación hacia un externo",
+  );
+  assert.equal(await isAuthorizedPanelUser(555), false, "el externo no obtiene acceso");
+
+  // El propietario legítimo (identidad configurada) sí supera la guarda:
+  // la restauración de la comprobación no bloquea la recuperación válida.
+  assert.equal(
+    await consumeRecoveryKey("TEST-KEY-REAL", 900000031, async () => true),
+    true,
+    "una identidad configurada puede recuperar con la clave válida",
+  );
+  assert.equal(
+    await isSystemOwner(900000031),
+    true,
+    "la recuperación persiste el nuevo System Owner",
+  );
+  assert.equal(
+    isAuthorizedPanelUserId(900000031, 900000031, 90, 200, 33),
+    true,
+    "la propiedad persistida concede acceso",
+  );
 });
 
 test("una transferencia que falla en la persistencia no se considera exitosa", async () => {

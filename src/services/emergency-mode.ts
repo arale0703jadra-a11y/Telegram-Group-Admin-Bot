@@ -115,7 +115,7 @@ export async function restrictRecentMembers(
     now + data.antiRaid.emergencyMinutes * 60 * 1000;
   if (!data.emergency.restrictedUsers) data.emergency.restrictedUsers = {};
 
-  const rights = await getBotRights(ctx, chatId);
+  const rights = await getBotRights(ctx, chatId, { fresh: true });
   if (!rights.canRestrict) {
     console.error(
       `[EMERGENCY] Sin permiso para restringir miembros en el grupo ${chatId}.`,

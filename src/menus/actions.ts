@@ -41,9 +41,12 @@ import {
   buildProtectionCenterPanel,
   buildVerifiedModelsPanel,
   buildVerifiedRecordsPanel,
+  buildVerifiedActionConfirmPanel,
   buildVerifiedLoadErrorPanel,
+  buildRevokedVerifiedUsersPanel,
   buildVerifiedTagCandidatesPanel,
   buildVerifiedTagReviewConfirmPanel,
+  buildVerifiedUserPanel,
   buildVerifiedTitleConfigPanel,
   buildMainPanel,
   buildMuteMenuPanel,
@@ -54,6 +57,7 @@ import {
   buildUsersPanel,
   buildViewWarningsPanel,
   FilterAction,
+  verifiedPermissionsSnapshot,
   EmergencyAction,
   AutomaticMessageAction,
   buildWarningsPanel,
@@ -67,11 +71,17 @@ import {
 } from "../services/inactivity.js";
 import { isActiveVerifiedRecord } from "../services/verified-user-policy.js";
 import {
+  consumeVerifiedConfirmation,
+  createVerifiedConfirmation,
+} from "../services/verified-confirmations.js";
+import {
   activateManualVerifiedUser,
   getVerifiedUser,
+  getVerifiedUserAuditHistory,
   getVerifiedUserRecord,
   getVerifiedUsers,
   getVerifiedUsersForListing,
+  getRevokedVerifiedUsers,
   invalidateVerifiedUserCache,
   revokeManualVerifiedUser,
 } from "../services/verified-users.js";
@@ -213,6 +223,50 @@ async function completeManualVerification(
   return `✅ Verificación ${outcome.status === "created" ? "activada" : "reactivada"}; autorizada hasta ${validity}.`;
 }
 
+async function buildVerifiedProfile(
+  ctx: MyContext,
+  groupId: number,
+  userId: number,
+): Promise<ReturnType<typeof buildVerifiedUserPanel> | undefined> {
+  const record = await getVerifiedUserRecord(groupId, userId);
+  if (!record) return undefined;
+
+  let telegramStatus = "unknown";
+  let currentUsername: string | undefined;
+  try {
+    const member = await getVerifiedGroupMember(ctx.api, groupId, userId);
+    telegramStatus = member.status;
+    currentUsername = member.user.username;
+  } catch (error) {
+    console.warn(
+      `[VERIFIED_PROFILE] No se pudo consultar membresía error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+  }
+
+  let verificationEvents: Awaited<ReturnType<typeof getVerifiedUserAuditHistory>> = [];
+  let verificationHistoryUnavailable = false;
+  try {
+    verificationEvents = await getVerifiedUserAuditHistory(groupId, userId);
+  } catch (error) {
+    verificationHistoryUnavailable = true;
+    console.error(
+      `[VERIFIED_PROFILE] No se pudo cargar historial error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+  }
+
+  return buildVerifiedUserPanel(
+    record,
+    ctx.session.user.selectedGroupTitle,
+    telegramStatus,
+    {
+      groupId,
+      currentUsername,
+      verificationEvents,
+      verificationHistoryUnavailable,
+    },
+  );
+}
+
 async function withVerifiedPanelTimeout<T>(operation: Promise<T>): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -275,7 +329,13 @@ moderationActions.on("callback_query:data", async (ctx) => {
     (parts[0] === "cfg" && kind === "verified_tags_toggle");
   const deferVerifiedApplyCallback =
     parts[0] === "vu" &&
-    (kind === "apply" || kind === "quick-activate" || kind === "quick-revoke");
+    (
+      kind === "apply" ||
+      kind === "quick-activate" ||
+      kind === "quick-revoke" ||
+      kind === "revoke" ||
+      kind === "reactivate"
+    );
   let verifiedCallbackAnswered = false;
   const answerVerifiedCallback = async (text?: string): Promise<void> => {
     if (verifiedCallbackAnswered) return;
@@ -341,10 +401,189 @@ moderationActions.on("callback_query:data", async (ctx) => {
       return;
     }
     const title = ctx.session.user.selectedGroupTitle;
+    if (kind === "profile") {
+      const userId = Number(parts[2]);
+      if (!Number.isSafeInteger(userId) || userId <= 0) {
+        await answerVerifiedCallback("Usuario no válido.");
+        return;
+      }
+      const panel = await buildVerifiedProfile(ctx, groupId, userId);
+      if (!panel) {
+        await answerVerifiedCallback("El registro ya no existe en este grupo.");
+        return;
+      }
+      await renderPanel(ctx, panel);
+      return;
+    }
+    if (kind === "search") {
+      ctx.session.user.pendingAction = { kind: "verifiedSearch", groupId };
+      await renderPanel(
+        ctx,
+        buildPromptPanel(
+          "🔎 *BUSCAR VERIFICADA*\n\n" +
+            "Envía un nombre, @username o Telegram ID. La búsqueda solo consulta registros persistidos de este grupo.",
+        ),
+      );
+      return;
+    }
+    if (kind === "search-clear") {
+      ctx.session.user.selectedVerifiedSearch = undefined;
+      try {
+        const records = await getVerifiedUsersForListing(groupId);
+        await renderPanel(ctx, buildVerifiedRecordsPanel(records, 0, title));
+      } catch (error) {
+        console.error(
+          `[VERIFIED_LIST] No se pudo limpiar la búsqueda error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title));
+      }
+      return;
+    }
+    if (kind === "revoke-confirm") {
+      const userId = Number(parts[2]);
+      if (!Number.isSafeInteger(userId) || userId <= 0) {
+        await answerVerifiedCallback("Usuario no válido.");
+        return;
+      }
+      const record = await getVerifiedUserRecord(groupId, userId);
+      if (!record || !isActiveVerifiedRecord(record)) {
+        await answerVerifiedCallback("La verificación ya no está activa.");
+        return;
+      }
+      const confirmationToken = createVerifiedConfirmation(
+        ctx,
+        groupId,
+        userId,
+        "revoke",
+      );
+      await renderPanel(
+        ctx,
+        buildVerifiedActionConfirmPanel(
+          record,
+          "revoke",
+          title,
+          confirmationToken,
+        ),
+      );
+      return;
+    }
+    if (kind === "revoke") {
+      const userId = Number(parts[2]);
+      const token = parts[3];
+      if (!Number.isSafeInteger(userId) || userId <= 0) {
+        await answerVerifiedCallback("Usuario no válido.");
+        return;
+      }
+      if (!consumeVerifiedConfirmation(ctx, {
+        groupId,
+        userId,
+        operation: "revoke",
+        token,
+      })) {
+        await answerVerifiedCallback("La confirmación expiró o no pertenece a esta sesión. Vuelve a abrir la ficha.");
+        return;
+      }
+      const record = await getVerifiedUserRecord(groupId, userId);
+      if (!isActiveVerifiedRecord(record)) {
+        await answerVerifiedCallback("La verificación ya no está activa.");
+        return;
+      }
+      const revoked = await revokeManualVerifiedUser({
+        groupId,
+        userId,
+        actorUserId: ctx.from.id,
+      });
+      if (!revoked) {
+        await answerVerifiedCallback("El estado cambió; no se modificó el registro.");
+        return;
+      }
+      await unmarkUserVerified(groupId, userId);
+      invalidateVerifiedUserCache(groupId, userId);
+      await answerVerifiedCallback("✅ Verificación revocada.");
+      const panel = await buildVerifiedProfile(ctx, groupId, userId);
+      if (panel) await renderPanel(ctx, panel);
+      return;
+    }
+    if (kind === "reactivate-confirm") {
+      const userId = Number(parts[2]);
+      const expectedPermissions = parts[3];
+      if (
+        !Number.isSafeInteger(userId) ||
+        userId <= 0 ||
+        !/^[01]{7}$/u.test(expectedPermissions ?? "")
+      ) {
+        await answerVerifiedCallback("Confirmación no válida.");
+        return;
+      }
+      const record = await getVerifiedUserRecord(groupId, userId);
+      if (
+        !record ||
+        isActiveVerifiedRecord(record) ||
+        verifiedPermissionsSnapshot(record.permissions) !== expectedPermissions
+      ) {
+        await answerVerifiedCallback("El estado cambió; vuelve a iniciar la operación.");
+        return;
+      }
+      const confirmationToken = createVerifiedConfirmation(
+        ctx,
+        groupId,
+        userId,
+        "reactivate",
+        expectedPermissions,
+      );
+      await renderPanel(
+        ctx,
+        buildVerifiedActionConfirmPanel(
+          record,
+          "reactivate",
+          title,
+          confirmationToken,
+        ),
+      );
+      return;
+    }
+    if (kind === "reactivate") {
+      const userId = Number(parts[2]);
+      const expectedPermissions = parts[3];
+      const token = parts[4];
+      if (
+        !Number.isSafeInteger(userId) ||
+        userId <= 0 ||
+        !/^[01]{7}$/u.test(expectedPermissions ?? "")
+      ) {
+        await answerVerifiedCallback("Confirmación no válida.");
+        return;
+      }
+      if (!consumeVerifiedConfirmation(ctx, {
+        groupId,
+        userId,
+        operation: "reactivate",
+        token,
+        permissionsSnapshot: expectedPermissions,
+      })) {
+        await answerVerifiedCallback("La confirmación expiró o no pertenece a esta sesión. Vuelve a abrir la ficha.");
+        return;
+      }
+      const record = await getVerifiedUserRecord(groupId, userId);
+      if (
+        !record ||
+        isActiveVerifiedRecord(record) ||
+        verifiedPermissionsSnapshot(record.permissions) !== expectedPermissions
+      ) {
+        await answerVerifiedCallback("El estado cambió; vuelve a iniciar la operación.");
+        return;
+      }
+      const result = await completeManualVerification(ctx, groupId, userId, true);
+      await answerVerifiedCallback(result);
+      const panel = await buildVerifiedProfile(ctx, groupId, userId);
+      if (panel) await renderPanel(ctx, panel);
+      return;
+    }
     if (kind === "quick-activate") {
       const callbackGroupId = Number(parts[2]);
       const userId = Number(parts[3]);
       const mode = parts[4];
+      const token = parts[5];
       if (
         callbackGroupId !== groupId ||
         !Number.isSafeInteger(userId) ||
@@ -352,6 +591,15 @@ moderationActions.on("callback_query:data", async (ctx) => {
         (mode !== "activate" && mode !== "reactivate")
       ) {
         await answerVerifiedCallback("La confirmación es inválida o pertenece a otro grupo.");
+        return;
+      }
+      if (!consumeVerifiedConfirmation(ctx, {
+        groupId,
+        userId,
+        operation: mode,
+        token,
+      })) {
+        await answerVerifiedCallback("La confirmación expiró o no pertenece a esta sesión. Vuelve a iniciar la operación.");
         return;
       }
       try {
@@ -391,8 +639,15 @@ moderationActions.on("callback_query:data", async (ctx) => {
         return;
       }
       try {
-        const records = await getVerifiedUsersForListing(groupId);
-        const panel = buildVerifiedRecordsPanel(records, page, title);
+        const searchTerm = ctx.session.user.selectedVerifiedSearch;
+        const records = await getVerifiedUsersForListing(groupId, searchTerm);
+        const panel = buildVerifiedRecordsPanel(
+          records,
+          page,
+          title,
+          new Date(),
+          searchTerm,
+        );
         await renderPanel(ctx, panel);
       } catch (error) {
         console.error(
@@ -402,15 +657,45 @@ moderationActions.on("callback_query:data", async (ctx) => {
       }
       return;
     }
+    if (kind === "revoked-list") {
+      const page = Number(parts[2] ?? 0);
+      if (!Number.isSafeInteger(page) || page < 0) {
+        await answerVerifiedCallback("Página no válida.");
+        return;
+      }
+      try {
+        const records = await getRevokedVerifiedUsers(groupId);
+        await renderPanel(
+          ctx,
+          buildRevokedVerifiedUsersPanel(records, title, page),
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_LIST] No se pudo cargar inactivas error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title));
+      }
+      return;
+    }
     if (kind === "quick-revoke") {
       const callbackGroupId = Number(parts[2]);
       const userId = Number(parts[3]);
+      const token = parts[4];
       if (
         callbackGroupId !== groupId ||
         !Number.isSafeInteger(userId) ||
         userId <= 0
       ) {
         await answerVerifiedCallback("La confirmación es inválida o pertenece a otro grupo.");
+        return;
+      }
+      if (!consumeVerifiedConfirmation(ctx, {
+        groupId,
+        userId,
+        operation: "revoke",
+        token,
+      })) {
+        await answerVerifiedCallback("La confirmación expiró o no pertenece a esta sesión. Vuelve a iniciar la operación.");
         return;
       }
       try {
@@ -458,12 +743,22 @@ moderationActions.on("callback_query:data", async (ctx) => {
     if (kind === "manual-confirm") {
       const userId = Number(parts[2]);
       const mode = parts[3];
+      const token = parts[4];
       if (
         !Number.isSafeInteger(userId) ||
         userId <= 0 ||
         (mode !== "activate" && mode !== "reactivate")
       ) {
         await answerVerifiedCallback("Confirmación no válida.");
+        return;
+      }
+      if (!consumeVerifiedConfirmation(ctx, {
+        groupId,
+        userId,
+        operation: mode,
+        token,
+      })) {
+        await answerVerifiedCallback("La confirmación expiró o no pertenece a esta sesión. Vuelve a iniciar el alta.");
         return;
       }
       try {
@@ -661,21 +956,42 @@ moderationActions.on("callback_query:data", async (ctx) => {
         await answerVerifiedCallback("La candidata ya no está pendiente.");
         return;
       }
+      const confirmationToken = createVerifiedConfirmation(
+        ctx,
+        groupId,
+        userId,
+        action === "approve" ? "candidate-approve" : "candidate-reject",
+      );
       await renderPanel(
         ctx,
-        buildVerifiedTagReviewConfirmPanel(review, action, title),
+        buildVerifiedTagReviewConfirmPanel(
+          review,
+          action,
+          title,
+          confirmationToken,
+        ),
       );
       return;
     }
     if (kind === "apply") {
       const action = parts[2];
       const userId = Number(parts[3]);
+      const token = parts[4];
       if (
         (action !== "approve" && action !== "reject") ||
         !Number.isSafeInteger(userId) ||
         userId <= 0
       ) {
         await answerVerifiedCallback("Candidata no válida.");
+        return;
+      }
+      if (!consumeVerifiedConfirmation(ctx, {
+        groupId,
+        userId,
+        operation: action === "approve" ? "candidate-approve" : "candidate-reject",
+        token,
+      })) {
+        await answerVerifiedCallback("La confirmación expiró o no pertenece a esta sesión. Vuelve a abrir la revisión.");
         return;
       }
       try {
@@ -1054,6 +1370,25 @@ moderationActions.on("callback_query:data", async (ctx) => {
       const verifiedUser = await getVerifiedUser(groupId, userId);
       if (!verifiedUser) {
         await ctx.answerCallbackQuery("La verificación ya no está activa.");
+        return;
+      }
+      if (kind === "verified_revoke") {
+        const confirmationToken = createVerifiedConfirmation(
+          ctx,
+          groupId,
+          userId,
+          "revoke",
+        );
+        await ctx.answerCallbackQuery();
+        await renderPanel(
+          ctx,
+          buildVerifiedActionConfirmPanel(
+            verifiedUser,
+            "revoke",
+            title,
+            confirmationToken,
+          ),
+        );
         return;
       }
 
@@ -1886,7 +2221,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
       }
 
       // Se comprueban los permisos del bot antes de intentar borrar.
-      const { canDelete } = await getBotRights(ctx, groupId);
+      const { canDelete } = await getBotRights(ctx, groupId, { fresh: true });
       if (!canDelete) {
         await ctx.answerCallbackQuery({
           text: "⛔ El bot no tiene permisos para borrar mensajes en este grupo.",

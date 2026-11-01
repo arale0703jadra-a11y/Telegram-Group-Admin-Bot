@@ -38,9 +38,14 @@ import { getGroupData, saveGroupData, store } from "./storage/index.js";
 import {
   markUserAsAdmin,
   getAllKnownGroups,
-  registerGroup,
-  unregisterGroup,
+  reconcileRegisteredBotMembership,
+  updateRegisteredGroupTitle,
 } from "./services/group-registry.js";
+import {
+  getMigratedGroupIds,
+  processGroupMigration,
+} from "./services/group-migration.js";
+import { invalidateSecurityCaches } from "./utils/member-cache.js";
 import { MAX_ACTIVITY_MESSAGES, type ActivityMessage } from "./storage/types.js";
 import type { MyContext } from "./types.js";
 import { openPrivatePanel } from "./utils/private-panel.js";
@@ -103,52 +108,44 @@ async function main(): Promise<void> {
       return;
     }
 
-    const next = ctx.myChatMember.new_chat_member.status;
-
-    // Bot expulsado, fuera del grupo o ya NO administrador:
-    // el grupo deja de ser administrable para el panel.
-    if (
-      next === "kicked" ||
-      next === "left" ||
-      next === "member" ||
-      next === "restricted"
-    ) {
-      unregisterGroup(ctx.chat.id);
+    const member = ctx.myChatMember.new_chat_member;
+    invalidateSecurityCaches(ctx.chat.id);
+    if (!reconcileRegisteredBotMembership(
+      ctx.chat.id,
+      ctx.chat.title ?? "",
+      member,
+    )) {
       console.log(`El bot ya no es administrador del grupo ${ctx.chat.id}`);
       return;
     }
 
-    if (next === "administrator") {
-      registerGroup(ctx.chat.id, ctx.chat.title ?? "");
-
-      // Registra a los administradores reales para poder ofrecer el
-      // panel en privado sin depender solo de /menu.
-      try {
-        const admins = await ctx.api.getChatAdministrators(ctx.chat.id);
-        for (const admin of admins) {
-          if (!admin.user.is_bot) {
-            markUserAsAdmin(ctx.chat.id, admin.user.id);
-          }
+    // Registra a los administradores reales para poder ofrecer el
+    // panel en privado sin depender solo de /menu.
+    try {
+      const admins = await ctx.api.getChatAdministrators(ctx.chat.id);
+      for (const admin of admins) {
+        if (!admin.user.is_bot) {
+          markUserAsAdmin(ctx.chat.id, admin.user.id);
         }
-      } catch (error) {
-        console.error(
-          `[GROUP_REGISTRY] No se pudieron registrar administradores groupId=${ctx.chat.id}`,
-          error,
-        );
       }
-      try {
-        await scanGroupVerifiedMarkers(ctx.chat.id);
-      } catch (error) {
-        console.error(
-          `[VERIFIED_MARKER] No se pudieron escanear administradores groupId=${ctx.chat.id} ` +
-            describeVerifiedMarkerScanError(error),
-        );
-      }
-
-      console.log(
-        `El bot es administrador del grupo ${ctx.chat.id} (${ctx.chat.title ?? "sin título"})`,
+    } catch (error) {
+      console.error(
+        `[GROUP_REGISTRY] No se pudieron registrar administradores groupId=${ctx.chat.id}`,
+        error,
       );
     }
+    try {
+      await scanGroupVerifiedMarkers(ctx.chat.id);
+    } catch (error) {
+      console.error(
+        `[VERIFIED_MARKER] No se pudieron escanear administradores groupId=${ctx.chat.id} ` +
+          describeVerifiedMarkerScanError(error),
+      );
+    }
+
+    console.log(
+      `El bot es administrador del grupo ${ctx.chat.id} (${ctx.chat.title ?? "sin título"})`,
+    );
   });
 
   bot.command(COMMANDS.admin, async (ctx) => {
@@ -229,6 +226,27 @@ async function main(): Promise<void> {
   // Indexa usuarios y mensajes recientes del grupo (en el almacén por chat_id)
   // para poder buscar por @username y limpiar mensajes desde el panel privado.
   bot.on("message", async (ctx, next) => {
+    const migration = getMigratedGroupIds(ctx.chat.id, ctx.message);
+    if (isGroupChat(ctx) && migration) {
+      await processGroupMigration(
+        ctx.api,
+        migration.oldChatId,
+        migration.newChatId,
+        ctx.me.id,
+        ctx.chat.title ?? "",
+      );
+      await next();
+      return;
+    }
+
+    if (
+      isGroupChat(ctx) &&
+      "new_chat_title" in ctx.message &&
+      typeof ctx.message.new_chat_title === "string"
+    ) {
+      updateRegisteredGroupTitle(ctx.chat.id, ctx.message.new_chat_title);
+    }
+
     if (!isGroupChat(ctx) || !ctx.from) {
       await next();
       return;

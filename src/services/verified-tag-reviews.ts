@@ -141,6 +141,7 @@ export async function listVerifiedTagReviews(
 export async function recordVerifiedTagObservation(input: {
   groupId: number;
   userId: number;
+  actorUserId?: number;
   username?: string;
   displayName?: string;
   observedTag: string | null;
@@ -193,6 +194,7 @@ export async function recordVerifiedTagObservation(input: {
       previousStatus: previous?.status ?? null,
       currentStatus: status,
       observedTag: input.observedTag,
+      actorUserId: input.actorUserId,
     });
   }
   return data as VerifiedTagReview;

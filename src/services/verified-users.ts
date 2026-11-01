@@ -55,6 +55,13 @@ export interface AutoRevocationNotification {
   display_name: string | null;
 }
 
+export interface VerifiedUserAuditEvent {
+  event_type: "activated" | "reactivated" | "revoked";
+  created_at: string;
+  activated_at: string | null;
+  valid_until: string | null;
+}
+
 export type ManualVerificationOutcome =
   | { status: "created" | "reactivated"; user: VerifiedUser }
   | { status: "already_active" | "reactivation_required" | "not_found" };
@@ -328,6 +335,7 @@ export async function getRevokedVerifiedUsers(
 
 export async function getVerifiedUsersForListing(
   groupId: number,
+  search?: string,
 ): Promise<VerifiedUser[]> {
   const { data, error } = await getClient()
     .from("verified_users")
@@ -335,11 +343,40 @@ export async function getVerifiedUsersForListing(
     .eq("group_id", groupId)
     .order("display_name", { ascending: true });
   if (error) throw error;
-  return ([...(data ?? [])] as VerifiedUser[]).sort((left, right) =>
+  const normalizedSearch = search?.trim().toLocaleLowerCase();
+  return ([...(data ?? [])] as VerifiedUser[])
+    .filter((user) => {
+      if (!normalizedSearch) return true;
+      return [
+        user.display_name,
+        user.username,
+        String(user.user_id),
+      ].some((value) => value?.toLocaleLowerCase().includes(normalizedSearch));
+    })
+    .sort((left, right) =>
     (left.display_name || left.username || String(left.user_id)).localeCompare(
       right.display_name || right.username || String(right.user_id),
     ),
   );
+}
+
+export async function getVerifiedUserAuditHistory(
+  groupId: number,
+  userId: number,
+  limit = 20,
+): Promise<VerifiedUserAuditEvent[]> {
+  const safeLimit = Number.isSafeInteger(limit)
+    ? Math.max(1, Math.min(limit, 100))
+    : 20;
+  const { data, error } = await getClient()
+    .from("verified_user_manual_audit")
+    .select("event_type,created_at,activated_at,valid_until")
+    .eq("group_id", groupId)
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(safeLimit);
+  if (error) throw error;
+  return (data ?? []) as VerifiedUserAuditEvent[];
 }
 
 export async function getVerifiedUser(
@@ -736,4 +773,33 @@ export async function getVerifiedUserPermissions(
     }
     throw error;
   }
+}
+
+/**
+ * Búsqueda de verificadas por grupo: ID numérico exacto, username o nombre
+ * visible (coincidencia parcial, insensible a mayúsculas). El término se
+ * sanea para la sintaxis de PostgREST y el resultado queda limitado al
+ * grupo indicado: nunca cruza autorizaciones entre grupos.
+ */
+export async function searchVerifiedUsers(
+  groupId: number,
+  term: string,
+  limit = 15,
+): Promise<VerifiedUser[]> {
+  if (!Number.isSafeInteger(groupId) || groupId === 0) return [];
+  const raw = term.trim();
+  if (!raw) return [];
+  const safe = raw.replace(/[%_,().]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 64);
+  if (!safe) return [];
+  const clauses = [`username.ilike.%${safe}%`, `display_name.ilike.%${safe}%`];
+  if (/^\d+$/u.test(raw) && raw.length <= 15) clauses.push(`user_id.eq.${raw}`);
+  const { data, error } = await getClient()
+    .from("verified_users")
+    .select("*")
+    .eq("group_id", groupId)
+    .or(clauses.join(","))
+    .order("display_name", { ascending: true })
+    .limit(Math.max(1, Math.min(limit, 25)));
+  if (error) throw error;
+  return (data ?? []) as VerifiedUser[];
 }

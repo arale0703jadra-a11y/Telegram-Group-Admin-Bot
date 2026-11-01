@@ -57,3 +57,10 @@ export async function saveGroupData(
 export async function flushStorage(): Promise<void> {
   await store.flushForced();
 }
+
+export async function moveGroupStorage(
+  fromChatId: number,
+  toChatId: number,
+): Promise<boolean> {
+  return fileStore.moveGroupData(fromChatId, toChatId);
+}

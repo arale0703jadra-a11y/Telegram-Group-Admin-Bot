@@ -34,6 +34,8 @@ export const SYSTEM_OWNER_BOOTSTRAP_ID = parseTelegramUserId(
 export interface IdentityConfigurationDiagnostics {
   dotenvImportBeforeEvaluation: true;
   configuredValidDistinctIdentities: number;
+  missingIdentities: number;
+  invalidIdentities: number;
   missingOrInvalidIdentities: number;
   identitiesAvailableAtEvaluation: boolean;
 }
@@ -42,16 +44,20 @@ export function getIdentityConfigurationDiagnostics(
   values: readonly (string | undefined)[] = configuredIdentityValues,
 ): IdentityConfigurationDiagnostics {
   const parsed = values.map(parseTelegramUserId);
+  const missingIdentities = values.filter((value) => !value?.trim()).length;
+  const invalidIdentities = values.filter(
+    (value, index) => Boolean(value?.trim()) && parsed[index] === undefined,
+  ).length;
   const configuredValidDistinctIdentities = new Set(
     parsed.filter((id): id is number => id !== undefined),
   ).size;
-  const missingOrInvalidIdentities = parsed.filter(
-    (id) => id === undefined,
-  ).length;
+  const missingOrInvalidIdentities = missingIdentities + invalidIdentities;
 
   return {
     dotenvImportBeforeEvaluation: true,
     configuredValidDistinctIdentities,
+    missingIdentities,
+    invalidIdentities,
     missingOrInvalidIdentities,
     identitiesAvailableAtEvaluation: configuredValidDistinctIdentities > 0,
   };

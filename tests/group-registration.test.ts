@@ -60,16 +60,16 @@ test("group registration refuses Zeus when it is not an administrator", async ()
   );
 });
 
-test("group registration requires delete and restrict permissions", async () => {
-  await assert.rejects(
-    verifyZeusCanAdministerGroup(
-      apiWith(adminMember({ can_delete_messages: true, can_restrict_members: false })),
-      -100123,
-      99,
-    ),
-    (error: unknown) =>
-      error instanceof GroupRegistrationError &&
-      error.code === "MISSING_REQUIRED_PERMISSIONS",
+test("group registration accepts an administrator without unrelated permission requirements", async () => {
+  const member = await verifyZeusCanAdministerGroup(
+    apiWith(adminMember({ can_delete_messages: false, can_restrict_members: false })),
+    -100123,
+    99,
+  );
+  assert.equal(member.status, "administrator");
+  assert.equal(
+    member.status === "administrator" && member.can_restrict_members,
+    false,
   );
 });
 

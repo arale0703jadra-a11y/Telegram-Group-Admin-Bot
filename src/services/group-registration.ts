@@ -3,8 +3,7 @@ import type { Api } from "grammy";
 
 export type GroupRegistrationErrorCode =
   | "TELEGRAM_ERROR"
-  | "ZEUS_NOT_ADMIN"
-  | "MISSING_REQUIRED_PERMISSIONS";
+  | "ZEUS_NOT_ADMIN";
 
 export class GroupRegistrationError extends Error {
   constructor(
@@ -37,13 +36,6 @@ export async function verifyZeusCanAdministerGroup(
     throw new GroupRegistrationError(
       "ZEUS_NOT_ADMIN",
       "Para registrar este grupo, ZEUS debe ser administrador. No se registro el grupo.",
-    );
-  }
-
-  if (!member.can_delete_messages || !member.can_restrict_members) {
-    throw new GroupRegistrationError(
-      "MISSING_REQUIRED_PERMISSIONS",
-      "ZEUS necesita los permisos de borrar mensajes y restringir miembros antes de registrar este grupo.",
     );
   }
 

@@ -42,6 +42,7 @@ import {
   VerifiedUserRegistrationError,
 } from "../services/verified-user-registration.js";
 import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
+import { createVerifiedConfirmation } from "../services/verified-confirmations.js";
 
 const MAX_MUTE_MINUTES = 527040;
 
@@ -150,14 +151,22 @@ privateInput.on("message:text", async (ctx, next) => {
         "last_name" in member.user ? member.user.last_name : undefined,
       ].filter(Boolean).join(" ") || `ID ${member.user.id}`;
       ctx.session.user.pendingAction = undefined;
+      const reactivate = Boolean(existing);
+      const confirmationToken = createVerifiedConfirmation(
+        ctx,
+        pending.groupId,
+        member.user.id,
+        reactivate ? "reactivate" : "activate",
+      );
       await sendPanel(
         ctx,
         buildManualVerifiedConfirmPanel({
           userId: member.user.id,
           displayName,
           username: member.user.username,
-          reactivate: Boolean(existing),
+          reactivate,
           groupTitle: ctx.session.user.selectedGroupTitle,
+          confirmationToken,
         }),
       );
       return;
@@ -216,6 +225,36 @@ privateInput.on("message:text", async (ctx, next) => {
           data.verifiedTagSyncEnabled,
         ),
       );
+      return;
+    }
+    if (pending.kind === "verifiedSearch") {
+      const term = text.trim();
+      if (!term || term.length > 64) {
+        await ctx.reply(
+          "❌ Escribe un texto de búsqueda de entre 1 y 64 caracteres (ID, @usuario o nombre).",
+        );
+        return;
+      }
+      try {
+        const { searchVerifiedUsers } = await import("../services/verified-users.js");
+        const { buildVerifiedSearchResultsPanel } = await import("../menus/panels.js");
+        const results = await searchVerifiedUsers(pending.groupId, term);
+        ctx.session.user.pendingAction = undefined;
+        await sendPanel(
+          ctx,
+          buildVerifiedSearchResultsPanel(
+            results,
+            term,
+            ctx.session.user.selectedGroupTitle,
+          ),
+        );
+      } catch (error) {
+        ctx.session.user.pendingAction = undefined;
+        console.error(
+          `[VERIFIED_SEARCH] Falló groupId=${pending.groupId} error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await ctx.reply("⚠️ No se pudo buscar; no se modificó ningún registro.");
+      }
       return;
     }
     if (pending.kind === "automaticMessage") {

@@ -8,6 +8,8 @@ test("identity diagnostics count distinct valid identities without exposing valu
     {
       dotenvImportBeforeEvaluation: true,
       configuredValidDistinctIdentities: 3,
+      missingIdentities: 0,
+      invalidIdentities: 0,
       missingOrInvalidIdentities: 0,
       identitiesAvailableAtEvaluation: true,
     },
@@ -20,6 +22,8 @@ test("a missing or malformed identity does not invalidate the other identities",
     {
       dotenvImportBeforeEvaluation: true,
       configuredValidDistinctIdentities: 1,
+      missingIdentities: 1,
+      invalidIdentities: 1,
       missingOrInvalidIdentities: 2,
       identitiesAvailableAtEvaluation: true,
     },
@@ -32,6 +36,8 @@ test("duplicate identities are counted once and missing identities remain visibl
     {
       dotenvImportBeforeEvaluation: true,
       configuredValidDistinctIdentities: 1,
+      missingIdentities: 1,
+      invalidIdentities: 0,
       missingOrInvalidIdentities: 1,
       identitiesAvailableAtEvaluation: true,
     },

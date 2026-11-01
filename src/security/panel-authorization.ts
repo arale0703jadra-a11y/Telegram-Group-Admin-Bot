@@ -1,5 +1,7 @@
 import {
   ALEXIITA_TELEGRAM_ID,
+  getIdentityConfigurationDiagnostics,
+  isConfiguredAdminId,
   OWNER_ID,
   SYSTEM_OWNER_BOOTSTRAP_ID,
 } from "../config.js";
@@ -45,19 +47,29 @@ export async function isAuthorizedPanelUser(
     console.info(
       JSON.stringify({
         event: "identity_denied",
+        reason: "invalid_user_id",
         systemOwnerLookup: "not_attempted",
+        identityConfiguration: getIdentityConfigurationDiagnostics(),
       }),
     );
     return false;
   }
 
+  const configuredIdentityMatch = isConfiguredAdminId(userId);
   try {
     const currentOwnerId = await ownerLookup();
-    const granted = isAuthorizedPanelUserId(userId, currentOwnerId);
+    const systemOwnerMatch = currentOwnerId === userId;
+    const granted = configuredIdentityMatch || systemOwnerMatch;
     console.info(
       JSON.stringify({
         event: granted ? "granted" : "identity_denied",
         systemOwnerPersisted: currentOwnerId !== undefined,
+        authorizationSource: configuredIdentityMatch
+          ? "configured_identity"
+          : systemOwnerMatch
+            ? "system_owner"
+            : "none",
+        identityConfiguration: getIdentityConfigurationDiagnostics(),
       }),
     );
     return granted;
@@ -70,6 +82,10 @@ export async function isAuthorizedPanelUser(
         event: "owner_lookup_failed",
         fallback: "configured_identities",
         result: granted ? "granted" : "identity_denied",
+        authorizationSource: configuredIdentityMatch
+          ? "configured_identity"
+          : "none",
+        identityConfiguration: getIdentityConfigurationDiagnostics(),
       }),
     );
     return granted;

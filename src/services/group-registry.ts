@@ -7,137 +7,304 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import type { ChatMember } from "@grammyjs/types";
 
-interface RegistryGroup {
+export interface GroupCapabilities {
+  canManageChat: boolean;
+  canDeleteMessages: boolean;
+  canManageVideoChats: boolean;
+  canRestrictMembers: boolean;
+  canPromoteMembers: boolean;
+  canChangeInfo: boolean;
+  canInviteUsers: boolean;
+  canManageTags: boolean;
+  canPinMessages: boolean;
+  canManageTopics: boolean;
+}
+
+export interface RegisteredGroup {
   id: number;
   title: string;
-  adminUserIds: Set<number>;
+  adminUserIds: number[];
+  capabilities: GroupCapabilities;
 }
 
-/**
- * Registro de los grupos donde este bot está presente como administrador.
- *
- * Se PERSISTE en `data/groups.json` (no es solo memoria): así los grupos
- * detectados sobreviven a reinicios del bot y no dependen de que cada
- * usuario usara /menu antes.
- *
- * IMPORTANTE: el registro solo ayuda a SABER qué grupos existen. NUNCA es
- * la fuente de autorización: cada operación se re-verifica en tiempo real
- * contra la API de Telegram mediante getChatMember(chat_id, user_id).
- */
-const registry = new Map<number, RegistryGroup>();
+const EMPTY_CAPABILITIES: GroupCapabilities = {
+  canManageChat: false,
+  canDeleteMessages: false,
+  canManageVideoChats: false,
+  canRestrictMembers: false,
+  canPromoteMembers: false,
+  canChangeInfo: false,
+  canInviteUsers: false,
+  canManageTags: false,
+  canPinMessages: false,
+  canManageTopics: false,
+};
 
-function registryFilePath(): string {
-  return resolve(process.cwd(), "data", "groups.json");
+const PERMISSION_FIELDS = {
+  canManageChat: "can_manage_chat",
+  canDeleteMessages: "can_delete_messages",
+  canManageVideoChats: "can_manage_video_chats",
+  canRestrictMembers: "can_restrict_members",
+  canPromoteMembers: "can_promote_members",
+  canChangeInfo: "can_change_info",
+  canInviteUsers: "can_invite_users",
+  canManageTags: "can_manage_tags",
+  canPinMessages: "can_pin_messages",
+  canManageTopics: "can_manage_topics",
+} as const;
+
+export function getGroupCapabilities(member: ChatMember): GroupCapabilities {
+  if (member.status !== "administrator") return { ...EMPTY_CAPABILITIES };
+  return {
+    canManageChat: member.can_manage_chat === true,
+    canDeleteMessages: member.can_delete_messages === true,
+    canManageVideoChats: member.can_manage_video_chats === true,
+    canRestrictMembers: member.can_restrict_members === true,
+    canPromoteMembers: member.can_promote_members === true,
+    canChangeInfo: member.can_change_info === true,
+    canInviteUsers: member.can_invite_users === true,
+    canManageTags: member.can_manage_tags === true,
+    canPinMessages: member.can_pin_messages === true,
+    canManageTopics: member.can_manage_topics === true,
+  };
 }
 
-function loadRegistry(): void {
-  try {
-    const file = registryFilePath();
-    if (!existsSync(file)) {
-      return;
-    }
-    const raw = JSON.parse(readFileSync(file, "utf8")) as {
-      groups?: Array<{ id: number; title?: string; adminUserIds?: number[] }>;
-    };
-    const groups = raw.groups;
-    if (!Array.isArray(groups)) {
-      return;
-    }
-    for (const group of groups) {
-      registry.set(group.id, {
-        id: group.id,
-        title: group.title ?? "",
-        adminUserIds: new Set(group.adminUserIds ?? []),
-      });
-    }
-    console.log(`[REGISTRO] Cargados ${registry.size} grupos desde disco.`);
-  } catch (error) {
-    console.error("[REGISTRO] No se pudo cargar el registro de grupos:", error);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseGroup(value: unknown): RegisteredGroup | undefined {
+  if (!isRecord(value) || !Number.isSafeInteger(value.id) || typeof value.id !== "number") {
+    return undefined;
   }
+  const capabilities = isRecord(value.capabilities) ? value.capabilities : {};
+  const parsedCapabilities = { ...EMPTY_CAPABILITIES };
+  for (const [key, field] of Object.entries(PERMISSION_FIELDS) as Array<
+    [keyof GroupCapabilities, (typeof PERMISSION_FIELDS)[keyof typeof PERMISSION_FIELDS]]
+  >) {
+    const raw = capabilities[key] ?? capabilities[field];
+    if (typeof raw === "boolean") parsedCapabilities[key] = raw;
+  }
+  return {
+    id: value.id,
+    title: typeof value.title === "string" ? value.title : "",
+    adminUserIds: Array.isArray(value.adminUserIds)
+      ? value.adminUserIds.filter(
+          (id): id is number => typeof id === "number" && Number.isSafeInteger(id),
+        )
+      : [],
+    capabilities: parsedCapabilities,
+  };
 }
 
-function saveRegistry(): void {
-  const file = registryFilePath();
-  const temporaryFile = `${file}.tmp`;
-  try {
-    mkdirSync(dirname(file), { recursive: true });
-    const groups = [...registry.values()].map((group) => ({
-      id: group.id,
-      title: group.title,
-      adminUserIds: [...group.adminUserIds],
-    }));
-    writeFileSync(temporaryFile, JSON.stringify({ groups }, null, 2), "utf8");
-    renameSync(temporaryFile, file);
-  } catch (error) {
-    console.error("[REGISTRO] No se pudo guardar el registro de grupos:", error);
+export class GroupRegistry {
+  private readonly groups = new Map<number, RegisteredGroup>();
+  private persistenceAvailable = true;
+
+  constructor(private readonly file = resolve(process.cwd(), "data", "groups.json")) {
+    this.load();
+  }
+
+  private load(): void {
+    if (!existsSync(this.file)) return;
     try {
-      if (existsSync(temporaryFile)) {
-        rmSync(temporaryFile);
+      const parsed: unknown = JSON.parse(readFileSync(this.file, "utf8"));
+      if (!isRecord(parsed) || !Array.isArray(parsed.groups)) {
+        throw new Error("invalid group registry structure");
       }
-    } catch (cleanupError) {
-      console.error("[REGISTRO] No se pudo limpiar el archivo temporal:", cleanupError);
+      for (const value of parsed.groups) {
+        const group = parseGroup(value);
+        if (!group) {
+          throw new Error("invalid group registry entry");
+        }
+        this.groups.set(group.id, group);
+      }
+      console.log(`[REGISTRO] Cargados ${this.groups.size} grupos desde disco.`);
+    } catch (error) {
+      this.persistenceAvailable = false;
+      console.error(
+        "[REGISTRO] El archivo de grupos no se pudo cargar y se conservará sin sobrescribirlo:",
+        error,
+      );
     }
   }
-}
 
-loadRegistry();
-
-/**
- * Registra o actualiza un grupo donde el bot está presente como
- * administrador. Se persiste en disco para sobrevivir a reinicios.
- */
-export function registerGroup(chatId: number, title: string): void {
-  const existing = registry.get(chatId);
-  if (existing) {
-    existing.title = title;
-  } else {
-    registry.set(chatId, { id: chatId, title, adminUserIds: new Set() });
+  private save(): void {
+    if (!this.persistenceAvailable) return;
+    const temporaryFile = `${this.file}.tmp`;
+    try {
+      mkdirSync(dirname(this.file), { recursive: true });
+      writeFileSync(
+        temporaryFile,
+        JSON.stringify({ groups: [...this.groups.values()] }, null, 2),
+        "utf8",
+      );
+      renameSync(temporaryFile, this.file);
+    } catch (error) {
+      console.error("[REGISTRO] No se pudo guardar el registro de grupos:", error);
+      try {
+        if (existsSync(temporaryFile)) rmSync(temporaryFile);
+      } catch (cleanupError) {
+        console.error("[REGISTRO] No se pudo limpiar el archivo temporal:", cleanupError);
+      }
+    }
   }
-  saveRegistry();
+
+  register(chatId: number, title: string, capabilities: GroupCapabilities): void {
+    const existing = this.groups.get(chatId);
+    this.groups.set(chatId, {
+      id: chatId,
+      title,
+      adminUserIds: existing?.adminUserIds ?? [],
+      capabilities: { ...capabilities },
+    });
+    this.save();
+  }
+
+  unregister(chatId: number): void {
+    if (this.groups.delete(chatId)) this.save();
+  }
+
+  markAdmin(chatId: number, userId: number): void {
+    const group = this.groups.get(chatId);
+    if (!group || group.adminUserIds.includes(userId)) return;
+    group.adminUserIds.push(userId);
+    this.save();
+  }
+
+  updateTitle(chatId: number, title: string): void {
+    const group = this.groups.get(chatId);
+    if (!group || group.title === title) return;
+    group.title = title;
+    this.save();
+  }
+
+  updateCapabilities(chatId: number, capabilities: GroupCapabilities): void {
+    const group = this.groups.get(chatId);
+    if (!group || Object.keys(capabilities).every(
+      (key) =>
+        group.capabilities[key as keyof GroupCapabilities] ===
+        capabilities[key as keyof GroupCapabilities],
+    )) {
+      return;
+    }
+    group.capabilities = { ...capabilities };
+    this.save();
+  }
+
+  migrate(
+    oldChatId: number,
+    newChatId: number,
+    title: string,
+    capabilities: GroupCapabilities,
+  ): void {
+    if (oldChatId === newChatId) {
+      this.register(newChatId, title, capabilities);
+      return;
+    }
+    const oldGroup = this.groups.get(oldChatId);
+    const newGroup = this.groups.get(newChatId);
+    const adminUserIds = new Set([
+      ...(oldGroup?.adminUserIds ?? []),
+      ...(newGroup?.adminUserIds ?? []),
+    ]);
+    this.groups.set(newChatId, {
+      id: newChatId,
+      title,
+      adminUserIds: [...adminUserIds],
+      capabilities: { ...capabilities },
+    });
+    this.groups.delete(oldChatId);
+    this.save();
+  }
+
+  getAll(): Array<{ id: number; title: string; capabilities: GroupCapabilities }> {
+    return [...this.groups.values()].map(({ id, title, capabilities }) => ({
+      id,
+      title,
+      capabilities: { ...capabilities },
+    }));
+  }
+
+  getUserGroups(userId: number): Array<{ id: number; title: string }> {
+    return [...this.groups.values()]
+      .filter((group) => group.adminUserIds.includes(userId))
+      .map(({ id, title }) => ({ id, title }));
+  }
 }
 
-/**
- * Elimina un grupo del registro (bot expulsado, fuera del grupo o
- * ya no administrador). También se persiste.
- */
+export function reconcileBotMembership(
+  target: Pick<GroupRegistry, "register" | "unregister">,
+  chatId: number,
+  title: string,
+  member: ChatMember,
+): boolean {
+  if (member.status !== "administrator") {
+    target.unregister(chatId);
+    return false;
+  }
+  target.register(chatId, title, getGroupCapabilities(member));
+  return true;
+}
+
+const registry = new GroupRegistry();
+
+export function registerGroup(
+  chatId: number,
+  title: string,
+  capabilities = EMPTY_CAPABILITIES,
+): void {
+  registry.register(chatId, title, capabilities);
+}
+
 export function unregisterGroup(chatId: number): void {
-  registry.delete(chatId);
-  saveRegistry();
+  registry.unregister(chatId);
 }
 
-/**
- * Anota que un usuario es administrador/creador de un grupo.
- * Se usa con la lista de administradores real (getChatAdministrators)
- * o cuando el usuario usa /menu dentro del grupo.
- */
 export function markUserAsAdmin(chatId: number, userId: number): void {
-  const group = registry.get(chatId);
-  if (group) {
-    group.adminUserIds.add(userId);
-    saveRegistry();
-  }
+  registry.markAdmin(chatId, userId);
 }
 
-/**
- * Todos los grupos registrados donde el bot está presente como admin.
- * La autorización real se comprueba SIEMPRE aparte (getChatMember).
- */
-export function getAllKnownGroups(): Array<{ id: number; title: string }> {
-  return [...registry.values()].map((group) => ({
-    id: group.id,
-    title: group.title,
-  }));
+export function updateRegisteredGroupTitle(chatId: number, title: string): void {
+  registry.updateTitle(chatId, title);
 }
 
-/**
- * Grupos conocidos donde el usuario figura como administrador según el
- * subíndice. Útil como punto de partida rápido; no es autoritativo.
- */
+export function updateRegisteredGroupCapabilities(
+  chatId: number,
+  capabilities: GroupCapabilities,
+): void {
+  registry.updateCapabilities(chatId, capabilities);
+}
+
+export function reconcileRegisteredBotMembership(
+  chatId: number,
+  title: string,
+  member: ChatMember,
+): boolean {
+  return reconcileBotMembership(registry, chatId, title, member);
+}
+
+export function migrateRegisteredGroup(
+  oldChatId: number,
+  newChatId: number,
+  title: string,
+  capabilities: GroupCapabilities,
+): void {
+  registry.migrate(oldChatId, newChatId, title, capabilities);
+}
+
+export function getAllKnownGroups(): Array<{
+  id: number;
+  title: string;
+  capabilities: GroupCapabilities;
+}> {
+  return registry.getAll();
+}
+
 export function getUserKnownGroups(
   userId: number,
 ): Array<{ id: number; title: string }> {
-  return [...registry.values()]
-    .filter((group) => group.adminUserIds.has(userId))
-    .map((group) => ({ id: group.id, title: group.title }));
+  return registry.getUserGroups(userId);
 }

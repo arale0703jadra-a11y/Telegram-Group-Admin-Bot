@@ -52,6 +52,7 @@ function createMenuCtx(options: {
   username?: string;
   commandText?: string;
   memberStatus?: ChatMember["status"];
+  verified?: boolean;
 }): {
   ctx: MyContext;
   replies: string[];
@@ -84,7 +85,10 @@ function createMenuCtx(options: {
     chat,
     from,
     me: { id: BOT_ID, is_bot: true, username: "zeus_test", first_name: "ZEUS" },
-    session: { user: {}, group: {} },
+    session: {
+      user: options.verified ? { verified: true } : {},
+      group: {},
+    },
     reply: async (text: string) => {
       replies.push(text);
       return { message_id: 100 };
@@ -101,11 +105,25 @@ function createMenuCtx(options: {
       ): Promise<ChatMember> =>
         ({
           status:
-            userId === options.fromId
-              ? (options.memberStatus ?? "member")
-              : "member",
-          user: { id: userId, is_bot: false, first_name: "User" },
+            userId === BOT_ID
+              ? "administrator"
+              : userId === options.fromId
+                ? (options.memberStatus ?? "member")
+                : "member",
+          user: {
+            id: userId,
+            is_bot: userId === BOT_ID,
+            first_name: userId === BOT_ID ? "ZEUS" : "User",
+          },
+          can_manage_chat: userId === BOT_ID,
+          can_delete_messages: userId === BOT_ID,
+          can_restrict_members: userId === BOT_ID,
         }) as ChatMember,
+      getChat: async (chatId: number | string) => ({
+        id: chatId,
+        type: "supergroup",
+        title: "Grupo Uno",
+      }),
     },
   } as unknown as MyContext;
   return { ctx, replies, sentDms };
@@ -171,6 +189,20 @@ test("un administrador de grupo sin autorización global no abre el panel", asyn
   await runMenu(h.ctx);
   assert.equal(h.sentDms.length, 0, "sin DM con panel");
   assert.ok(!h.replies.some((r) => r.includes("PANEL DE ADMINISTRACIÓN")));
+});
+
+test("un usuario verificado sin autorización global no abre el panel", async () => {
+  resetSecurityCaches();
+  const h = createMenuCtx({
+    chatType: "private",
+    chatId: 900999999,
+    fromId: 900999999,
+    verified: true,
+    memberStatus: "administrator",
+  });
+  await runMenu(h.ctx);
+  assert.ok(h.replies.some((reply) => /No autorizado/u.test(reply)));
+  assert.ok(!h.replies.some((reply) => reply.includes("PANEL DE ADMINISTRACIÓN")));
 });
 
 test("un usuario autorizado conserva el acceso tras cambiar de nombre de usuario", async () => {

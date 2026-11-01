@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  isAuthorizedPanelUser,
-  isAuthorizedPanelUserId,
-} from "../src/security/panel-authorization.js";
+
+process.env.OWNER_ID = "90";
+process.env.ALEXIITA_TELEGRAM_ID = "200";
+process.env.SYSTEM_OWNER_BOOTSTRAP_ID = "33";
+
+const { isAuthorizedPanelUser, isAuthorizedPanelUserId } = await import(
+  "../src/security/panel-authorization.js"
+);
 
 test("panel access recognizes the three authorized identities (owner, configured owner, secondary)", () => {
   assert.equal(isAuthorizedPanelUserId(100, 100, 90, 200), true);
@@ -38,6 +42,12 @@ test("owner lookup failures are logged without exposing details and keep configu
       }),
       false,
     );
+    assert.equal(
+      await isAuthorizedPanelUser(90, async () => {
+        throw new Error("sensitive database detail");
+      }),
+      true,
+    );
     // El fallo de la BD nunca amplía el conjunto: solo conserva las plazas
     // configuradas (aquí, OWNER_ID=90 y ALEXIITA=200 vía parámetros).
     assert.equal(isAuthorizedPanelUserId(90, undefined, 90, 200), true);
@@ -46,15 +56,18 @@ test("owner lookup failures are logged without exposing details and keep configu
     console.warn = originalWarn;
   }
 
-  assert.equal(logs.length, 1);
+  assert.equal(logs.length, 2);
   assert.match(logs[0] ?? "", /"event":"owner_lookup_failed"/);
   assert.match(logs[0] ?? "", /"result":"identity_denied"/);
-  assert.doesNotMatch(logs[0] ?? "", /sensitive database detail/);
+  assert.match(logs[0] ?? "", /"authorizationSource":"none"/);
+  assert.match(logs[1] ?? "", /"authorizationSource":"configured_identity"/);
+  assert.match(logs[1] ?? "", /"missingIdentities":0/);
+  assert.doesNotMatch(logs.join(" "), /sensitive database detail/);
 });
 
 test("la plaza bootstrap configurada tiene la misma autorización de panel", () => {
   assert.equal(isAuthorizedPanelUserId(33, 100, 90, 200, 33), true);
-  assert.equal(isAuthorizedPanelUserId(33, 100, 90, 200), false);
+  assert.equal(isAuthorizedPanelUserId(34, 100, 90, 200), false);
 });
 
 test("authorization consults the persistent owner source on every call", async () => {
@@ -82,7 +95,27 @@ test("authorization logs outcomes and owner presence without identities", async 
   assert.equal(logs.length, 2);
   assert.match(logs[0] ?? "", /"event":"granted"/);
   assert.match(logs[0] ?? "", /"systemOwnerPersisted":true/);
+  assert.match(logs[0] ?? "", /"authorizationSource":"system_owner"/);
   assert.match(logs[1] ?? "", /"event":"identity_denied"/);
   assert.match(logs[1] ?? "", /"systemOwnerPersisted":false/);
+  assert.match(logs[1] ?? "", /"authorizationSource":"none"/);
   assert.doesNotMatch(logs.join(" "), /\b100\b|\b300\b/);
+});
+
+test("authorization diagnostics distinguish configured identity, persistent owner and denial", async () => {
+  const originalInfo = console.info;
+  const logs: string[] = [];
+  console.info = (...values: unknown[]) => logs.push(values.join(" "));
+  try {
+    assert.equal(await isAuthorizedPanelUser(90, async () => undefined), true);
+    assert.equal(await isAuthorizedPanelUser(200, async () => 200), true);
+    assert.equal(await isAuthorizedPanelUser(300, async () => undefined), false);
+  } finally {
+    console.info = originalInfo;
+  }
+
+  assert.match(logs[0] ?? "", /"authorizationSource":"configured_identity"/);
+  assert.match(logs[1] ?? "", /"authorizationSource":"configured_identity"/);
+  assert.match(logs[2] ?? "", /"authorizationSource":"none"/);
+  assert.doesNotMatch(logs.join(" "), /\b90\b|\b200\b|\b300\b/);
 });

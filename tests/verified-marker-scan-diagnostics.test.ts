@@ -385,7 +385,7 @@ test("reconoce títulos con mayúsculas y espacios, sin duplicar y mostrando el 
   assert.ok(
     panel.keyboard.inline_keyboard
       .flat()
-      .some((button) => buttonCallbackData(button) === "vu:apply:approve:520"),
+      .some((button) => buttonCallbackData(button) === "vu:review:approve:520"),
   );
 });
 

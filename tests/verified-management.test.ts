@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Api } from "grammy";
-import { buildVerifiedModelsPanel, FilterAction } from "../src/menus/panels.js";
+import {
+  buildVerifiedModelsPanel,
+  FilterAction,
+  type Panel,
+} from "../src/menus/panels.js";
 import {
 DEFAULT_VERIFIED_PERMISSIONS,
 processAutoRevocationForGroup,
@@ -10,6 +14,9 @@ type VerifiedUser,
 import { buildManualVerifiedConfirmPanel, VerifiedAction } from "../src/menus/panels.js";
 import { hasVerifiedCustomTitle } from "../src/services/verified-title-sync.js";
 import { buttonCallbackData } from "./helpers.js";
+import { buildVerifiedSearchResultsPanel, buildRevokedVerifiedUsersPanel } from "../src/menus/panels.js";
+import { formatVerifiedBadge, getVerifiedDisplayState } from "../src/services/verified-user-policy.js";
+import { resolveVerificadaReplyTarget } from "../src/commands/verified.js";
 
 function verifiedUser(userId: number): VerifiedUser {
   return {
@@ -45,13 +52,14 @@ test("verified management panel displays private actions for the listed IDs", ()
   const callbacks = panel.keyboard.inline_keyboard.flat().map(buttonCallbackData);
 
   assert.match(panel.text, /User 456 — ID 456/);
-  assert.match(panel.text, /Detección de marcas: activa/);
-  assert.match(panel.text, /Marcas configuradas: Verificada, #verified/);
+  assert.match(panel.text, /GESTIÓN DE VERIFICADAS/);
+  assert.ok(!callbacks.includes("cfg:verified_tags_toggle"));
   assert.ok(callbacks.includes(FilterAction.verifiedMute(456)));
   assert.ok(callbacks.includes(FilterAction.verifiedBan(456)));
-  assert.ok(callbacks.includes(FilterAction.verifiedRevoke(456)));
-  assert.ok(callbacks.includes("cfg:verified_tags_toggle"));
-  assert.ok(callbacks.includes("vu:edit"));
+  assert.ok(callbacks.includes("vu:revoke-confirm:456"));
+  assert.ok(callbacks.includes("vu:search"));
+  assert.ok(!callbacks.includes("vu:scan_now"));
+  assert.ok(callbacks.includes("vu:candidates:0"));
   assert.ok(callbacks.includes("vu:add"));
   assert.ok(callbacks.includes("menu:main"));
   assert.ok(!callbacks.includes(FilterAction.home));
@@ -228,4 +236,82 @@ test("verified management panel paginates action buttons", () => {
   );
   assert.ok(callbacks.includes(FilterAction.verifiedList(0)));
   assert.ok(callbacks.includes(FilterAction.verifiedList(2)));
+});
+
+function panelCallbacks(panel: Panel): string[] {
+  return panel.keyboard.inline_keyboard
+    .flat()
+    .map(buttonCallbackData)
+    .filter((value): value is string => value !== undefined);
+}
+
+test("las insignias distinguen activa, revocada, vencida y desconocida", () => {
+  assert.equal(
+    formatVerifiedBadge(getVerifiedDisplayState(verifiedUser(1))),
+    "✅ VERIFICADA",
+  );
+  assert.equal(
+    formatVerifiedBadge(
+      getVerifiedDisplayState({
+        ...verifiedUser(1),
+        verified: false,
+        revoked_at: "2026-01-01T00:00:00.000Z",
+      }),
+    ),
+    "⛔ VERIFICACIÓN REVOCADA",
+  );
+  assert.equal(
+    formatVerifiedBadge(
+      getVerifiedDisplayState({
+        ...verifiedUser(1),
+        valid_until: "2020-01-01T00:00:00.000Z",
+      }),
+    ),
+    "⛔ VERIFICACIÓN VENCIDA",
+  );
+  assert.equal(
+    formatVerifiedBadge(getVerifiedDisplayState(undefined, { queryFailed: true })),
+    "⚠ ESTADO NO DISPONIBLE",
+  );
+  assert.equal(getVerifiedDisplayState(undefined), undefined);
+});
+
+test("el panel de búsqueda presenta resultados con insignia y salida", () => {
+  const panel = buildVerifiedSearchResultsPanel([verifiedUser(7)], "user7", "Test group");
+  assert.match(panel.text, /RESULTADOS DE BÚSQUEDA/);
+  assert.match(panel.text, /✅ VERIFICADA/);
+  const cbs = panelCallbacks(panel);
+  assert.ok(cbs.includes("vu:profile:7"));
+  assert.ok(cbs.includes("vu:search"));
+  const empty = buildVerifiedSearchResultsPanel([], "nada", "Test group");
+  assert.match(empty.text, /Sin coincidencias/);
+});
+
+test("el estado vacío invita a registrar la primera verificada", () => {
+  const panel = buildVerifiedModelsPanel([], 0, "Test group");
+  assert.match(panel.text, /Aún no hay usuarias verificadas/);
+  assert.ok(panelCallbacks(panel).includes("vu:add"));
+});
+
+test("el historial revocado identifica cada registro con el distintivo", () => {
+  const revoked = {
+    ...verifiedUser(9),
+    verified: false,
+    revoked_at: "2026-01-01T00:00:00.000Z",
+  };
+  const panel = buildRevokedVerifiedUsersPanel([revoked], "Test group", 0);
+  assert.match(panel.text, /revocada/i);
+});
+
+test("/verificada extrae la identidad real del mensaje citado", () => {
+  assert.equal(resolveVerificadaReplyTarget({ from: { id: 55, is_bot: false } }), 55);
+  assert.equal(
+    resolveVerificadaReplyTarget({ from: { id: 55, is_bot: true } }),
+    undefined,
+  );
+  assert.equal(
+    resolveVerificadaReplyTarget({ from: { id: 55, is_bot: false }, sender_chat: {} }),
+    undefined,
+  );
+  assert.equal(resolveVerificadaReplyTarget(undefined), undefined);
 });

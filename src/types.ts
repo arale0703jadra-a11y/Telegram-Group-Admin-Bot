@@ -25,6 +25,7 @@ export type PendingAction =
   | { kind: "promotionTest"; groupId: number }
   | { kind: "automaticMessage"; groupId: number }
   | { kind: "verifiedMarkers"; groupId: number }
+  | { kind: "verifiedSearch"; groupId: number }
   | { kind: "verifiedManualAdd"; groupId: number }
   | { kind: "filterAdd"; groupId: number; messageId?: number }
   | { kind: "illegalAdd"; groupId: number; messageId?: number }
@@ -56,6 +57,13 @@ export type PendingAction =
   | { kind: "unbanId"; groupId: number; messageId?: number }
   | { kind: "recoveryKey" };
 
+export type VerifiedConfirmationOperation =
+  | "activate"
+  | "reactivate"
+  | "revoke"
+  | "candidate-approve"
+  | "candidate-reject";
+
 /**
  * Estado del panel de administración en el chat privado.
  * Se guarda por usuario (clave = from.id), de modo que cada
@@ -64,6 +72,16 @@ export type PendingAction =
 export interface UserPanelState {
   selectedGroupId?: number;
   selectedGroupTitle?: string;
+  selectedVerifiedSearch?: string;
+  verifiedConfirmation?: {
+    groupId: number;
+    userId: number;
+    actorUserId: number;
+    operation: VerifiedConfirmationOperation;
+    token: string;
+    expiresAt: number;
+    permissionsSnapshot?: string;
+  };
   pendingAction?: PendingAction;
 }
 

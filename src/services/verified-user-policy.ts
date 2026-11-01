@@ -89,3 +89,43 @@ export function buildUserStatusBadges(
   if (verified) badges.push("✅ Verificada");
   return badges;
 }
+
+/**
+ * Estado de presentación de una verificación para las vistas administrativas.
+ * Distingue explícitamente entre estado negativo (revocada/vencida) y estado
+ * desconocido (fallo de consulta): un error de lectura nunca se presenta como
+ * "no verificada".
+ */
+export type VerifiedDisplayState = "verified" | "revoked" | "expired" | "unknown";
+
+export function getVerifiedDisplayState(
+  record:
+    | {
+        verified?: boolean;
+        revoked_at?: string | null;
+        valid_until?: string | null;
+      }
+    | undefined,
+  options: { queryFailed?: boolean; now?: Date } = {},
+): VerifiedDisplayState | undefined {
+  if (options.queryFailed) return "unknown";
+  if (!record) return undefined;
+  if (record.revoked_at != null || record.verified === false) return "revoked";
+  if (!isActiveVerifiedRecord(record, options.now)) return "expired";
+  return "verified";
+}
+
+export function formatVerifiedBadge(state: VerifiedDisplayState | undefined): string {
+  switch (state) {
+    case "verified":
+      return "✅ VERIFICADA";
+    case "revoked":
+      return "⛔ VERIFICACIÓN REVOCADA";
+    case "expired":
+      return "⛔ VERIFICACIÓN VENCIDA";
+    case "unknown":
+      return "⚠ ESTADO NO DISPONIBLE";
+    default:
+      return "";
+  }
+}

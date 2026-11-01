@@ -115,7 +115,7 @@ async function removeCandidate(
   const inactive = Date.parse(candidate.lastActiveAt) < cutoffMs;
   if (!deleted && !candidate.isDeleted && !inactive) return "skipped";
 
-  const rights = await getBotRights(ctx, chatId);
+  const rights = await getBotRights(ctx, chatId, { fresh: true });
   if (!rights.canRestrict) {
     await logEvent(ctx, chatId, "INACTIVITY_REMOVE_ERROR", {
       targetId: userId,
@@ -197,7 +197,7 @@ export async function runInactivityCleaner(
         });
         continue;
       }
-      const rights = await getBotRights(ctx, group.id);
+      const rights = await getBotRights(ctx, group.id, { fresh: true });
       if (!rights.canRestrict) {
         await logEvent(ctx, group.id, "INACTIVITY_SCAN", {
           result: "error",

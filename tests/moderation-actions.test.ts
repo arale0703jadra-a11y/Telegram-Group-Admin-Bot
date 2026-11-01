@@ -6,6 +6,7 @@ import type { ChatMember, ChatPermissions } from "@grammyjs/types";
 import type { MyContext } from "../src/types.js";
 import {
   banUser,
+  getBotRights,
   isProtectedModerationTarget,
   muteUser,
   unbanUser,
@@ -51,6 +52,48 @@ test("manual moderation protects the dynamic owner and fails closed on lookup er
     console.error = originalError;
     resetSecurityCaches();
     await flushStorage();
+  }
+});
+
+test("administrative permission checks can bypass cached rights immediately before an action", async () => {
+  const chatId = -Math.floor(Date.now()) - 17;
+  let botStatus: "administrator" | "member" = "administrator";
+  let lookups = 0;
+  const ctx = {
+    api: {
+      getChatMember: async (): Promise<ChatMember> => {
+        lookups += 1;
+        if (botStatus === "member") {
+          return {
+            status: "member",
+            user: { id: BOT_ID, is_bot: true, first_name: "ZEUS" },
+          } as ChatMember;
+        }
+        return {
+          status: "administrator",
+          user: { id: BOT_ID, is_bot: true, first_name: "ZEUS" },
+          can_restrict_members: true,
+          can_delete_messages: true,
+        } as ChatMember;
+      },
+    },
+    me: { id: BOT_ID },
+  } as unknown as MyContext;
+
+  resetSecurityCaches();
+  try {
+    assert.deepEqual(await getBotRights(ctx, chatId), {
+      canRestrict: true,
+      canDelete: true,
+    });
+    botStatus = "member";
+    assert.deepEqual(await getBotRights(ctx, chatId, { fresh: true }), {
+      canRestrict: false,
+      canDelete: false,
+    });
+    assert.equal(lookups, 2);
+  } finally {
+    resetSecurityCaches();
   }
 });
 

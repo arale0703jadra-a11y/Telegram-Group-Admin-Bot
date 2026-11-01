@@ -5,18 +5,16 @@ import {
   canRevokeVerifiedAdministrator,
 } from "./verified-user-policy.js";
 import {
-  addVerifiedUser,
   getVerifiedUser,
   getVerifiedUsers,
-  revokeVerifiedUser,
   updateVerifiedUser,
 } from "./verified-users.js";
 import {
   markUserVerified,
   recordObservedUser,
   syncVerifiedUserStates,
-  unmarkUserVerified,
 } from "./user-registry.js";
+import { recordVerifiedTagObservation } from "./verified-tag-reviews.js";
 
 export interface VerifiedUserSyncResult {
   administratorsSynchronized: number;
@@ -85,48 +83,34 @@ async function registerAndDemoteVerifiedAdministrator(
         .join(" "),
     });
   } else {
-    await addVerifiedUser({
+    await recordVerifiedTagObservation({
       groupId,
       userId: admin.user.id,
+      actorUserId: actorId,
       username: admin.user.username,
       displayName: [admin.user.first_name, admin.user.last_name]
         .filter(Boolean)
         .join(" "),
-      createdBy: actorId,
-      verificationMethod: "detected_custom_title",
-      detectedAt: new Date().toISOString(),
+      observedTag: `Verificada (título personalizado de administrador)`,
+      status: "pending",
     });
   }
 
   try {
     await api.promoteChatMember(groupId, admin.user.id, REMOVE_ADMIN_RIGHTS);
   } catch (error) {
-    try {
-      await revokeVerifiedUser(groupId, admin.user.id);
-    } catch (rollbackError) {
-      console.error(
-        `[VERIFIED_TITLE] No se pudo retirar el registro tras fallar la degradación userId=${admin.user.id} groupId=${groupId}`,
-        rollbackError,
-      );
-    }
-    try {
-      await unmarkUserVerified(groupId, admin.user.id);
-    } catch (rollbackError) {
-      console.error(
-        `[VERIFIED_TITLE] No se pudo limpiar la caché local userId=${admin.user.id} groupId=${groupId}`,
-        rollbackError,
-      );
-    }
     throw error;
   }
 
   await recordObservedUser(groupId, admin.user, { status: "member" });
-  await markUserVerified(
-    groupId,
-    admin.user.id,
-    admin.user.username,
-    [admin.user.first_name, admin.user.last_name].filter(Boolean).join(" "),
-  );
+  if (previouslyVerified) {
+    await markUserVerified(
+      groupId,
+      admin.user.id,
+      admin.user.username,
+      [admin.user.first_name, admin.user.last_name].filter(Boolean).join(" "),
+    );
+  }
   console.log(
     `[VERIFIED_TITLE] Verificada registrada y degradada userId=${admin.user.id} groupId=${groupId}`,
   );

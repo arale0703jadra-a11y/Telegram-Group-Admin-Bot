@@ -135,7 +135,7 @@ export async function removeInactiveUser(
     );
     return "skipped";
   }
-  const rights = await getBotRights(ctx, chatId);
+  const rights = await getBotRights(ctx, chatId, { fresh: true });
   if (!rights.canRestrict) {
     await logEvent(ctx, chatId, "INACTIVITY_REMOVE_ERROR", {
       targetId: userId,
@@ -178,7 +178,7 @@ export async function runInactivityScan(ctx: MyContext): Promise<void> {
     try {
       const data = await getGroupData(group.id);
       if (!data.inactivity.enabled) continue;
-      const rights = await getBotRights(ctx, group.id);
+      const rights = await getBotRights(ctx, group.id, { fresh: true });
       if (!rights.canRestrict) {
         await logEvent(ctx, group.id, "INACTIVITY_SCAN", {
           result: "error",

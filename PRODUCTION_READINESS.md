@@ -68,6 +68,32 @@ Los comandos independientes implementados incluyen `/menu` y `/borrar`. Mute, un
 
 El modo se puede activar manualmente desde `/admin` → **Centro de Protección** o automáticamente al detectar una oleada de entradas. La duración usa `antiRaid.emergencyMinutes` (60 minutos por defecto y seleccionable desde el panel); Telegram restaura las restricciones temporales al vencer su `until_date`. Solo se aplican restricciones nativas a miembros con fecha de entrada observada por ZEUS; las fechas desconocidas no se interpretan como recientes. Para la aplicación completa, ZEUS necesita `can_restrict_members` y `can_delete_messages`.
 
+## Inventario de grupos administrables
+
+ZEUS registra únicamente chats `group` y `supergroup` donde el estado actual
+del bot sea `administrator`. El registro local `data/groups.json` se carga al
+arranque; los cambios de membresía del bot actualizan el inventario y los
+cambios de título de grupo actualizan el nombre mostrado. El selector vuelve a
+consultar el estado de ZEUS, el estado del usuario y el tipo/nombre del chat en
+Telegram antes de mostrarlo. Los permisos individuales de ZEUS se conservan
+como capacidades y las operaciones de moderación vuelven a verificarlos antes
+de ejecutarse.
+
+La Bot API no ofrece una operación para enumerar retrospectivamente todos los
+grupos del bot. Un grupo anterior ausente del archivo solo se podrá recuperar
+cuando ZEUS reciba una actualización de membresía válida o mediante un
+procedimiento manual controlado: confirmar el ID del grupo y comprobar con la
+Bot API que ZEUS sea administrador antes de registrarlo. `/menu` puede efectuar
+esa comprobación para una identidad globalmente autorizada que también sea
+administradora del grupo. No se admiten canales ni chats privados.
+
+Las migraciones a supergrupo trasladan el registro y mueven el archivo de datos
+si el destino no existe. Si ya hay datos en el destino, se conservan ambos
+archivos en lugar de sobrescribirlos. Un `data/groups.json` ilegible se
+mantiene intacto y no se sobrescribe automáticamente; requiere recuperación
+manual. La durabilidad de `data/` depende del almacenamiento persistente del
+entorno donde se ejecute ZEUS.
+
 ## BLOCK
 
 - Aplicar la migración 008 en producción sin haberla ejecutado primero en una base de pruebas aislada.
