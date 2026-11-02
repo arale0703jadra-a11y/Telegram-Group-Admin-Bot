@@ -301,6 +301,7 @@ interface MenuItem {
 const CATEGORIES: MenuItem[] = [
   { id: "proteccion", label: "🛡️ Centro de Protección" },
   { id: "verificadas", label: "👑 Verificadas", cb: FilterAction.verified },
+  { id: "afrodita", label: "🌸 AFRODITA" },
   { id: "lista-comandos", label: "📚 Lista de comandos", cb: MenuAction.commands(0) },
   { id: "mensajes-recurrentes", label: "🔁 Mensajes Recurrentes", cb: AutomaticMessageAction.home },
   { id: "usuarios", label: "⚖️ Moderación y usuarios" },

@@ -26,6 +26,10 @@ import {
   isActivityPanelAction,
   presentActivityPanel,
 } from "./activity-summary.js";
+import {
+  handleAfroditaMenuAction,
+  isAfroditaPanelAction,
+} from "./afrodita-panel.js";
 import type { MyContext } from "../types.js";
 
 const DEVELOPMENT_MESSAGE = "🚧 Esta función está en desarrollo.";
@@ -74,7 +78,7 @@ export function parseMenuAction(data: string): ParsedMenuAction | undefined {
     return { kind, section: parts[2] };
   }
   if (kind === "action" && parts[2] && parts[3]) {
-    return { kind, section: parts[2], item: parts[3] };
+    return { kind, section: parts[2], item: parts.slice(3).join(":") };
   }
   return undefined;
 }
@@ -151,6 +155,16 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
       );
       return;
     }
+  }
+
+  // Sección 🌸 AFRODITA: panel centralizado (resumen, publicaciones,
+  // encuestas, menciones, grupos, programación, historial y configuración).
+  // Se intercepta antes de la comprobación de administración del grupo
+  // seleccionado porque opera de forma global y cada escritura comprueba
+  // la propiedad en el backend dentro del propio manejador.
+  if (isAfroditaPanelAction(action)) {
+    await handleAfroditaMenuAction(action, ctx);
+    return;
   }
 
   if (action.kind === "groups") {
