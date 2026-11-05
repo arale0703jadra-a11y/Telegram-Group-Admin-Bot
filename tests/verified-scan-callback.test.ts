@@ -50,8 +50,7 @@ globalThis.fetch = async (input, init) => {
   }
 
   if (route === "verified_users" && method === "GET") {
-    return response(
-      verifiedRows.filter((row) => {
+    const rows = verifiedRows.filter((row) => {
         const record = row as unknown as Record<string, unknown>;
         for (const [key, expression] of url.searchParams.entries()) {
           if (key === "select" || key === "order" || key === "limit") continue;
@@ -62,8 +61,19 @@ globalThis.fetch = async (input, init) => {
           if (operator === "is" && value === "null" && record[key] != null) return false;
         }
         return true;
-      }),
-    );
+      });
+    const range = headers.get("range") ?? "0-999";
+    const [rangeStart, rangeEnd] = range.split("-").map(Number);
+    const visible = rows.slice(rangeStart ?? 0, (rangeEnd ?? rows.length - 1) + 1);
+    return new Response(JSON.stringify(visible), {
+      status: 206,
+      headers: {
+        "content-type": "application/json",
+        "content-range": visible.length
+          ? `${rangeStart ?? 0}-${(rangeStart ?? 0) + visible.length - 1}/${rows.length}`
+          : `*/${rows.length}`,
+      },
+    });
   }
 
   if (route === "verified_member_tag_reviews") {
@@ -134,6 +144,7 @@ function createScanContext(input: {
   admins: ChatMember[] | Error;
   userId?: number;
   callbackData?: string;
+  beforeAdminList?: () => Promise<void>;
 }): { ctx: MyContext; replies: string[]; answers: string[] } {
   const userId = input.userId ?? ACTOR_ID;
   const actor = { id: userId, is_bot: false, first_name: "PanelAdmin" };
@@ -148,6 +159,7 @@ function createScanContext(input: {
         can_restrict_members: true,
       }) as ChatMember,
     getChatAdministrators: async () => {
+      await input.beforeAdminList?.();
       if (input.admins instanceof Error) throw input.admins;
       return input.admins as Awaited<ReturnType<Api["getChatAdministrators"]>>;
     },
@@ -239,7 +251,7 @@ test("legacy direct approval callbacks cannot verify without a session-bound con
   assert.equal(reviewRows[0]?.status, "pending");
 });
 
-test("el panel de gestión manual no expone un escaneo como acción de verificación", () => {
+test("el panel de gestión permite iniciar sincronización manual sin conferir verificación", () => {
   const panel = buildVerifiedModelsPanel(
     [],
     0,
@@ -248,8 +260,23 @@ test("el panel de gestión manual no expone un escaneo como acción de verificac
     true,
   );
   const callbacks = panel.keyboard.inline_keyboard.flat().map(buttonCallbackData);
-  assert.ok(!callbacks.includes("vu:scan_now"));
+  assert.ok(callbacks.includes("vu:scan_now"));
   assert.ok(callbacks.includes("vu:candidates:0"));
+});
+
+test("fa:verified abre la lista real y no vuelve al panel de entrada", async () => {
+  const { ctx, replies } = createScanContext({
+    groupId: GROUP_ID,
+    admins: [],
+    callbackData: "fa:verified",
+  });
+  await moderationActions.middleware()(ctx, async () => {});
+
+  assert.ok(replies.some((text) => /Cargando la página solicitada/u.test(text)));
+  const finalPanel = replies.at(-1) ?? "";
+  assert.match(finalPanel, /GESTIÓN DE VERIFICADAS/u);
+  assert.match(finalPanel, /Registros activos: 0/u);
+  assert.doesNotMatch(finalPanel, /Abre «Verificadas» para consultar/u);
 });
 
 test("vu:scan_now ejecuta el escaneo, registra candidatas y no duplica al repetir", async () => {
@@ -307,6 +334,36 @@ test("vu:scan_now ejecuta el escaneo, registra candidatas y no duplica al repeti
     await middleware(ctx, async () => {});
   });
   assert.match(replies[0], /0 candidatas nuevas/);
+  assert.equal((await listVerifiedTagReviews(GROUP_ID)).length, 1);
+});
+
+test("sincronizaciones manuales simultáneas del mismo grupo se deduplican", async () => {
+  let markStarted!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { ctx, replies } = createScanContext({
+    groupId: GROUP_ID,
+    admins: [makeAdmin(9001, "Verificada")],
+    beforeAdminList: async () => {
+      markStarted();
+      await wait;
+    },
+  });
+  const middleware = moderationActions.middleware();
+  const firstScan = withCapturedLogs(async () => {
+    await middleware(ctx, async () => {});
+  });
+  await started;
+  await middleware(ctx, async () => {});
+
+  assert.ok(replies.some((reply) => /Ya hay una sincronización en curso/u.test(reply)));
+  release();
+  await firstScan;
   assert.equal((await listVerifiedTagReviews(GROUP_ID)).length, 1);
 });
 

@@ -36,6 +36,10 @@ import {
   COMMAND_DEFINITIONS,
   type CommandCategory,
 } from "../commands/definitions.js";
+import {
+  VERIFIED_USERS_HISTORY_PAGE_SIZE,
+  VERIFIED_USERS_PAGE_SIZE,
+} from "../services/verified-users.js";
 
 export interface Panel {
   text: string;
@@ -505,11 +509,15 @@ export function buildVerifiedRecordsPanel(
   groupTitle?: string,
   now = new Date(),
   searchTerm?: string,
+  totalCount = records.length,
+  pageIsPreloaded = false,
 ): Panel {
   const PAGE_SIZE = 8;
-  const pageCount = Math.max(1, Math.ceil(records.length / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
   const currentPage = Math.max(0, Math.min(page, pageCount - 1));
-  const pageItems = records.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+  const pageItems = pageIsPreloaded
+    ? records.slice(0, PAGE_SIZE)
+    : records.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
   const entries = pageItems.map((record) => {
     let status: string;
     if (record.revoked_at !== null) {
@@ -1023,19 +1031,21 @@ export function buildVerifiedModelsPanel(
   recognizedTags: string[] = [],
   tagDetectionEnabled = false,
   autoRevocationEnabled = false,
+  totalCount = users.length,
+  pageIsPreloaded = false,
 ): Panel {
   // Parametros de deteccion conservados solo por compatibilidad de firma:
   // la gestion de verificadas es exclusivamente manual (sin UI de deteccion).
   void recognizedTags;
   void tagDetectionEnabled;
-  const pageSize = 5;
-  const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
+  const pageSize = VERIFIED_USERS_PAGE_SIZE;
+  const pageCount = Math.max(1, Math.ceil(totalCount / pageSize));
   const currentPage = Math.max(0, Math.min(page, pageCount - 1));
-  const pageUsers = users.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+  const pageUsers = pageIsPreloaded
+    ? users.slice(0, pageSize)
+    : users.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
   const keyboard = new InlineKeyboard();
   const now = new Date();
-  const activeCount = users.filter((user) => isActiveVerifiedRecord(user, now)).length;
-  const inactiveCount = users.length - activeCount;
 
   for (const user of pageUsers) {
     const userId = String(user.user_id);
@@ -1064,6 +1074,7 @@ export function buildVerifiedModelsPanel(
     .text("🔎 Buscar usuaria", VerifiedAction.search)
     .row()
     .text("🧾 Revisar candidatas", "vu:candidates:0")
+    .text("🔄 Sincronizar ahora", "vu:scan_now")
     .row()
     .text(
       autoRevocationEnabled
@@ -1087,9 +1098,15 @@ export function buildVerifiedModelsPanel(
         const validity = user.valid_until
           ? formatVerifiedValidity(user.valid_until)
           : "sin fecha (compatibilidad heredada)";
+        const method = user.verification_method === "detected_custom_title"
+          ? "Automática (título detectado; requiere revisión)"
+          : user.verification_method === "manual"
+            ? "Manual"
+            : "No especificado";
         return (
           `• ${escapeLegacyMarkdown(identity)} — ID ${user.user_id}` +
           `\n  ${badge || "✅ VERIFICADA"}` +
+          `\n  Método: ${method}` +
           `\n  Vigencia: ${validity}`
         );
       }).join("\n")
@@ -1101,7 +1118,7 @@ export function buildVerifiedModelsPanel(
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n🛡️ *GESTIÓN DE VERIFICADAS*\n\n` +
-      `Estados reales: ${activeCount} activa(s) · ${inactiveCount} inactiva(s) · ${users.length} registro(s)\n` +
+      `Registros activos: ${totalCount} · Página: ${pageUsers.length} usuario(s)\n` +
       `Revocación automática: ${autoRevocationEnabled ? "activa" : "inactiva"}\n\n` +
       `${list}\n\n` +
       "Las altas son exclusivamente manuales: ninguna detección concede verificación.\n" +
@@ -1912,11 +1929,29 @@ export const VerifiedAction = {
   ): string => `vu:toggle:${userId}:${permission}`,
 }
 
-export function buildVerifiedLoadErrorPanel(groupTitle?: string): Panel {
+export function buildVerifiedLoadingPanel(groupTitle?: string): Panel {
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n` +
-      "No se pudo cargar la lista ahora. Inténtalo de nuevo en unos segundos.",
+      "⏳ Cargando la página solicitada desde la fuente actual. No se mostrarán datos antiguos si la consulta falla.",
+    keyboard: new InlineKeyboard()
+      .text("⬅️ Volver al Menú Principal", MenuAction.main),
+  };
+}
+
+export function buildVerifiedLoadErrorPanel(
+  groupTitle?: string,
+  reason?: "timeout" | "unavailable",
+): Panel {
+  const message = reason === "timeout"
+    ? "La consulta a Supabase tardó demasiado y se canceló. No se muestran resultados almacenados ni potencialmente desactualizados."
+    : reason === "unavailable"
+      ? "No se pudo consultar la fuente actual de verificaciones o la configuración local. No se muestran resultados potencialmente desactualizados."
+      : "No se pudo cargar la lista ahora. No se muestran resultados potencialmente desactualizados.";
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n👑 *VERIFICADAS*\n\n` +
+      `${message}\nInténtalo de nuevo en unos segundos.`,
     keyboard: new InlineKeyboard()
       .text("🔄 Reintentar", FilterAction.verified)
       .row()
@@ -2109,9 +2144,11 @@ export function buildRevokedVerifiedUsersPanel(
   users: VerifiedUser[],
   groupTitle: string | undefined,
   page: number,
+  totalCount = users.length,
+  pageIsPreloaded = false,
 ): Panel {
-  const pageSize = 10;
-  const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
+  const pageSize = VERIFIED_USERS_HISTORY_PAGE_SIZE;
+  const pageCount = Math.max(1, Math.ceil(totalCount / pageSize));
   const current = Math.min(Math.max(0, page), pageCount - 1);
   const visible = users.slice(current * pageSize, (current + 1) * pageSize);
   const keyboard = new InlineKeyboard();
@@ -2237,13 +2274,28 @@ export function buildVerifiedSearchResultsPanel(
   results: VerifiedUser[],
   term: string,
   groupTitle?: string,
+  page = 0,
+  totalCount = results.length,
+  pageSize = 8,
 ): Panel {
+  const pageCount = Math.max(1, Math.ceil(totalCount / pageSize));
+  const currentPage = Math.max(0, Math.min(page, pageCount - 1));
   const keyboard = new InlineKeyboard();
   for (const user of results) {
     const identity =
       user.display_name || (user.username ? `@${user.username}` : `ID ${user.user_id}`);
     keyboard.text(`👤 ${identity.slice(0, 34)}`, `vu:profile:${user.user_id}`).row();
   }
+  if (currentPage > 0) {
+    keyboard.text("⬅️ Anterior", `vu:list:${currentPage - 1}`);
+  }
+  if (pageCount > 1) {
+    keyboard.text(`${currentPage + 1}/${pageCount}`, `vu:list:${currentPage}`);
+  }
+  if (currentPage + 1 < pageCount) {
+    keyboard.text("Siguiente ➡️", `vu:list:${currentPage + 1}`);
+  }
+  if (pageCount > 1) keyboard.row();
   keyboard.text("🔎 Nueva búsqueda", VerifiedAction.search).row();
   keyboard.text("⬅️ Volver", FilterAction.verified).row();
   keyboard.add(...buildNavRow().inline_keyboard.flat());
@@ -2260,7 +2312,9 @@ export function buildVerifiedSearchResultsPanel(
     text:
       `${formatGroupHeader(groupTitle)}\n\n🔎 *RESULTADOS DE BÚSQUEDA*\n\n` +
       `Término: ${escapeLegacyMarkdown(term.slice(0, 48))}\n` +
-      `Coincidencias: ${results.length}\n\n` +
+      `Coincidencias: ${totalCount}\n` +
+      (pageCount > 1 ? `Página ${currentPage + 1}/${pageCount}\n` : "") +
+      "\n" +
       (lines.length
         ? lines.join("\n")
         : "Sin coincidencias en este grupo. Prueba con el ID numérico exacto."),

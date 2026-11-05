@@ -41,6 +41,7 @@ import {
   buildAntiSpamPanel,
   buildProtectionCenterPanel,
   buildVerifiedModelsPanel,
+  buildVerifiedLoadingPanel,
   buildVerifiedRecordsPanel,
   buildVerifiedActionConfirmPanel,
   buildVerifiedLoadErrorPanel,
@@ -80,9 +81,9 @@ import {
   getVerifiedUser,
   getVerifiedUserAuditHistory,
   getVerifiedUserRecord,
-  getVerifiedUsers,
-  getVerifiedUsersForListing,
-  getRevokedVerifiedUsers,
+  getVerifiedUsersPage,
+  getVerifiedUsersListingPage,
+  getRevokedVerifiedUsersPage,
   invalidateVerifiedUserCache,
   revokeManualVerifiedUser,
 } from "../services/verified-users.js";
@@ -121,7 +122,8 @@ const NO_ADMIN_MESSAGE = "⛔ Ya no eres administrador de ese grupo.";
 const NO_GROUP_SELECTED_MESSAGE =
   "Primero selecciona el grupo que quieres administrar.";
 const EMERGENCY_DURATION_OPTIONS = [15, 30, 60, 120, 360, 720, 1440] as const;
-const VERIFIED_PANEL_TIMEOUT_MS = 4_000;
+const verifiedListLoads = new Set<string>();
+const verifiedMarkerScans = new Set<number>();
 
 export function resolveAutomaticMessageGroupId(
   selectedGroupId: number | undefined,
@@ -281,23 +283,6 @@ async function buildVerifiedProfile(
   );
 }
 
-async function withVerifiedPanelTimeout<T>(operation: Promise<T>): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      operation,
-      new Promise<T>((_, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error("Tiempo de espera agotado al cargar Verificadas.")),
-          VERIFIED_PANEL_TIMEOUT_MS,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
-
 /**
  * Acciones reales del panel (Usuarios + Moderación).
  * Cada callback se autoriza contra el chat_id del grupo seleccionado.
@@ -363,6 +348,8 @@ moderationActions.on("callback_query:data", async (ctx) => {
     await answerVerifiedCallback(
       parts[0] === "vu" && kind === "scan_now"
         ? "Iniciando escaneo..."
+        : parts[0] === "fa" && (kind === "verified" || kind === "verified_list")
+          ? "Cargando verificadas..."
         : undefined,
     );
   }
@@ -388,8 +375,11 @@ moderationActions.on("callback_query:data", async (ctx) => {
   }
   const isAdmin = await isUserAdminOf(ctx, groupId);
   if (!isAdmin) {
+    if (verifiedPanelCallback) {
+      await ctx.reply(NO_ADMIN_MESSAGE);
+      return;
+    }
     if (
-      !verifiedPanelCallback &&
       (!verifiedSubAction || deferVerifiedApplyCallback)
     ) {
       await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
@@ -452,8 +442,19 @@ moderationActions.on("callback_query:data", async (ctx) => {
     if (kind === "search-clear") {
       ctx.session.user.selectedVerifiedSearch = undefined;
       try {
-        const records = await getVerifiedUsersForListing(groupId);
-        await renderPanel(ctx, buildVerifiedRecordsPanel(records, 0, title));
+        const records = await getVerifiedUsersListingPage(groupId, 0);
+        await renderPanel(
+          ctx,
+          buildVerifiedRecordsPanel(
+            records.users,
+            0,
+            title,
+            new Date(),
+            undefined,
+            records.totalCount,
+            true,
+          ),
+        );
       } catch (error) {
         console.error(
           `[VERIFIED_LIST] No se pudo limpiar la búsqueda error=${error instanceof Error ? error.name : "unknown"}`,
@@ -643,15 +644,33 @@ moderationActions.on("callback_query:data", async (ctx) => {
           mode === "reactivate",
         );
         await answerVerifiedCallback(result);
-        await renderPanel(
-          ctx,
-          buildVerifiedModelsPanel(await getVerifiedUsers(groupId), 0, title),
-        );
       } catch (error) {
         console.error(
           `[VERIFIED_COMMAND] No se pudo confirmar activación groupId=${groupId} userId=${userId} error=${error instanceof Error ? error.name : "unknown"}`,
         );
         await answerVerifiedCallback("No se pudo completar; no se confirmó el cambio.");
+        return;
+      }
+      try {
+        const users = await getVerifiedUsersPage(groupId, 0);
+        await renderPanel(
+          ctx,
+          buildVerifiedModelsPanel(
+            users.users,
+            0,
+            title,
+            [],
+            false,
+            false,
+            users.totalCount,
+            true,
+          ),
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_COMMAND] Activación procesada, pero no se pudo actualizar el panel groupId=${groupId} error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title, "unavailable"));
       }
       return;
     }
@@ -663,20 +682,35 @@ moderationActions.on("callback_query:data", async (ctx) => {
       }
       try {
         const searchTerm = ctx.session.user.selectedVerifiedSearch;
-        const records = await getVerifiedUsersForListing(groupId, searchTerm);
+        const records = await getVerifiedUsersListingPage(
+          groupId,
+          page,
+          searchTerm,
+        );
         const panel = buildVerifiedRecordsPanel(
-          records,
+          records.users,
           page,
           title,
           new Date(),
           searchTerm,
+          records.totalCount,
+          true,
         );
         await renderPanel(ctx, panel);
       } catch (error) {
         console.error(
           `[VERIFIED_LIST] No se pudo cargar groupId=${groupId} page=${page} error=${error instanceof Error ? error.name : "unknown"}`,
         );
-        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title));
+        const isTimeout =
+          error instanceof Error &&
+          error.message.includes("superó el límite de tiempo");
+        await renderPanel(
+          ctx,
+          buildVerifiedLoadErrorPanel(
+            title,
+            isTimeout ? "timeout" : "unavailable",
+          ),
+        );
       }
       return;
     }
@@ -687,10 +721,16 @@ moderationActions.on("callback_query:data", async (ctx) => {
         return;
       }
       try {
-        const records = await getRevokedVerifiedUsers(groupId);
+        const records = await getRevokedVerifiedUsersPage(groupId, page);
         await renderPanel(
           ctx,
-          buildRevokedVerifiedUsersPanel(records, title, page),
+          buildRevokedVerifiedUsersPanel(
+            records.users,
+            title,
+            page,
+            records.totalCount,
+            true,
+          ),
         );
       } catch (error) {
         console.error(
@@ -739,15 +779,31 @@ moderationActions.on("callback_query:data", async (ctx) => {
         await unmarkUserVerified(groupId, userId);
         invalidateVerifiedUserCache(groupId, userId);
         await answerVerifiedCallback("✅ Conversión a free completada.");
-        await renderPanel(
-          ctx,
-          buildVerifiedModelsPanel(await getVerifiedUsers(groupId), 0, title),
-        );
+        try {
+          const users = await getVerifiedUsersPage(groupId, 0);
+          await renderPanel(
+            ctx,
+            buildVerifiedModelsPanel(
+              users.users,
+              0,
+              title,
+              [],
+              false,
+              false,
+              users.totalCount,
+            ),
+          );
+        } catch (error) {
+          console.error(
+            `[VERIFIED_COMMAND] Revocación confirmada, pero falló la actualización del listado groupId=${groupId} error=${error instanceof Error ? error.name : "unknown"}`,
+          );
+          await renderPanel(ctx, buildVerifiedLoadErrorPanel(title, "unavailable"));
+        }
       } catch (error) {
         console.error(
           `[VERIFIED_COMMAND] No se pudo convertir a free groupId=${groupId} userId=${userId} error=${error instanceof Error ? error.name : "unknown"}`,
         );
-        await answerVerifiedCallback("No se pudo completar; no se modificó el estado mostrado.");
+        await answerVerifiedCallback("No se pudo completar o confirmar el cambio. Comprueba el estado antes de repetir.");
       }
       return;
     }
@@ -801,12 +857,17 @@ moderationActions.on("callback_query:data", async (ctx) => {
         );
       }
       try {
+        const users = await getVerifiedUsersPage(groupId, 0);
         await renderPanel(
           ctx,
           buildVerifiedModelsPanel(
-            await getVerifiedUsers(groupId),
+            users.users,
             0,
             title,
+            [],
+            false,
+            false,
+            users.totalCount,
           ),
         );
       } catch (error) {
@@ -879,17 +940,26 @@ moderationActions.on("callback_query:data", async (ctx) => {
           ? "Revocación automática activada."
           : "Revocación automática desactivada.",
       );
-      await renderPanel(
-        ctx,
-        buildVerifiedModelsPanel(
-          await getVerifiedUsers(groupId),
-          0,
-          title,
-          data.verifiedMemberTags,
-          data.verifiedTagSyncEnabled,
-          data.verifiedAutoRevocationEnabled,
-        ),
-      );
+      try {
+        const users = await getVerifiedUsersPage(groupId, 0);
+        await renderPanel(
+          ctx,
+          buildVerifiedModelsPanel(
+            users.users,
+            0,
+            title,
+            data.verifiedMemberTags,
+            data.verifiedTagSyncEnabled,
+            data.verifiedAutoRevocationEnabled,
+            users.totalCount,
+          ),
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_AUTO_REVOCATION] Cambio guardado, pero falló la actualización del listado groupId=${groupId} error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title, "unavailable"));
+      }
       return;
     }
     if (kind === "edit") {
@@ -904,17 +974,33 @@ moderationActions.on("callback_query:data", async (ctx) => {
       return;
     }
     if (kind === "scan_now") {
-      const outcome = await runVerifiedMarkerScan({ api: ctx.api, groupId });
-      // Registro interno con etapa y causa reales; nunca tokens ni credenciales.
-      const logLine =
-        `[VERIFIED_MARKER_SCAN] groupId=${groupId} ok=${outcome.ok} ` +
-        `${outcome.detail}`;
-      if (outcome.ok) {
-        console.log(logLine);
-      } else {
-        console.error(logLine);
+      if (verifiedMarkerScans.has(groupId)) {
+        await ctx.reply("⏳ Ya hay una sincronización en curso para este grupo.");
+        return;
       }
-      await ctx.reply(outcome.userMessage);
+      verifiedMarkerScans.add(groupId);
+      try {
+        const outcome = await runVerifiedMarkerScan({ api: ctx.api, groupId });
+        const logLine =
+          `[VERIFIED_MARKER_SCAN] groupId=${groupId} ok=${outcome.ok} ` +
+          `${outcome.detail}`;
+        if (outcome.ok) {
+          console.log(logLine);
+        } else {
+          console.error(logLine);
+        }
+        await ctx.reply(outcome.userMessage);
+      } catch (error) {
+        console.error(
+          `[VERIFIED_MARKER_SCAN] Fallo inesperado groupId=${groupId} ` +
+          `error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await ctx.reply(
+          "⚠️ No se pudo completar la sincronización. No se confirma ningún cambio; revisa el registro de ZEUS e inténtalo de nuevo.",
+        );
+      } finally {
+        verifiedMarkerScans.delete(groupId);
+      }
       return;
     }
     if (kind === "candidates") {
@@ -1408,45 +1494,54 @@ moderationActions.on("callback_query:data", async (ctx) => {
       );
       return;
     }
-    if (parts[0] === "fa" && kind === "verified") {
-      const data = await getGroupData(groupId);
-      await renderPanel(
-        ctx,
-        buildVerifiedTitleConfigPanel(
-          title,
-          data.verifiedMemberTags,
-          data.verifiedTagSyncEnabled,
-        ),
-      );
-      return;
-    }
-    if (parts[0] === "fa" && kind === "verified_list") {
-      const page = Number(parts[2] ?? 0);
-      if (!Number.isInteger(page) || page < 0) {
-        await ctx.answerCallbackQuery("Página no válida.");
+    if (parts[0] === "fa" && (kind === "verified" || kind === "verified_list")) {
+      const page = kind === "verified" ? 0 : Number(parts[2] ?? 0);
+      if (!Number.isSafeInteger(page) || page < 0) {
+        await ctx.reply("⚠️ La página solicitada no es válida.");
         return;
       }
+      const loadKey = `${ctx.from.id}:${groupId}`;
+      if (verifiedListLoads.has(loadKey)) {
+        await ctx.reply("⏳ La lista de verificadas ya se está cargando.");
+        return;
+      }
+      verifiedListLoads.add(loadKey);
       try {
-        const [data, users] = await withVerifiedPanelTimeout(
-          Promise.all([getGroupData(groupId), getVerifiedUsers(groupId)]),
-        );
+        await renderPanel(ctx, buildVerifiedLoadingPanel(title));
+        const [data, result] = await Promise.all([
+          getGroupData(groupId),
+          getVerifiedUsersPage(groupId, page),
+        ]);
         await renderPanel(
           ctx,
           buildVerifiedModelsPanel(
-            users,
+            result.users,
             page,
             title,
             data.verifiedMemberTags,
             data.verifiedTagSyncEnabled,
             data.verifiedAutoRevocationEnabled,
+            result.totalCount,
+            true,
           ),
         );
       } catch (error) {
+        const isTimeout =
+          error instanceof Error &&
+          error.message.includes("superó el límite de tiempo");
         console.error(
-          `[VERIFIED_PANEL] No se pudo cargar lista groupId=${groupId} page=${page}:`,
-          error,
+          `[VERIFIED_PANEL] No se pudo cargar lista groupId=${groupId} page=${page} ` +
+          `error=${error instanceof Error ? error.name : "unknown"}`,
         );
-        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title));
+        await renderPanel(
+          ctx,
+          buildVerifiedLoadErrorPanel(
+            title,
+            isTimeout ? "timeout" : "unavailable",
+          ),
+        );
+      } finally {
+        verifiedListLoads.delete(loadKey);
       }
       return;
     }
@@ -1548,19 +1643,30 @@ moderationActions.on("callback_query:data", async (ctx) => {
         );
         await ctx.answerCallbackQuery("No se pudo completar la acción.");
       }
-      const data = await getGroupData(groupId);
-      const users = await getVerifiedUsers(groupId);
-      await renderPanel(
-        ctx,
-        buildVerifiedModelsPanel(
-          users,
-          0,
-          title,
-          data.verifiedMemberTags,
-          data.verifiedTagSyncEnabled,
-          data.verifiedAutoRevocationEnabled,
-        ),
-      );
+      try {
+        const [data, users] = await Promise.all([
+          getGroupData(groupId),
+          getVerifiedUsersPage(groupId, 0),
+        ]);
+        await renderPanel(
+          ctx,
+          buildVerifiedModelsPanel(
+            users.users,
+            0,
+            title,
+            data.verifiedMemberTags,
+            data.verifiedTagSyncEnabled,
+            data.verifiedAutoRevocationEnabled,
+            users.totalCount,
+            true,
+          ),
+        );
+      } catch (error) {
+        console.error(
+          `[VERIFIED_ADMIN] Acción procesada, pero no se pudo actualizar el panel groupId=${groupId} error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+        await renderPanel(ctx, buildVerifiedLoadErrorPanel(title, "unavailable"));
+      }
       return;
     }
     if (

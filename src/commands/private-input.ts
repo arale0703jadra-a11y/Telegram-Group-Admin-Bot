@@ -16,6 +16,7 @@ import {
   buildMuteMenuPanel,
   buildAutomaticMessagePanel,
   buildManualVerifiedConfirmPanel,
+  buildVerifiedSearchResultsPanel,
   buildVerifiedTitleConfigPanel,
   buildUserCardPanel,
   buildUserSearchResultsPanel,
@@ -34,6 +35,7 @@ import { automaticMessageScheduler } from "../services/automatic-messages.js";
 import { normalizeConfiguredVerifiedMarkers } from "../services/verified-marker-detection.js";
 import {
   getVerifiedUserRecord,
+  searchVerifiedUsers,
 } from "../services/verified-users.js";
 import { isActiveVerifiedRecord } from "../services/verified-user-policy.js";
 import {
@@ -45,6 +47,7 @@ import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 import { createVerifiedConfirmation } from "../services/verified-confirmations.js";
 
 const MAX_MUTE_MINUTES = 527040;
+const verifiedSearchRequests = new Map<number, symbol>();
 
 /**
  * Asistente de entrada libre del panel privado.
@@ -235,25 +238,48 @@ privateInput.on("message:text", async (ctx, next) => {
         );
         return;
       }
+      const requestToken = Symbol("verified-search");
+      verifiedSearchRequests.set(ctx.from.id, requestToken);
+      ctx.session.user.pendingAction = undefined;
       try {
-        const { searchVerifiedUsers } = await import("../services/verified-users.js");
-        const { buildVerifiedSearchResultsPanel } = await import("../menus/panels.js");
-        const results = await searchVerifiedUsers(pending.groupId, term);
-        ctx.session.user.pendingAction = undefined;
+        let results: Awaited<ReturnType<typeof searchVerifiedUsers>>;
+        try {
+          results = await searchVerifiedUsers(pending.groupId, term);
+        } catch (error) {
+          if (verifiedSearchRequests.get(ctx.from.id) !== requestToken) return;
+          console.error(
+            `[VERIFIED_SEARCH] Falló groupId=${pending.groupId} error=${error instanceof Error ? error.name : "unknown"}`,
+          );
+          await ctx.reply(
+            error instanceof Error &&
+                error.message.includes("superó el límite de tiempo")
+              ? "⏱️ La búsqueda en Supabase superó el límite de 5 segundos. No se muestran resultados; vuelve a intentarlo."
+              : "⚠️ Supabase no pudo completar la búsqueda. No se muestran resultados; vuelve a intentarlo.",
+          );
+          return;
+        }
+        if (
+          verifiedSearchRequests.get(ctx.from.id) !== requestToken ||
+          ctx.session.user.selectedGroupId !== pending.groupId
+        ) {
+          return;
+        }
+        ctx.session.user.selectedVerifiedSearch = term;
         await sendPanel(
           ctx,
           buildVerifiedSearchResultsPanel(
-            results,
+            results.users,
             term,
             ctx.session.user.selectedGroupTitle,
+            results.page,
+            results.totalCount,
+            results.pageSize,
           ),
         );
-      } catch (error) {
-        ctx.session.user.pendingAction = undefined;
-        console.error(
-          `[VERIFIED_SEARCH] Falló groupId=${pending.groupId} error=${error instanceof Error ? error.name : "unknown"}`,
-        );
-        await ctx.reply("⚠️ No se pudo buscar; no se modificó ningún registro.");
+      } finally {
+        if (verifiedSearchRequests.get(ctx.from.id) === requestToken) {
+          verifiedSearchRequests.delete(ctx.from.id);
+        }
       }
       return;
     }

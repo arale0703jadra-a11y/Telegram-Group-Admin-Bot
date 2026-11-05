@@ -63,6 +63,7 @@ menuCommand.command(COMMANDS.menu, async (ctx) => {
       ctx.session.user = {
         selectedGroupId: groupId,
         selectedGroupTitle: groupTitle,
+        persistenceVersion: ctx.session.user.persistenceVersion,
       };
       try {
         invalidateSecurityCaches(groupId);

@@ -3,7 +3,10 @@ import test from "node:test";
 import type { Api } from "grammy";
 import {
   buildVerifiedModelsPanel,
+  buildVerifiedRecordsPanel,
   FilterAction,
+  buildVerifiedLoadingPanel,
+  buildVerifiedLoadErrorPanel,
   type Panel,
 } from "../src/menus/panels.js";
 import {
@@ -58,7 +61,7 @@ test("verified management panel displays private actions for the listed IDs", ()
   assert.ok(callbacks.includes(FilterAction.verifiedBan(456)));
   assert.ok(callbacks.includes("vu:revoke-confirm:456"));
   assert.ok(callbacks.includes("vu:search"));
-  assert.ok(!callbacks.includes("vu:scan_now"));
+  assert.ok(callbacks.includes("vu:scan_now"));
   assert.ok(callbacks.includes("vu:candidates:0"));
   assert.ok(callbacks.includes("vu:add"));
   assert.ok(callbacks.includes("menu:main"));
@@ -236,6 +239,70 @@ test("verified management panel paginates action buttons", () => {
   );
   assert.ok(callbacks.includes(FilterAction.verifiedList(0)));
   assert.ok(callbacks.includes(FilterAction.verifiedList(2)));
+  assert.ok(callbacks.includes("vu:scan_now"));
+});
+
+test("verified listing uses server total for pagination and presents verification method", () => {
+  const users = [verifiedUser(500), verifiedUser(501)];
+  users[0]!.verification_method = "manual";
+  users[1]!.verification_method = "detected_custom_title";
+  const panel = buildVerifiedModelsPanel(
+    users,
+    0,
+    "Test group",
+    [],
+    false,
+    false,
+    12,
+  );
+  const callbacks = panel.keyboard.inline_keyboard.flat().map(buttonCallbackData);
+
+  assert.match(panel.text, /Registros activos: 12/u);
+  assert.match(panel.text, /Página 1 de 3/u);
+  assert.match(panel.text, /Método: Manual/u);
+  assert.match(panel.text, /Automática \(título detectado; requiere revisión\)/u);
+  assert.ok(callbacks.includes(FilterAction.verifiedList(1)));
+
+  const secondPage = buildVerifiedModelsPanel(
+    [verifiedUser(700)],
+    1,
+    "Test group",
+    [],
+    false,
+    false,
+    12,
+    true,
+  );
+  assert.match(secondPage.text, /User 700 — ID 700/u);
+  assert.match(secondPage.text, /Página 2 de 3/u);
+
+  const searchPage = buildVerifiedRecordsPanel(
+    [verifiedUser(701)],
+    1,
+    "Test group",
+    new Date(),
+    "member",
+    21,
+    true,
+  );
+  assert.match(searchPage.text, /User 701 — ID 701/u);
+  assert.match(searchPage.text, /Página 2\/3/u);
+});
+
+test("verified loading and error panels clearly distinguish current data from unavailable data", () => {
+  const loading = buildVerifiedLoadingPanel("Test group");
+  const timeout = buildVerifiedLoadErrorPanel("Test group", "timeout");
+  const unavailable = buildVerifiedLoadErrorPanel("Test group", "unavailable");
+
+  assert.match(loading.text, /fuente actual/u);
+  assert.match(timeout.text, /consulta a Supabase tardó demasiado/u);
+  assert.match(timeout.text, /No se muestran resultados almacenados/u);
+  assert.match(unavailable.text, /configuración local/u);
+  assert.ok(
+    unavailable.keyboard.inline_keyboard.flat().some(
+      (button) => buttonCallbackData(button) === FilterAction.verified,
+    ),
+  );
 });
 
 function panelCallbacks(panel: Panel): string[] {
@@ -285,6 +352,23 @@ test("el panel de búsqueda presenta resultados con insignia y salida", () => {
   assert.ok(cbs.includes("vu:search"));
   const empty = buildVerifiedSearchResultsPanel([], "nada", "Test group");
   assert.match(empty.text, /Sin coincidencias/);
+});
+
+test("el panel de búsqueda paginado muestra el total de coincidencias", () => {
+  const panel = buildVerifiedSearchResultsPanel(
+    [verifiedUser(7)],
+    "user7",
+    "Test group",
+    1,
+    21,
+    8,
+  );
+  assert.match(panel.text, /Coincidencias: 21/);
+  assert.match(panel.text, /Página 2\/3/);
+  const cbs = panelCallbacks(panel);
+  assert.ok(cbs.includes("vu:list:0"));
+  assert.ok(cbs.includes("vu:list:1"));
+  assert.ok(cbs.includes("vu:list:2"));
 });
 
 test("el estado vacío invita a registrar la primera verificada", () => {

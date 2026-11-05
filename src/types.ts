@@ -73,6 +73,7 @@ export interface UserPanelState {
   selectedGroupId?: number;
   selectedGroupTitle?: string;
   selectedVerifiedSearch?: string;
+  persistenceVersion?: number;
   verifiedConfirmation?: {
     groupId: number;
     userId: number;

@@ -41,6 +41,7 @@ export async function openPrivatePanel(ctx: MyContext): Promise<void> {
     ctx.session.user = {
       selectedGroupId: group.id,
       selectedGroupTitle: group.title,
+      persistenceVersion: ctx.session.user.persistenceVersion,
     };
     const panel = buildMainPanel(group.title);
     await ctx.reply(panel.text, {

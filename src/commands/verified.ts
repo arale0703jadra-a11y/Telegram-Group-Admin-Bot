@@ -9,7 +9,7 @@ import { isActiveVerifiedRecord } from "../services/verified-user-policy.js";
 import { createVerifiedConfirmation } from "../services/verified-confirmations.js";
 import {
   getVerifiedUserRecord,
-  getVerifiedUsersForListing,
+  getVerifiedUsersListingPage,
 } from "../services/verified-users.js";
 import {
   isActiveVerifiedGroupMember,
@@ -143,16 +143,19 @@ verifiedCommand.command(COMMANDS.verificadas, async (ctx) => {
       return;
     }
     ctx.session.user.selectedVerifiedSearch = searchTerm || undefined;
-    const records = await getVerifiedUsersForListing(
+    const records = await getVerifiedUsersListingPage(
       groupId,
+      0,
       ctx.session.user.selectedVerifiedSearch,
     );
     const panel = buildVerifiedRecordsPanel(
-      records,
+      records.users,
       0,
       ctx.session.user.selectedGroupTitle,
       new Date(),
       ctx.session.user.selectedVerifiedSearch,
+      records.totalCount,
+      true,
     );
     await ctx.reply(panel.text, {
       reply_markup: panel.keyboard,

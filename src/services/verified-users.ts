@@ -62,6 +62,13 @@ export interface VerifiedUserAuditEvent {
   valid_until: string | null;
 }
 
+export interface VerifiedUsersPage {
+  users: VerifiedUser[];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+}
+
 export type ManualVerificationOutcome =
   | { status: "created" | "reactivated"; user: VerifiedUser }
   | { status: "already_active" | "reactivation_required" | "not_found" };
@@ -101,6 +108,10 @@ const verificationStatusCache = new Map<
   { expiresAt: number; verified: boolean }
 >();
 const PERMISSIONS_CACHE_TTL_MS = 10_000;
+export const VERIFIED_USERS_PAGE_SIZE = 5;
+export const VERIFIED_USERS_HISTORY_PAGE_SIZE = 10;
+export const VERIFIED_USERS_QUERY_TIMEOUT_MS = 5_000;
+const verifiedUsersPageRequests = new Map<string, Promise<VerifiedUsersPage>>();
 
 function getVerifiedCacheExpiry(
   record: VerifiedUser | undefined,
@@ -132,6 +143,239 @@ export function invalidateVerifiedUserCache(groupId: number, userId: number): vo
   const key = `${groupId}:${userId}`;
   permissionsCache.delete(key);
   verificationStatusCache.delete(key);
+}
+
+export function getVerifiedUsersPage(
+  groupId: number,
+  page: number,
+  now = new Date(),
+): Promise<VerifiedUsersPage> {
+  if (!Number.isSafeInteger(page) || page < 0) {
+    return Promise.reject(new Error("La página de verificadas no es válida."));
+  }
+  return getDeduplicatedPageRequest(
+    `active:${groupId}:${page}`,
+    () => fetchVerifiedUsersPage(groupId, page, now),
+  );
+}
+
+export function getVerifiedUsersListingPage(
+  groupId: number,
+  page: number,
+  search?: string,
+): Promise<VerifiedUsersPage> {
+  if (!Number.isSafeInteger(page) || page < 0) {
+    return Promise.reject(new Error("La página de verificadas no es válida."));
+  }
+  const normalizedSearch = search?.trim().replace(/^@/u, "");
+  const key = `listing:${groupId}:${page}:${normalizedSearch ?? ""}`;
+  return getDeduplicatedPageRequest(
+    key,
+    () => fetchVerifiedUsersListingPage(groupId, page, normalizedSearch),
+  );
+}
+
+export function getRevokedVerifiedUsersPage(
+  groupId: number,
+  page: number,
+  now = new Date(),
+): Promise<VerifiedUsersPage> {
+  if (!Number.isSafeInteger(page) || page < 0) {
+    return Promise.reject(new Error("La página del historial no es válida."));
+  }
+  return getDeduplicatedPageRequest(
+    `inactive:${groupId}:${page}`,
+    () => fetchRevokedVerifiedUsersPage(groupId, page, now),
+  );
+}
+
+function getDeduplicatedPageRequest(
+  key: string,
+  load: () => Promise<VerifiedUsersPage>,
+): Promise<VerifiedUsersPage> {
+  const existing = verifiedUsersPageRequests.get(key);
+  if (existing) return existing;
+  const request = load();
+  verifiedUsersPageRequests.set(key, request);
+  void request.finally(() => {
+    if (verifiedUsersPageRequests.get(key) === request) {
+      verifiedUsersPageRequests.delete(key);
+    }
+  }).catch(() => {});
+  return request;
+}
+
+async function fetchVerifiedUsersPage(
+  groupId: number,
+  page: number,
+  now: Date,
+): Promise<VerifiedUsersPage> {
+  const from = page * VERIFIED_USERS_PAGE_SIZE;
+  if (!Number.isSafeInteger(from)) {
+    throw new Error("La página de verificadas está fuera de rango.");
+  }
+  const signal = AbortSignal.timeout(VERIFIED_USERS_QUERY_TIMEOUT_MS);
+  let data: unknown[] | null;
+  let count: number | null;
+  let queryError: unknown;
+  try {
+    const response = await getClient()
+      .from("verified_users")
+      .select("*", { count: "exact" })
+      .eq("group_id", groupId)
+      .eq("verified", true)
+      .is("revoked_at", null)
+      .or(`valid_until.is.null,valid_until.gt.${now.toISOString()}`)
+      .order("display_name", { ascending: true })
+      .order("user_id", { ascending: true })
+      .range(from, from + VERIFIED_USERS_PAGE_SIZE - 1)
+      .abortSignal(signal);
+    data = response.data;
+    count = response.count;
+    queryError = response.error;
+  } catch (error) {
+    if (signal.aborted) {
+      throw new Error("La consulta de verificadas superó el límite de tiempo.");
+    }
+    throw error;
+  }
+  if (queryError) {
+    if (signal.aborted) {
+      throw new Error("La consulta de verificadas superó el límite de tiempo.");
+    }
+    throw queryError;
+  }
+  if (count === null) {
+    throw new Error("Supabase no devolvió el total de verificaciones activas.");
+  }
+  const users = ((data ?? []) as VerifiedUser[]).filter(
+    (user) => isActiveVerifiedRecord(user, now),
+  );
+  return {
+    users,
+    totalCount: count,
+    page,
+    pageSize: VERIFIED_USERS_PAGE_SIZE,
+  };
+}
+
+async function fetchVerifiedUsersListingPage(
+  groupId: number,
+  page: number,
+  search?: string,
+): Promise<VerifiedUsersPage> {
+  const pageSize = 8;
+  const from = page * pageSize;
+  if (!Number.isSafeInteger(from)) {
+    throw new Error("La página de verificadas está fuera de rango.");
+  }
+  const signal = AbortSignal.timeout(VERIFIED_USERS_QUERY_TIMEOUT_MS);
+  let data: unknown[] | null;
+  let count: number | null;
+  let queryError: unknown;
+  try {
+    let query = getClient()
+      .from("verified_users")
+      .select("*", { count: "exact" })
+      .eq("group_id", groupId)
+      .order("display_name", { ascending: true })
+      .order("user_id", { ascending: true });
+    if (search) {
+      const safeTerm = search.replace(/[\\%_(),"]/gu, "\\$&");
+      const searchFilters = [
+        `username.ilike.%${safeTerm}%`,
+        `display_name.ilike.%${safeTerm}%`,
+      ];
+      if (/^\d+$/u.test(search)) searchFilters.push(`user_id.eq.${search}`);
+      query = query.or(searchFilters.join(","));
+    }
+    const response = await query
+      .range(from, from + pageSize - 1)
+      .abortSignal(signal);
+    data = response.data;
+    count = response.count;
+    queryError = response.error;
+  } catch (error) {
+    if (signal.aborted) {
+      throw new Error("La consulta de verificadas superó el límite de tiempo.");
+    }
+    throw error;
+  }
+  if (queryError) {
+    if (signal.aborted) {
+      throw new Error("La consulta de verificadas superó el límite de tiempo.");
+    }
+    throw queryError;
+  }
+  if (count === null) {
+    throw new Error("Supabase no devolvió el total de registros de verificadas.");
+  }
+  const records = (data ?? []) as VerifiedUser[];
+  return {
+    users: records.sort((left, right) =>
+      (left.display_name || left.username || String(left.user_id)).localeCompare(
+        right.display_name || right.username || String(right.user_id),
+      ),
+    ),
+    totalCount: count,
+    page,
+    pageSize,
+  };
+}
+
+async function fetchRevokedVerifiedUsersPage(
+  groupId: number,
+  page: number,
+  now: Date,
+): Promise<VerifiedUsersPage> {
+  const pageSize = VERIFIED_USERS_HISTORY_PAGE_SIZE;
+  const from = page * pageSize;
+  if (!Number.isSafeInteger(from)) {
+    throw new Error("La página del historial está fuera de rango.");
+  }
+  const signal = AbortSignal.timeout(VERIFIED_USERS_QUERY_TIMEOUT_MS);
+  let data: unknown[] | null;
+  let count: number | null;
+  let queryError: unknown;
+  try {
+    const response = await getClient()
+      .from("verified_users")
+      .select("*", { count: "exact" })
+      .eq("group_id", groupId)
+      .or(
+        `verified.eq.false,revoked_at.not.is.null,valid_until.lte.${now.toISOString()}`,
+      )
+      .order("updated_at", { ascending: false })
+      .order("user_id", { ascending: true })
+      .range(from, from + pageSize - 1)
+      .abortSignal(signal);
+    data = response.data;
+    count = response.count;
+    queryError = response.error;
+  } catch (error) {
+    if (signal.aborted) {
+      throw new Error("La consulta de verificadas superó el límite de tiempo.");
+    }
+    throw error;
+  }
+  if (queryError) {
+    if (signal.aborted) {
+      throw new Error("La consulta de verificadas superó el límite de tiempo.");
+    }
+    throw queryError;
+  }
+  if (count === null) {
+    throw new Error("Supabase no devolvió el total del historial de verificadas.");
+  }
+  const users = ((data ?? []) as VerifiedUser[]).filter(
+    (user) => !isActiveVerifiedRecord(user, now),
+  );
+  return {
+    users,
+    totalCount: count,
+    page,
+    pageSize,
+  };
 }
 
 export async function addVerifiedUser(input: {
@@ -777,29 +1021,30 @@ export async function getVerifiedUserPermissions(
 
 /**
  * Búsqueda de verificadas por grupo: ID numérico exacto, username o nombre
- * visible (coincidencia parcial, insensible a mayúsculas). El término se
- * sanea para la sintaxis de PostgREST y el resultado queda limitado al
- * grupo indicado: nunca cruza autorizaciones entre grupos.
+ * visible (coincidencia parcial, insensible a mayúsculas), o ID exacto.
+ * Devuelve una página consultada en Supabase; nunca descarga todos los
+ * resultados para paginar localmente.
  */
-export async function searchVerifiedUsers(
+export function searchVerifiedUsers(
   groupId: number,
   term: string,
-  limit = 15,
-): Promise<VerifiedUser[]> {
-  if (!Number.isSafeInteger(groupId) || groupId === 0) return [];
-  const raw = term.trim();
-  if (!raw) return [];
-  const safe = raw.replace(/[%_,().]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 64);
-  if (!safe) return [];
-  const clauses = [`username.ilike.%${safe}%`, `display_name.ilike.%${safe}%`];
-  if (/^\d+$/u.test(raw) && raw.length <= 15) clauses.push(`user_id.eq.${raw}`);
-  const { data, error } = await getClient()
-    .from("verified_users")
-    .select("*")
-    .eq("group_id", groupId)
-    .or(clauses.join(","))
-    .order("display_name", { ascending: true })
-    .limit(Math.max(1, Math.min(limit, 25)));
-  if (error) throw error;
-  return (data ?? []) as VerifiedUser[];
+  page = 0,
+): Promise<VerifiedUsersPage> {
+  if (!Number.isSafeInteger(groupId) || groupId === 0) {
+    return Promise.reject(new Error("El grupo de búsqueda no es válido."));
+  }
+  if (!Number.isSafeInteger(page) || page < 0) {
+    return Promise.reject(new Error("La página de búsqueda no es válida."));
+  }
+  const searchTerm = term
+    .trim()
+    .replace(/^@/u, "")
+    .replace(/[%_,().]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 64);
+  if (!searchTerm || searchTerm.length > 64) {
+    return Promise.reject(new Error("El término de búsqueda no es válido."));
+  }
+  return getVerifiedUsersListingPage(groupId, page, searchTerm);
 }

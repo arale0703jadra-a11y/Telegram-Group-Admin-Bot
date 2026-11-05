@@ -185,6 +185,7 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
       selectedGroupId: groupId,
       selectedGroupTitle: title,
       pendingAction: undefined,
+      persistenceVersion: ctx.session.user.persistenceVersion,
     };
     const panel = buildMainPanel(title);
     await ctx.answerCallbackQuery();
