@@ -313,6 +313,44 @@ function serializeUserSessionState(
   return payload;
 }
 
+/** Claves que la RPC `zeus_write_user_session` acepta en BD (lista blanca). */
+const WRITABLE_SESSION_KEYS: ReadonlySet<string> = new Set([
+  "selectedGroupId",
+  "selectedGroupTitle",
+  "selectedVerifiedSearch",
+  "pendingAction",
+  "verifiedConfirmation",
+]);
+
+/** Límite del CHECK `octet_length(payload::text) <= 16384` de la migración 019. */
+export const MAX_SESSION_PAYLOAD_BYTES = 16_384;
+
+/**
+ * Validación local previa a la RPC: mismas reglas que aplica la base de
+ * datos (claves permitidas y tamaño máximo), para clasificar estos casos
+ * como `invalid_data` en lugar de consumir una llamada y reportarlos como
+ * indisponibilidad. Nunca trunca datos: si algo no cabe, se rechaza la
+ * escritura y el estado en memoria queda sin persistir (fail-closed).
+ */
+export function assertSessionPayloadWritable(
+  payload: Record<string, unknown>,
+): void {
+  for (const key of Object.keys(payload)) {
+    if (!WRITABLE_SESSION_KEYS.has(key)) {
+      throw new UserSessionPersistenceError("write", "invalid_data");
+    }
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(payload);
+  } catch {
+    throw new UserSessionPersistenceError("write", "invalid_data");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > MAX_SESSION_PAYLOAD_BYTES) {
+    throw new UserSessionPersistenceError("write", "invalid_data");
+  }
+}
+
 function deserializeUserSessionState(
   value: unknown,
   userId: number,
@@ -418,7 +456,9 @@ function persistenceError(
       ? "timeout"
       : code === "40001" || code === "23505"
         ? "conflict"
-        : "unavailable",
+        : code === "22023"
+          ? "invalid_data"
+          : "unavailable",
     code,
   );
 }
@@ -494,6 +534,7 @@ implements StorageAdapter<UserPanelState> {
       throw new UserSessionPersistenceError("write", "invalid_data");
     }
     const payload = serializeUserSessionState(value);
+    assertSessionPayloadWritable(payload);
     const snapshot = snapshotUserSessionState(value);
     const priorSnapshot = (value as UserPanelState & {
       [SESSION_SNAPSHOT]?: string;
