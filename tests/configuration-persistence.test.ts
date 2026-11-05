@@ -28,6 +28,10 @@ test("group configuration persists independently across groups", async () => {
     dataA.promotion.statistics.blocked = 2;
     dataA.promotion.statistics.allowedVerified = 1;
     dataA.illegalContent.enabled = false;
+    dataA.illegalContent.riskThresholds = {
+      highContextSignals: 3,
+      mediumContextSignals: 2,
+    };
     dataA.antiSpam.maxMentionsPerMessage = 12;
     dataA.automaticMessage = {
       enabled: true,
@@ -65,6 +69,10 @@ test("group configuration persists independently across groups", async () => {
       allowedVerified: 1,
     });
     assert.equal(restoredA.illegalContent.enabled, false);
+    assert.deepEqual(restoredA.illegalContent.riskThresholds, {
+      highContextSignals: 3,
+      mediumContextSignals: 2,
+    });
     assert.equal(restoredA.antiSpam.maxMentionsPerMessage, 12);
     assert.deepEqual(restoredA.automaticMessage, dataA.automaticMessage);
     assert.equal(restoredB.antiSpam.enabled, true);

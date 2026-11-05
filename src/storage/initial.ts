@@ -81,6 +81,10 @@ export function initialIllegalContentConfig(): IllegalContentConfig {
   return {
     enabled: true,
     customTerms: [],
+    riskThresholds: {
+      highContextSignals: 2,
+      mediumContextSignals: 1,
+    },
     suspiciousDeletes: false,
     highConfidenceBan: true,
     highConfidenceDelete: true,

@@ -198,9 +198,15 @@ export type IllegalConfidence = "weak" | "suspicious" | "high";
  */
 export type IllegalAmbiguousAction = "review" | "delete" | "none";
 
+export interface IllegalRiskThresholds {
+  highContextSignals: number;
+  mediumContextSignals: number;
+}
+
 export interface IllegalContentConfig {
   enabled: boolean;
   customTerms: string[];
+  riskThresholds: IllegalRiskThresholds;
   suspiciousDeletes: boolean;
   highConfidenceBan: boolean;
   highConfidenceDelete: boolean;

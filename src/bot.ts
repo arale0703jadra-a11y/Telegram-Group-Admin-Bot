@@ -95,6 +95,7 @@ async function main(): Promise<void> {
 
   bot.use(cleanServiceMessages);
   bot.use(sessionMiddleware);
+  bot.use(illegalModeration);
   bot.use(deleteGroupCommand);
   bot.use(deletedAccounts);
   bot.use(adminGuardian);
@@ -383,7 +384,6 @@ async function main(): Promise<void> {
   bot.use(newMemberQuarantine);
   bot.use(linkFilter);
   bot.use(antiSpam);
-  bot.use(illegalModeration);
   bot.use(promotionModeration);
   registerCommands(bot);
 
@@ -475,6 +475,7 @@ async function main(): Promise<void> {
     // mensajes normales de grupo del polling.
     allowed_updates: [
       "message",
+      "edited_message",
       "chat_member",
       "chat_join_request",
       "callback_query",

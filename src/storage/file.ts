@@ -510,11 +510,28 @@ function normalizeIllegalContent(
   if (!isRecord(raw)) {
     return fallback;
   }
+  const rawThresholds = isRecord(raw.riskThresholds) ? raw.riskThresholds : {};
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
     customTerms: Array.isArray(raw.customTerms)
       ? raw.customTerms.filter((item): item is string => typeof item === "string")
       : fallback.customTerms,
+    riskThresholds: {
+      highContextSignals:
+        typeof rawThresholds.highContextSignals === "number" &&
+        Number.isSafeInteger(rawThresholds.highContextSignals) &&
+        rawThresholds.highContextSignals >= 1 &&
+        rawThresholds.highContextSignals <= 4
+          ? rawThresholds.highContextSignals
+          : fallback.riskThresholds.highContextSignals,
+      mediumContextSignals:
+        typeof rawThresholds.mediumContextSignals === "number" &&
+        Number.isSafeInteger(rawThresholds.mediumContextSignals) &&
+        rawThresholds.mediumContextSignals >= 1 &&
+        rawThresholds.mediumContextSignals <= 4
+          ? rawThresholds.mediumContextSignals
+          : fallback.riskThresholds.mediumContextSignals,
+    },
     suspiciousDeletes:
       typeof raw.suspiciousDeletes === "boolean"
         ? raw.suspiciousDeletes
