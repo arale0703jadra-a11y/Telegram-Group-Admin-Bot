@@ -1747,7 +1747,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
         await ctx.answerCallbackQuery(
           data.inactivity.simulationMode
             ? "🧪 Simulación activada; no se expulsará a nadie."
-            : "⚠️ Modo real activado tras confirmación.",
+            : "⚠️ Modo real seleccionado; las expulsiones siguen bloqueadas por falta de cobertura.",
         );
         await renderPanel(ctx, buildInactivityPanel(data.inactivity, title));
         return;
@@ -1810,7 +1810,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
           result === "removed"
             ? "✅ Usuario expulsado."
             : result === "simulated"
-              ? "🧪 Elegible en simulación; no fue expulsado."
+              ? "🧪 Candidato en simulación; cobertura insuficiente, no fue expulsado."
+              : result === "pending_review"
+                ? "⚠️ Pendiente de revisión: no hay cobertura de actividad demostrable; no fue expulsado."
               : result === "skipped"
                 ? "ℹ️ Usuario omitido por la política de seguridad."
                 : "⛔ No se pudo expulsar.",
@@ -1822,25 +1824,29 @@ moderationActions.on("callback_query:data", async (ctx) => {
         const users = await getInactiveUsers(ctx, groupId);
         let removed = 0;
         let simulated = 0;
+        let pendingReview = 0;
         let skipped = 0;
         let errors = 0;
         for (const user of users) {
           const result = await removeInactiveUser(ctx, groupId, user.id);
           if (result === "removed") removed += 1;
           else if (result === "simulated") simulated += 1;
+          else if (result === "pending_review") pendingReview += 1;
           else if (result === "skipped") skipped += 1;
           else errors += 1;
         }
         await ctx.answerCallbackQuery(
           `✅ ${simulated ? `Simulación: ${simulated} elegibles; ` : ""}` +
-            `expulsados=${removed}, omitidos=${skipped}, errores=${errors}.`,
+            `pendientes de revisión=${pendingReview}, expulsados=${removed}, ` +
+            `omitidos=${skipped}, errores=${errors}.`,
         );
         await renderPanel(
           ctx,
           buildInactivityPanel((await getGroupData(groupId)).inactivity, title),
         );
         console.log(
-          `[INACTIVITY] groupId=${groupId} simulated=${simulated} removed=${removed} skipped=${skipped} errors=${errors}`,
+          `[INACTIVITY] groupId=${groupId} simulated=${simulated} pendingReview=${pendingReview} ` +
+            `removed=${removed} skipped=${skipped} errors=${errors}`,
         );
         return;
       }

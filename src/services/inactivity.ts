@@ -14,12 +14,28 @@ import type { MyContext } from "../types.js";
 import type { IndexedUser } from "../storage/types.js";
 
 export interface InactiveUser extends IndexedUser {
-  inactiveDays: number;
-  referenceAt: number;
+  inactiveDays?: number;
+  referenceAt?: number;
+  reviewReason: "activity_timestamp_unknown" | "coverage_unknown";
 }
 
 function thresholdDays(data: Awaited<ReturnType<typeof getGroupData>>): number {
   return data.inactivity.customDays ?? data.inactivity.inactivityDays;
+}
+
+export function isPastInactivityThreshold(
+  referenceAtSeconds: number,
+  thresholdDays: number,
+  nowSeconds: number,
+): boolean {
+  return (
+    Number.isSafeInteger(referenceAtSeconds) &&
+    referenceAtSeconds > 0 &&
+    Number.isFinite(thresholdDays) &&
+    thresholdDays > 0 &&
+    Number.isSafeInteger(nowSeconds) &&
+    nowSeconds - referenceAtSeconds > thresholdDays * 86400
+  );
 }
 
 export async function isInactivityProtectedUser(userId: number): Promise<boolean> {
@@ -76,34 +92,72 @@ export async function getInactiveUsers(
       );
       continue;
     }
-    const referenceAt = user.lastSeen ?? user.joinedAt;
-    if (!referenceAt) continue;
-    const inactiveDays = Math.floor((now - referenceAt) / 86400);
-    if (inactiveDays >= threshold) {
-      result.push({ ...user, inactiveDays, referenceAt });
+    const referenceAt = user.lastSeen;
+    if (
+      typeof referenceAt !== "number" ||
+      !Number.isSafeInteger(referenceAt) ||
+      referenceAt <= 0 ||
+      referenceAt > now
+    ) {
+      result.push({
+        ...user,
+        reviewReason: "activity_timestamp_unknown",
+      });
+      continue;
+    }
+    if (isPastInactivityThreshold(referenceAt, threshold, now)) {
+      result.push({
+        ...user,
+        inactiveDays: Math.floor((now - referenceAt) / 86400),
+        referenceAt,
+        reviewReason: "coverage_unknown",
+      });
     }
   }
-  return result.sort((a, b) => b.inactiveDays - a.inactiveDays);
+  return result.sort(
+    (a, b) => (b.inactiveDays ?? -1) - (a.inactiveDays ?? -1),
+  );
 }
 
 export async function removeInactiveUser(
   ctx: MyContext,
   chatId: number,
   userId: number,
-): Promise<"removed" | "simulated" | "skipped" | "error"> {
+): Promise<"removed" | "simulated" | "pending_review" | "skipped" | "error"> {
   const data = await getGroupData(chatId);
   if (!data.inactivity.enabled) {
     return "skipped";
   }
   const user = data.indexedUsers[String(userId)];
   const threshold = thresholdDays(data);
-  const referenceAt = user?.lastSeen ?? user?.joinedAt;
+  const referenceAt = user?.lastSeen;
   const now = Math.floor(Date.now() / 1000);
-  if (!user || !referenceAt || now - referenceAt < threshold * 86400) {
+  if (!user) {
     await logEvent(ctx, chatId, "INACTIVITY_REMOVE_ERROR", {
       targetId: userId,
       result: "error",
-      detail: "Usuario ya no cumple el umbral de inactividad.",
+      detail: "Usuario no encontrado en los registros actuales del grupo.",
+    });
+    return "skipped";
+  }
+  if (
+    typeof referenceAt !== "number" ||
+    !Number.isSafeInteger(referenceAt) ||
+    referenceAt <= 0 ||
+    referenceAt > now
+  ) {
+    await logEvent(ctx, chatId, "INACTIVITY_SCAN", {
+      targetId: userId,
+      result: "queued",
+      detail: "pending_review: no hay una fecha de actividad válida para evaluar.",
+    });
+    return "pending_review";
+  }
+  if (!isPastInactivityThreshold(referenceAt, threshold, now)) {
+    await logEvent(ctx, chatId, "INACTIVITY_REMOVE_ERROR", {
+      targetId: userId,
+      result: "error",
+      detail: "Usuario ya no supera estrictamente el umbral de inactividad.",
     });
     return "skipped";
   }
@@ -135,42 +189,25 @@ export async function removeInactiveUser(
     );
     return "skipped";
   }
-  const rights = await getBotRights(ctx, chatId, { fresh: true });
-  if (!rights.canRestrict) {
-    await logEvent(ctx, chatId, "INACTIVITY_REMOVE_ERROR", {
-      targetId: userId,
-      result: "error",
-      detail: "Sin permisos para expulsar.",
-    });
-    return "error";
-  }
   if (data.inactivity.simulationMode !== false) {
     await logEvent(ctx, chatId, "INACTIVITY_SCAN", {
       targetId: userId,
       targetName: user.name,
       result: "queued",
-      detail: "SIMULACIÓN: candidato elegible; no se modificó su estado en Telegram.",
+      detail:
+        `SIMULACIÓN: última actividad observada hace más de ${threshold} días; ` +
+        "la cobertura continua es desconocida y no se modificó su estado en Telegram.",
     });
     return "simulated";
   }
-  try {
-    await ctx.api.banChatMember(chatId, userId);
-    await ctx.api.unbanChatMember(chatId, userId, { only_if_banned: false });
-    await logEvent(ctx, chatId, "INACTIVITY_REMOVE", {
-      targetId: userId,
-      result: "ok",
-      detail: "Usuario inactivo expulsado.",
-    });
-    return "removed";
-  } catch (error) {
-    const detail = error instanceof Error ? error.message.slice(0, 240) : "Error desconocido";
-    await logEvent(ctx, chatId, "INACTIVITY_REMOVE_ERROR", {
-      targetId: userId,
-      result: "error",
-      detail,
-    });
-    return "error";
-  }
+  await logEvent(ctx, chatId, "INACTIVITY_SCAN", {
+    targetId: userId,
+    result: "queued",
+    detail:
+      `pending_review: última actividad observada hace más de ${threshold} días, ` +
+      "pero ZEUS no conserva evidencia de cobertura continua durante el período.",
+  });
+  return "pending_review";
 }
 
 export async function runInactivityScan(ctx: MyContext): Promise<void> {

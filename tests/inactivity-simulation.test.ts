@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildInactivityCleanConfirmPanel,
   buildInactivityLiveConfirmPanel,
+  buildInactiveUsersPanel,
   buildInactivityPanel,
   type Panel,
 } from "../src/menus/panels.js";
@@ -28,7 +29,8 @@ test("inactivity cleanup defaults to simulation and labels its non-destructive b
 
 test("switching to real inactivity cleanup requires a separate explicit confirmation", () => {
   const panel = buildInactivityLiveConfirmPanel("Test");
-  assert.match(panel.text, /ACTIVAR EXPULSIONES REALES/);
+  assert.match(panel.text, /SELECCIONAR MODO REAL/);
+  assert.match(panel.text, /expulsiones seguirán bloqueadas/);
   assert.ok(callbacks(panel).includes("ia:live-confirm"));
   assert.ok(callbacks(panel).includes("ia:cancel"));
 });
@@ -45,5 +47,32 @@ test("legacy inactivity settings without simulationMode remain in simulation", (
   assert.match(
     buildInactivityCleanConfirmPanel("Legacy").text,
     /No se expulsará a nadie/,
+  );
+});
+
+test("inactivity candidate panel distinguishes unknown timestamps and unproven coverage", () => {
+  const panel = buildInactiveUsersPanel(
+    [
+      {
+        id: 1,
+        name: "Unknown",
+        reviewReason: "activity_timestamp_unknown",
+      },
+      {
+        id: 2,
+        name: "Old observation",
+        inactiveDays: 30,
+        reviewReason: "coverage_unknown",
+      },
+    ],
+    0,
+    "Test",
+  );
+  assert.match(panel.text, /actividad desconocida; revisión pendiente/u);
+  assert.match(panel.text, /cobertura pendiente/u);
+  assert.match(panel.text, /no justifican una expulsión/u);
+  assert.match(
+    buildInactivityCleanConfirmPanel("Test", false).text,
+    /No se expulsará a nadie/u,
   );
 });

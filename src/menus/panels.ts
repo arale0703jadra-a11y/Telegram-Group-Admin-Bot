@@ -1188,13 +1188,19 @@ export function buildInactivityPanel(config: InactivityConfig, groupTitle?: stri
       `Estado: ${config.enabled ? "🟢 Activado" : "🔴 Desactivado"}\n` +
       `Candidatos manuales: ${config.customDays ?? config.inactivityDays} días\n` +
       `Depuración automática: ${config.enabled ? "21 días, diaria" : "desactivada"}\n` +
-      `Modo: ${config.simulationMode !== false ? "simulación; no expulsa ni marca cuentas" : "REAL; puede expulsar usuarios"}`,
+      `Modo: ${config.simulationMode !== false ? "simulación; no expulsa ni marca cuentas" : "real seleccionado; acciones bloqueadas hasta demostrar cobertura continua"}`,
     keyboard,
   };
 }
 
 export function buildInactiveUsersPanel(
-  users: Array<{ id: number; name?: string; username?: string; inactiveDays: number }>,
+  users: Array<{
+    id: number;
+    name?: string;
+    username?: string;
+    inactiveDays?: number;
+    reviewReason?: "activity_timestamp_unknown" | "coverage_unknown";
+  }>,
   page: number,
   groupTitle?: string,
 ): Panel {
@@ -1204,8 +1210,15 @@ export function buildInactiveUsersPanel(
   const visible = users.slice(current * pageSize, (current + 1) * pageSize);
   const keyboard = new InlineKeyboard();
   for (const user of visible) {
+    const activityLabel =
+      user.reviewReason === "activity_timestamp_unknown"
+        ? "actividad desconocida"
+        : `${user.inactiveDays ?? 0} d.; revisar cobertura`;
     keyboard
-      .text(`👤 ${user.name || user.username || `ID ${user.id}`} (${user.inactiveDays} d.)`, InactivityAction.user(user.id))
+      .text(
+        `👤 ${user.name || user.username || `ID ${user.id}`} (${activityLabel})`,
+        InactivityAction.user(user.id),
+      )
       .row();
   }
   if (current > 0) keyboard.text("◀️ Anterior", InactivityAction.list(current - 1));
@@ -1214,10 +1227,18 @@ export function buildInactiveUsersPanel(
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n👤 *USUARIOS INACTIVOS*\n\n` +
+      "Los registros no demuestran cobertura continua de actividad; no justifican una expulsión.\n\n" +
       `Página ${current + 1}/${pageCount}\n` +
       (visible.length
-        ? visible.map((u) => `• ${u.name || "Sin nombre"} ${u.username ? `@${u.username}` : ""} — ${u.inactiveDays} días`).join("\n")
-        : "No hay usuarios inactivos."),
+        ? visible
+            .map((u) =>
+              `• ${u.name || "Sin nombre"} ${u.username ? `@${u.username}` : ""} — ` +
+              (u.reviewReason === "activity_timestamp_unknown"
+                ? "actividad desconocida; revisión pendiente"
+                : `${u.inactiveDays ?? 0} días desde la última actividad observada; cobertura pendiente`),
+            )
+            .join("\n")
+        : "No hay candidatos registrados."),
     keyboard,
   };
 }
@@ -1239,8 +1260,8 @@ export function buildInactivityCleanConfirmPanel(
     text:
       `${formatGroupHeader(groupTitle)}\n\n⚠️ *CONFIRMAR LIMPIEZA*\n\n` +
       (simulationMode
-        ? "Se simulará la limpieza y se mostrará el resultado. No se expulsará a nadie."
-        : "Se expulsará a los usuarios que superen el período configurado."),
+        ? "Se mostrarán candidatos basados en la última actividad observada. No se expulsará a nadie."
+        : "Se revisarán candidatos. No se expulsará a nadie mientras ZEUS no pueda demostrar cobertura continua de actividad."),
     keyboard: new InlineKeyboard()
       .text("✅ Confirmar", InactivityAction.confirm)
       .text("❌ Cancelar", InactivityAction.cancel),
@@ -1250,9 +1271,9 @@ export function buildInactivityCleanConfirmPanel(
 export function buildInactivityLiveConfirmPanel(groupTitle?: string): Panel {
   return {
     text:
-      `${formatGroupHeader(groupTitle)}\n\n🚨 *ACTIVAR EXPULSIONES REALES*\n\n` +
-      "La depuración automática podrá expulsar miembros que cumplan el umbral. " +
-      "Confirma únicamente después de revisar los candidatos y permisos del grupo.",
+      `${formatGroupHeader(groupTitle)}\n\n⚠️ *SELECCIONAR MODO REAL*\n\n` +
+      "Esto solo cambia la configuración. Las expulsiones seguirán bloqueadas hasta " +
+      "que ZEUS pueda demostrar cobertura continua de actividad durante todo el período.",
     keyboard: new InlineKeyboard()
       .text("⚠️ Confirmar modo real", InactivityAction.liveConfirm)
       .text("❌ Cancelar", InactivityAction.cancel),

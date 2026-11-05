@@ -383,7 +383,7 @@ export function buildAfroditaPublicationsPanel(
   if (historyPage > 0) {
     keyboard.text("⬅️ Anterior", AfroditaAction.view("publicaciones", historyPage - 1));
   }
-  if (historyPage + 1 * pageSize < allHistory.length) {
+  if ((historyPage + 1) * pageSize < allHistory.length) {
     keyboard.text("Siguiente ➡️", AfroditaAction.view("publicaciones", historyPage + 1));
   }
   keyboard

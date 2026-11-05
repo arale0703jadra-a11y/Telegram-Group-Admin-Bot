@@ -24,7 +24,6 @@ export interface UserActivityCandidate {
   groupId: number;
   userId: number;
   lastActiveAt: string;
-  isDeleted: boolean;
 }
 
 const ACTIVITY_TABLE = "security_user_activity";
@@ -102,7 +101,6 @@ export async function upsertUserActivity(
   userId: number,
   lastActiveAt: string,
   options: {
-    isDeleted?: boolean;
     config?: UserActivityConfig;
     fetcher?: typeof fetch;
   } = {},
@@ -130,7 +128,7 @@ export async function upsertUserActivity(
         group_id: groupId,
         user_id: userId,
         last_active_at: lastActiveAt,
-        ...(options.isDeleted ? { is_deleted: true } : {}),
+        is_deleted: false,
       }),
     },
     options.fetcher ?? fetch,
@@ -166,16 +164,6 @@ export async function recordUserActivity(
   return true;
 }
 
-export async function markTelegramAccountDeleted(
-  groupId: number,
-  userId: number,
-  now = Date.now(),
-): Promise<void> {
-  await upsertUserActivity(groupId, userId, new Date(now).toISOString(), {
-    isDeleted: true,
-  });
-}
-
 export async function getInactiveActivityCandidates(
   groupId: number,
   cutoff: string,
@@ -192,13 +180,10 @@ export async function getInactiveActivityCandidates(
   const endpoint = activityEndpoint(config);
   endpoint.searchParams.set(
     "select",
-    "group_id,user_id,last_active_at,is_deleted",
+    "group_id,user_id,last_active_at",
   );
   endpoint.searchParams.set("group_id", `eq.${groupId}`);
-  endpoint.searchParams.set(
-    "or",
-    `(last_active_at.lt.${cutoff},is_deleted.eq.true)`,
-  );
+  endpoint.searchParams.set("last_active_at", `lt.${cutoff}`);
   endpoint.searchParams.set("order", "last_active_at.asc");
   endpoint.searchParams.set(
     "limit",
@@ -225,8 +210,7 @@ export async function getInactiveActivityCandidates(
       row === null ||
       !("group_id" in row) ||
       !("user_id" in row) ||
-      !("last_active_at" in row) ||
-      !("is_deleted" in row)
+      !("last_active_at" in row)
     ) {
       throw new Error("ZEUS_USER_ACTIVITY_RESPONSE_INVALID");
     }
@@ -237,8 +221,7 @@ export async function getInactiveActivityCandidates(
       !Number.isSafeInteger(value.user_id) ||
       value.user_id <= 0 ||
       typeof value.last_active_at !== "string" ||
-      !validTimestamp(value.last_active_at) ||
-      typeof value.is_deleted !== "boolean"
+      !validTimestamp(value.last_active_at)
     ) {
       throw new Error("ZEUS_USER_ACTIVITY_RESPONSE_INVALID");
     }
@@ -246,7 +229,6 @@ export async function getInactiveActivityCandidates(
       groupId,
       userId: value.user_id,
       lastActiveAt: value.last_active_at,
-      isDeleted: value.is_deleted,
     });
   }
   return candidates;

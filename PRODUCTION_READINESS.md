@@ -15,16 +15,21 @@
 - El reto de bienvenida honeypot es visible y personal: pausa la escritura hasta completarse o un máximo de 3 minutos; no auto-banea por silencio para evitar expulsiones erróneas. Telegram no ofrece una señal fiable para determinar si una cuenta de usuario está automatizada.
 - Los saludos automáticos genéricos al unirse están desactivados y su configuración heredada se fuerza a `enabled: false`. Para eliminar un saludo antiguo que siga visible, un administrador puede buscarlo en el grupo y responder a ese mensaje con `/borrar`; la Bot API no permite recorrer el historial del chat y Telegram limita la eliminación de mensajes ordinarios a menos de 48 horas.
 - El sanitizador normaliza controles, caracteres invisibles y envolturas HTML/Markdown antes del análisis textual en ZEUS y AFRODITA; el contenido no se ejecuta como HTML ni script.
-- La depuración de inactividad es opt-in por grupo, usa el umbral de 21 días y limita cada ciclo a 50 expulsiones secuenciales con pausas y reintentos ante 429.
-- La actividad se registra en `security_user_activity`; administradores, propietario y verificadas se excluyen, y los accesos de Data API quedan restringidos a `service_role`.
+- La depuración de inactividad es opt-in por grupo y evalúa candidatos con más de 21 días desde la última actividad observada; limita cada ciclo a 50 candidatos. La actividad disponible no demuestra cobertura continua, por lo que las rutas manual y automática dejan los candidatos pendientes de revisión y no expulsan miembros.
+- La actividad observada se registra en `security_user_activity`; administradores, propietario y verificadas se excluyen, y los accesos de Data API quedan restringidos a `service_role`. Si Supabase falla, la limpieza automática se omite y no usa datos locales como alternativa.
 - `/ayuda` ya no muestra una sección “Próximamente” ni comandos inexistentes.
 - Existe checklist funcional en `TESTING_CHECKLIST.md`.
 - No se modificó Supabase remoto.
 - No se modificó `.env`.
 - No se modificó Cerbero.
-- La migración `013_security_user_activity.sql` todavía debe aplicarse y validarse en Supabase antes de activar la depuración; las cuentas eliminadas se identifican mediante el indicador limitado `first_name === "Deleted Account"` sin username ni apellido, no mediante un estado autoritativo de Telegram.
+- La migración local `013_security_user_activity.sql` debe aplicarse y validarse en Supabase para registrar actividad; ZEUS no conserva metadatos de cobertura continua ni recibe de la Bot API un estado autoritativo de cuenta eliminada. El nombre visible `Deleted Account` solo genera un registro pendiente de revisión y nunca se usa para marcar o expulsar una cuenta.
+- La persistencia de sesiones de usuario está implementada y probada localmente (lectura/escritura con CAS, validación de claves y tamaño de payload, cifrado AES-256-GCM de tokens de confirmación); las alertas de fallo se agrupan por incidente con un solo aviso y un aviso de recuperación. Los mensajes editados se reciben porque `allowed_updates` incluye `edited_message` y pasan por la misma detección que los mensajes nuevos.
 
 ## WARN
+
+### Persistencia de sesiones pendiente de migración
+
+La migración local `019_zeus_user_sessions.sql` está revisada y **no aplicada**. Hasta aplicarla y desplegar el código compatible, ZEUS no persiste sesiones: cada operación falla en modo fail-closed (PGRST202) y se emite como máximo un aviso agrupado por incidente. No declarar la persistencia operativa en producción hasta verificar en producción la desaparición de PGRST202 y la restauración de sesiones después de un reinicio.
 
 ### Pruebas end-to-end pendientes
 

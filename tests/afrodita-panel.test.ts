@@ -158,6 +158,7 @@ const {
   isAfroditaPanelAction,
   handleAfroditaMenuAction,
   buildAfroditaSummaryPanel,
+  buildAfroditaPublicationsPanel,
   snapshotFromRow,
 } = await import("../src/menus/afrodita-panel.js");
 const { resetAfroditaBridgeClient } = await import(
@@ -338,6 +339,38 @@ test("la pantalla principal muestra el estado global confirmado y una sola acci�
     },
   });
   assert.match(failed.text, /La última orden falló: AFRODITA CONTROL WRITE HTTP 500/u);
+});
+
+test("la paginación de publicaciones no ofrece una página siguiente vacía", () => {
+  const snapshot = {
+    publications: {
+      commercial_poll: {
+        history: Array.from({ length: 16 }, (_, index) => ({
+          id: `publication-${index}`,
+          at: index,
+          status: "published",
+        })),
+      },
+    },
+  };
+
+  const firstPage = buildAfroditaPublicationsPanel({ snapshot, page: 0 });
+  const lastPage = buildAfroditaPublicationsPanel({ snapshot, page: 1 });
+  const firstCallbacks = buttonCallbacks(firstPage as never);
+  const lastCallbacks = buttonCallbacks(lastPage as never);
+
+  assert.ok(
+    firstCallbacks.includes("menu:action:afrodita:publicaciones:1"),
+    "la primera página debe enlazar a la segunda",
+  );
+  assert.ok(
+    lastCallbacks.includes("menu:action:afrodita:publicaciones:0"),
+    "la última página debe permitir volver a la anterior",
+  );
+  assert.ok(
+    !lastCallbacks.includes("menu:action:afrodita:publicaciones:2"),
+    "la última página no debe ofrecer una página vacía",
+  );
 });
 
 test("el resumen muestra las 8 secciones y datos sincronizados", () => {
