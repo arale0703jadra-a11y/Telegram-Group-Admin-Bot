@@ -22,14 +22,15 @@
 - No se modificó Supabase remoto.
 - No se modificó `.env`.
 - No se modificó Cerbero.
-- La migración local `013_security_user_activity.sql` debe aplicarse y validarse en Supabase para registrar actividad; ZEUS no conserva metadatos de cobertura continua ni recibe de la Bot API un estado autoritativo de cuenta eliminada. El nombre visible `Deleted Account` solo genera un registro pendiente de revisión y nunca se usa para marcar o expulsar una cuenta.
+- La migración local `013_security_user_activity.sql` está **aplicada y verificada** en Supabase (tabla, índices parciales, RLS y grant `service_role` comprobados por consulta). ZEUS no conserva metadatos de cobertura continua ni recibe de la Bot API un estado autoritativo de cuenta eliminada; el nombre visible `Deleted Account` solo genera un registro pendiente de revisión y nunca se usa para marcar o expulsar una cuenta.
+- Las migraciones `009`-`016` y `019` fueron **aplicadas y verificadas** el 2026-11-05 (historial `supabase_migrations` con11 entradas; tablas, columnas, índices, RPC y permisos confirmados por consulta; cero grants `anon` en los objetos nuevos). La persistencia de sesiones está **operativa en producción**: tras aplicar019, ZEUS registró el aviso de recuperación (`Persistencia restaurada tras incidente`) sin nuevos PGRST202. `012` permanece aplicada sin registro en el historial (efectos certificados); no se insertaron registros manualmente.
 - La persistencia de sesiones de usuario está implementada y probada localmente (lectura/escritura con CAS, validación de claves y tamaño de payload, cifrado AES-256-GCM de tokens de confirmación); las alertas de fallo se agrupan por incidente con un solo aviso y un aviso de recuperación. Los mensajes editados se reciben porque `allowed_updates` incluye `edited_message` y pasan por la misma detección que los mensajes nuevos.
 
 ## WARN
 
-### Persistencia de sesiones pendiente de migración
+### Persistencia de sesiones — aplicada y verificada
 
-La migración local `019_zeus_user_sessions.sql` está revisada y **no aplicada**. Hasta aplicarla y desplegar el código compatible, ZEUS no persiste sesiones: cada operación falla en modo fail-closed (PGRST202) y se emite como máximo un aviso agrupado por incidente. No declarar la persistencia operativa en producción hasta verificar en producción la desaparición de PGRST202 y la restauración de sesiones después de un reinicio.
+La migración `019_zeus_user_sessions.sql` está **aplicada y verificada** (tabla con RLS y sin grants a `anon`, tres RPC `SECURITY DEFINER` con `search_path = pg_catalog, public` y `EXECUTE` sólo para `service_role`, conflicto CAS `40001` probado en runtime con datos sintéticos). La persistencia está operativa en producción: se observó el aviso de recuperación único tras aplicar la migración y ninguna nueva falla PGRST202. Las alertas siguen agrupadas por incidente.
 
 ### Pruebas end-to-end pendientes
 
