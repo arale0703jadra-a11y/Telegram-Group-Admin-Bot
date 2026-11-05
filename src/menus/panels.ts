@@ -372,11 +372,11 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Anti-spam",
     description: "Protección contra spam, enlaces y flujo de mensajes.",
     items: [
-      { id: "activar", label: "🛡️ Activar/desactivar" },
-      { id: "sensibilidad", label: "⚙️ Configurar sensibilidad" },
-      { id: "enlaces", label: "🔗 Control de enlaces" },
-      { id: "repetidos", label: "📩 Control de mensajes repetidos" },
-      { id: "flood", label: "⚡ Control de flood" },
+      { id: "activar", label: "🛡️ Activar/desactivar", cb: AntiSpamAction.toggle },
+      { id: "sensibilidad", label: "⚙️ Configurar sensibilidad", cb: AntiSpamAction.mentions },
+      { id: "enlaces", label: "🔗 Control de enlaces", cb: AntiSpamAction.links },
+      { id: "repetidos", label: "📩 Control de mensajes repetidos", cb: AntiSpamAction.repeated },
+      { id: "flood", label: "⚡ Control de flood", cb: AntiSpamAction.automated },
     ],
   },
   inactividad: {
@@ -384,10 +384,10 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Inactividad",
     description: "Detecta y gestiona usuarios inactivos del grupo.",
     items: [
-      { id: "activar", label: "⏰ Activar/desactivar" },
-      { id: "periodo", label: "📅 Configurar período" },
-      { id: "inactivos", label: "👥 Ver usuarios inactivos" },
-      { id: "limpiar", label: "🧹 Limpiar inactivos" },
+      { id: "activar", label: "⏰ Activar/desactivar", cb: InactivityAction.toggle },
+      { id: "periodo", label: "📅 Configurar período", cb: InactivityAction.config },
+      { id: "inactivos", label: "👥 Ver usuarios inactivos", cb: InactivityAction.list(0) },
+      { id: "limpiar", label: "🧹 Limpiar inactivos", cb: InactivityAction.clean },
     ],
   },
   limpieza: {
@@ -395,7 +395,7 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Limpieza",
     description: "Borra avisos de servicio automáticamente y purga mensajes recientes.",
     items: [
-      { id: "configuracion", label: "⚙️ Configurar limpieza" },
+      { id: "configuracion", label: "⚙️ Configurar limpieza", cb: MenuAction.sub("limpieza") },
     ],
   },
   actividad: {
@@ -415,8 +415,12 @@ const SUBMENUS: Record<string, SubmenuDef> = {
     title: "Ayuda",
     description: "Información sobre el panel y los permisos del bot.",
     items: [
-      { id: "comandos", label: "📖 Ver comandos" },
-      { id: "permisos", label: "🛡️ Sobre permisos" },
+      { id: "comandos", label: "📖 Ver comandos", cb: MenuAction.commands(0) },
+      {
+        id: "permisos",
+        label: "🛡️ Sobre permisos",
+        cb: MenuAction.action("ayuda", "permisos"),
+      },
     ],
   },
 };
@@ -817,6 +821,10 @@ export function buildSubmenuPanel(
 
 function buildHelpPanel(groupTitle?: string): Panel {
   const keyboard = new InlineKeyboard()
+    .text("📖 Ver comandos", MenuAction.commands(0))
+    .row()
+    .text("🛡️ Sobre permisos", MenuAction.action("ayuda", "permisos"))
+    .row()
     .text("🔐 Generar Recovery Key", MenuAction.action("ayuda", "generar-clave"))
     .row()
     .text("🔐 Recuperar System Owner", MenuAction.action("ayuda", "recuperar"))
@@ -831,6 +839,36 @@ function buildHelpPanel(groupTitle?: string): Panel {
       "🔐 Recuperar System Owner: envía /zeus-recuperar sin argumentos y luego la clave en otro mensaje, desde el chat privado del bot.\n\n" +
       "Para eliminar un mensaje responde a él con:\n   /borrar\n\n" +
       "/mute, /unmute, /ban, /unban y /kick no están implementados en el grupo.",
+    keyboard,
+  };
+}
+
+/**
+ * Información real de permisos y autorización del panel.
+ * Completa la opción "Sobre permisos" del menú de ayuda, que antes no
+ * estaba conectada.
+ */
+export function buildPermissionsInfoPanel(): Panel {
+  const keyboard = new InlineKeyboard()
+    .text("⬅️ Volver", MenuAction.sub("ayuda"))
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+  return {
+    text:
+      `${formatGroupHeader(undefined)}\n\n🛡️ *SOBRE PERMISOS*\n\n` +
+      "• Acceso al panel global: solo las identidades configuradas " +
+      "(OWNER_ID, identidad secundaria y bootstrap) o la propiedad de " +
+      "System Owner persistida y auditada en base de datos.\n" +
+      "• Ser administrador de un grupo no concede por sí solo acceso al " +
+      "panel global de ZEUS.\n" +
+      "• La etiqueta o el rol de Verificadas no autoriza acciones del " +
+      "panel ni equivale a permisos de administración.\n" +
+      "• Dentro de cada grupo, ZEUS revalida tu rol y sus permisos reales " +
+      "antes de ejecutar cualquier operación de moderación.\n" +
+      "• La Recovery Key es de un solo uso: no autoriza cuentas nuevas ni " +
+      "cambia permisos de grupo.\n" +
+      "• Las respuestas de denegación se eliminan a los pocos segundos " +
+      "para no saturar el chat.",
     keyboard,
   };
 }

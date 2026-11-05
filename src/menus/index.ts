@@ -17,6 +17,7 @@ import {
   buildAutomaticMessagePanel,
   buildUsersPanel,
   buildCommandListPanel,
+  buildPermissionsInfoPanel,
 } from "./panels.js";
 import { renderPanel } from "./render.js";
 import { recordObservedUser } from "../services/user-registry.js";
@@ -155,6 +156,16 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
       );
       return;
     }
+    if (action.item === "comandos") {
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildCommandListPanel(0));
+      return;
+    }
+    if (action.item === "permisos") {
+      await ctx.answerCallbackQuery();
+      await renderPanel(ctx, buildPermissionsInfoPanel());
+      return;
+    }
   }
 
   // Sección 🌸 AFRODITA: panel centralizado (resumen, publicaciones,
@@ -274,8 +285,30 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
   }
 
   if (action.kind === "action") {
-    await ctx.answerCallbackQuery(DEVELOPMENT_MESSAGE);
-    return;
+    // Compatibilidad con botones obsoletos de versiones anteriores: si la
+    // sección tiene panel real, se navega a él en lugar de quedarse en el
+    // aviso de desarrollo. Las secciones desconocidas conservan el aviso
+    // honesto (nunca se finge éxito).
+    const staleSection = action.section;
+    const hasRealPanel =
+      staleSection === "antispam" ||
+      staleSection === "inactividad" ||
+      staleSection === "limpieza" ||
+      staleSection === "usuarios" ||
+      staleSection === "proteccion" ||
+      staleSection === "filtros" ||
+      staleSection === "actividad" ||
+      staleSection === "mensajes-recurrentes" ||
+      staleSection === "ayuda";
+    if (staleSection && hasRealPanel) {
+      action.kind = "sub";
+      await ctx.answerCallbackQuery(
+        "⚙️ Esta opción está integrada en el panel de la sección.",
+      );
+    } else {
+      await ctx.answerCallbackQuery(DEVELOPMENT_MESSAGE);
+      return;
+    }
   }
 
   // Navegar a otra sección cancela cualquier operación en espera.
