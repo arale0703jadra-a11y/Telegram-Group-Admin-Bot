@@ -87,6 +87,19 @@ export interface AutomaticMessageConfig {
   nextRunAt?: string;
   lastSentAt?: string;
   lastMessageId?: number;
+  status?: "pending" | "sending" | "sent" | "error" | "unknown";
+  lastAttemptAt?: string;
+  attemptCount?: number;
+  lastError?: string;
+  consecutiveFailures?: number;
+  history?: AutomaticMessageAttempt[];
+}
+
+export interface AutomaticMessageAttempt {
+  at: string;
+  status: "sent" | "error" | "unknown";
+  error?: string;
+  messageId?: number;
 }
 
 export interface NewUsersConfig {

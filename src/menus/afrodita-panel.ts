@@ -1,11 +1,16 @@
 import { InlineKeyboard } from "grammy";
 import {
   AfroditaBridgeUnavailableError,
+  enqueueAfroditaGlobalCommand,
   enqueueAfroditaCommand,
+  getAfroditaGlobalControl,
+  getLatestAfroditaGlobalCommand,
   getAfroditaState,
   listAfroditaEvents,
   listAfroditaStates,
   type AfroditaEventRow,
+  type AfroditaGlobalCommand,
+  type AfroditaGlobalControlRow,
   type AfroditaStateRow,
 } from "../services/afrodita-bridge.js";
 import { isEffectiveOwner } from "../services/system-owner.js";
@@ -254,17 +259,37 @@ export function buildAfroditaSummaryPanel(
     rows: AfroditaStateRow[];
     selectedState?: AfroditaStateRow;
     groupTitle?: string;
+    control?: AfroditaGlobalControlRow;
+    latestCommand?: AfroditaGlobalCommand;
   },
 ): Panel {
-  const { rows, selectedState, groupTitle } = input;
+  const { rows, selectedState, groupTitle, control, latestCommand } = input;
   const latest = rows[0];
   const snapshot = selectedState ? snapshotFromRow(selectedState) : undefined;
+  const pending = latestCommand?.status === "pending";
+  const running = control?.mode === "running";
   const lines = [
     sectionHeader("RESUMEN", groupTitle),
     "",
+    `Estado general: ${pending ? "🟡 PROCESANDO" : running ? "🟢 ACTIVA" : "🔴 PAUSADA"}`,
+  ];
+  if (pending) {
+    lines.push(
+      `Orden de ${latestCommand.command === "pause" ? "pausa" : "reanudación"} pendiente. Esperando confirmación de AFRODITA.`,
+    );
+  } else if (!running) {
+    lines.push("Todas las actividades automáticas están detenidas.");
+  }
+  if (latestCommand?.status === "failed") {
+    lines.push(
+      `La última orden falló: ${clean((latestCommand.last_error ?? "error no informado").replace(/_/gu, " "), 100)}.`,
+    );
+  }
+  lines.push(
     `Grupos sincronizados: ${rows.length}`,
     `Última sincronización global: ${formatTimestamp(latest?.updated_at)}`,
-  ];
+    `Último heartbeat de AFRODITA: ${formatTimestamp(control?.heartbeat_at)}`,
+  );
   if (selectedState && snapshot) {
     lines.push(
       "",
@@ -282,7 +307,18 @@ export function buildAfroditaSummaryPanel(
       "Este grupo aún no tiene instantánea de AFRODITA en Supabase.",
     );
   }
-  const keyboard = new InlineKeyboard()
+  const keyboard = new InlineKeyboard();
+  if (pending) {
+    keyboard.text("⏳ Procesando · Actualizar", AfroditaAction.view("resumen")).row();
+  } else {
+    keyboard
+      .text(
+        running ? "⏸️ PAUSAR AFRODITA" : "▶️ REANUDAR AFRODITA",
+        AfroditaAction.ask(running ? "global-pause" : "global-resume"),
+      )
+      .row();
+  }
+  keyboard
     .text("📰 Publicaciones", AfroditaAction.view("publicaciones"))
     .row()
     .text("📊 Encuestas", AfroditaAction.view("encuestas"))
@@ -629,7 +665,7 @@ export function buildAfroditaSettingsPanel(
   const lines = [
     sectionHeader("CONFIGURACIÓN", groupTitle),
     "",
-    `Bot global: ${snapshot.enabled ? "🟢 activo" : "🔴 pausado"}`,
+    `AFRODITA en este grupo: ${snapshot.enabled ? "🟢 habilitada" : "🔴 deshabilitada"}`,
     `Pausa de actividad: ${snapshot.activityPaused ? "🔴 activa" : "🟢 inactiva"}`,
     `Zona horaria: ${clean(snapshot.timeZone ?? "UTC", 40)}`,
     `Silencio hasta: ${formatTimestamp(snapshot.quietUntil || undefined)}`,
@@ -637,12 +673,6 @@ export function buildAfroditaSettingsPanel(
     "*Categorías:*",
   ];
   const keyboard = new InlineKeyboard();
-  keyboard
-    .text(
-      snapshot.enabled ? "⏸ Pausar AFRODITA" : "▶️ Reanudar AFRODITA",
-      AfroditaAction.ask(snapshot.enabled ? "pause" : "resume"),
-    )
-    .row();
   for (const [category, settings] of Object.entries(snapshot.publications ?? {})) {
     lines.push(
       `• ${clean(categoryLabel(category), 40)}: ${yesNo(settings.enabled)}`,
@@ -692,7 +722,7 @@ function buildConfirmPanel(input: {
     text:
       `${sectionHeader("CONFIRMAR", input.groupTitle)}\n\n` +
       `*${clean(input.title, 60)}*\n\n${input.description}\n\n` +
-      "Esta acción se encolará para AFRODITA y se aplicará en su próxima " +
+          "Esta acción se encolará para AFRODITA y se aplicará en su próxima " +
       "sincronización.",
     keyboard: new InlineKeyboard()
       .text("✅ Confirmar", input.confirmAction)
@@ -759,14 +789,22 @@ export async function handleAfroditaMenuAction(
     const tail = rest.join(":");
 
     if (view === "resumen") {
-      const [rows, selectedState] = await Promise.all([
+      const [rows, selectedState, control, latestCommand] = await Promise.all([
         listAfroditaStates(),
         ctx.session.user.selectedGroupId
           ? getAfroditaState(ctx.session.user.selectedGroupId)
           : Promise.resolve(undefined),
+        getAfroditaGlobalControl(),
+        getLatestAfroditaGlobalCommand(),
       ]);
       await answerAndRender(
-        buildAfroditaSummaryPanel({ rows, selectedState, groupTitle }),
+        buildAfroditaSummaryPanel({
+          rows,
+          selectedState,
+          groupTitle,
+          control,
+          latestCommand,
+        }),
       );
       return;
     }
@@ -794,6 +832,16 @@ export async function handleAfroditaMenuAction(
           groupTitle,
         }),
       );
+      return;
+    }
+
+    if (view === "ask" && /^(?:global-pause|global-resume)$/u.test(tail)) {
+      await renderAskConfirmation(ctx, tail, undefined, groupTitle);
+      return;
+    }
+
+    if (view === "do" && /^(?:global-pause|global-resume)$/u.test(tail)) {
+      await executeAfroditaAction(ctx, tail);
       return;
     }
 
@@ -895,26 +943,21 @@ export async function handleAfroditaMenuAction(
 async function renderAskConfirmation(
   ctx: MyContext,
   target: string,
-  snapshot: AfroditaSnapshot,
+  snapshot: AfroditaSnapshot | undefined,
   groupTitle?: string,
 ): Promise<void> {
-  const group = ctx.session.user.selectedGroupId;
-  if (!group) {
-    await ctx.answerCallbackQuery(NO_GROUP_TEXT);
-    return;
-  }
   const [kind, ...parts] = target.split(":");
   const arg = parts.join(":");
 
-  if (kind === "pause" || kind === "resume") {
-    const pausing = kind === "pause";
+  if (kind === "global-pause" || kind === "global-resume") {
+    const pausing = kind === "global-pause";
     const panel = buildConfirmPanel({
-      title: pausing ? "Pausar AFRODITA en este grupo" : "Reanudar AFRODITA en este grupo",
+      title: pausing ? "Pausar AFRODITA por completo" : "Reanudar AFRODITA",
       description: pausing
-        ? "AFRODITA dejará de responder y de publicar en el grupo seleccionado."
-        : "AFRODITA volverá a operar en el grupo seleccionado con sus límites conservadores.",
+        ? "Se detendrán las respuestas de IA, encuestas, publicaciones, menciones y campañas automáticas en todos los grupos. La sincronización, el heartbeat y las órdenes de control seguirán activos."
+        : "AFRODITA volverá a operar en todos los grupos que sigan habilitados, conservando las configuraciones individuales.",
       confirmAction: AfroditaAction.do(kind),
-      backView: "configuracion",
+      backView: "resumen",
       groupTitle,
     });
     await ctx.answerCallbackQuery();
@@ -922,7 +965,16 @@ async function renderAskConfirmation(
     return;
   }
 
+  const group = ctx.session.user.selectedGroupId;
+  if (!group) {
+    await ctx.answerCallbackQuery(NO_GROUP_TEXT);
+    return;
+  }
   if (kind === "cat" || kind === "sched") {
+    if (!snapshot) {
+      await ctx.answerCallbackQuery("⚠️ No se pudo cargar la configuración del grupo.");
+      return;
+    }
     const settings = snapshot.publications?.[arg];
     if (!settings) {
       await ctx.answerCallbackQuery("⚠️ Categoría no reconocida.");
@@ -949,37 +1001,66 @@ async function renderAskConfirmation(
   await ctx.answerCallbackQuery("⚠️ Acción no reconocida.");
 }
 
+async function buildGlobalSummaryForContext(ctx: MyContext): Promise<Panel> {
+  const [rows, selectedState, control, latestCommand] = await Promise.all([
+    listAfroditaStates(),
+    ctx.session.user.selectedGroupId
+      ? getAfroditaState(ctx.session.user.selectedGroupId)
+      : Promise.resolve(undefined),
+    getAfroditaGlobalControl(),
+    getLatestAfroditaGlobalCommand(),
+  ]);
+  return buildAfroditaSummaryPanel({
+    rows,
+    selectedState,
+    groupTitle: ctx.session.user.selectedGroupTitle,
+    control,
+    latestCommand,
+  });
+}
+
 /** Encola la orden confirmada hacia AFRODITA (do:*). */
 async function executeAfroditaAction(
   ctx: MyContext,
   target: string,
-  snapshot: AfroditaSnapshot,
+  snapshot?: AfroditaSnapshot,
 ): Promise<void> {
-  const group = ctx.session.user.selectedGroupId;
   const userId = ctx.from?.id;
-  if (!group || !userId) {
+  if (!userId) {
     await ctx.answerCallbackQuery(NO_GROUP_TEXT);
     return;
   }
   const [kind, ...parts] = target.split(":");
   const arg = parts.join(":");
 
-  if (kind === "pause" || kind === "resume") {
-    await enqueueAfroditaCommand(
-      group,
-      kind === "pause" ? "pause" : "resume",
-      {},
+  if (kind === "global-pause" || kind === "global-resume") {
+    const result = await enqueueAfroditaGlobalCommand(
+      kind === "global-pause" ? "pause" : "resume",
       userId,
     );
-    await ctx.answerCallbackQuery(
-      kind === "pause"
-        ? "⏸ Orden de pausa enviada a AFRODITA."
-        : "▶️ Orden de reanudación enviada a AFRODITA.",
-    );
+    if (result.unchanged) {
+      await ctx.answerCallbackQuery(
+        kind === "global-pause"
+          ? "AFRODITA ya está pausada."
+          : "AFRODITA ya está activa.",
+      );
+    } else {
+      await ctx.answerCallbackQuery(
+        result.pending
+          ? "⏳ Orden encolada. Procesando; espera la confirmación de AFRODITA."
+          : "⚠️ No se pudo encolar la orden.",
+      );
+    }
     await renderPanel(
       ctx,
-      buildAfroditaSettingsPanel({ snapshot, groupTitle: ctx.session.user.selectedGroupTitle }),
+      await buildGlobalSummaryForContext(ctx),
     );
+    return;
+  }
+
+  const group = ctx.session.user.selectedGroupId;
+  if (!group || !snapshot) {
+    await ctx.answerCallbackQuery(NO_GROUP_TEXT);
     return;
   }
 

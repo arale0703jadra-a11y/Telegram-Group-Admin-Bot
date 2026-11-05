@@ -10,6 +10,7 @@ import { dirname, resolve } from "node:path";
 import type {
   BanRecord,
   ActivityMessage,
+  AutomaticMessageAttempt,
   AutomaticMessageConfig,
   GroupData,
   IndexedUser,
@@ -286,18 +287,77 @@ function normalizeActivityMessages(value: unknown): ActivityMessage[] {
 
 function normalizeAutomaticMessage(value: unknown): AutomaticMessageConfig | undefined {
   if (!isRecord(value) || typeof value.message !== "string") return undefined;
+  const status = value.status;
   return {
     enabled: value.enabled === true,
     message: value.message,
     ...(typeof value.intervalMinutes === "number" &&
-      Number.isFinite(value.intervalMinutes) && value.intervalMinutes > 0
+      Number.isSafeInteger(value.intervalMinutes) &&
+      value.intervalMinutes > 0 &&
+      value.intervalMinutes <= 525_600
       ? { intervalMinutes: value.intervalMinutes }
       : {}),
-    ...(typeof value.nextRunAt === "string" ? { nextRunAt: value.nextRunAt } : {}),
-    ...(typeof value.lastSentAt === "string" ? { lastSentAt: value.lastSentAt } : {}),
+    ...(typeof value.nextRunAt === "string" &&
+      Number.isFinite(Date.parse(value.nextRunAt))
+      ? { nextRunAt: value.nextRunAt }
+      : {}),
+    ...(typeof value.lastSentAt === "string" &&
+      Number.isFinite(Date.parse(value.lastSentAt))
+      ? { lastSentAt: value.lastSentAt }
+      : {}),
     ...(typeof value.lastMessageId === "number" &&
       Number.isSafeInteger(value.lastMessageId)
       ? { lastMessageId: value.lastMessageId }
+      : {}),
+    ...(status === "pending" ||
+      status === "sending" ||
+      status === "sent" ||
+      status === "error" ||
+      status === "unknown"
+      ? { status }
+      : {}),
+    ...(typeof value.lastAttemptAt === "string" &&
+      Number.isFinite(Date.parse(value.lastAttemptAt))
+      ? { lastAttemptAt: value.lastAttemptAt }
+      : {}),
+    ...(typeof value.attemptCount === "number" &&
+      Number.isSafeInteger(value.attemptCount) &&
+      value.attemptCount >= 0
+      ? { attemptCount: value.attemptCount }
+      : {}),
+    ...(typeof value.lastError === "string"
+      ? { lastError: value.lastError.slice(0, 500) }
+      : {}),
+    ...(typeof value.consecutiveFailures === "number" &&
+      Number.isSafeInteger(value.consecutiveFailures) &&
+      value.consecutiveFailures >= 0 &&
+      value.consecutiveFailures <= 100
+      ? { consecutiveFailures: value.consecutiveFailures }
+      : {}),
+    ...(Array.isArray(value.history)
+      ? {
+          history: value.history.flatMap((entry) => {
+            if (
+              !isRecord(entry) ||
+              typeof entry.at !== "string" ||
+              !Number.isFinite(Date.parse(entry.at)) ||
+              (entry.status !== "sent" &&
+                entry.status !== "error" &&
+                entry.status !== "unknown")
+            ) return [];
+            return [{
+              at: entry.at,
+              status: entry.status as AutomaticMessageAttempt["status"],
+              ...(typeof entry.error === "string"
+                ? { error: entry.error.slice(0, 500) }
+                : {}),
+              ...(typeof entry.messageId === "number" &&
+                Number.isSafeInteger(entry.messageId)
+                ? { messageId: entry.messageId }
+                : {}),
+            }];
+          }).slice(-20),
+        }
       : {}),
   };
 }

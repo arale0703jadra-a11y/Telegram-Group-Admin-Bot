@@ -29,6 +29,18 @@ test("group configuration persists independently across groups", async () => {
     dataA.promotion.statistics.allowedVerified = 1;
     dataA.illegalContent.enabled = false;
     dataA.antiSpam.maxMentionsPerMessage = 12;
+    dataA.automaticMessage = {
+      enabled: true,
+      message: "Aviso del grupo A",
+      intervalMinutes: 120,
+      nextRunAt: "2026-11-04T14:00:00.000Z",
+      lastSentAt: "2026-11-04T12:00:00.000Z",
+      lastMessageId: 321,
+      status: "sent",
+      lastAttemptAt: "2026-11-04T12:00:00.000Z",
+      attemptCount: 3,
+      consecutiveFailures: 0,
+    };
     await saveGroupData(groupA, dataA);
     await saveGroupData(groupB, dataB);
     await flushStorage();
@@ -54,6 +66,7 @@ test("group configuration persists independently across groups", async () => {
     });
     assert.equal(restoredA.illegalContent.enabled, false);
     assert.equal(restoredA.antiSpam.maxMentionsPerMessage, 12);
+    assert.deepEqual(restoredA.automaticMessage, dataA.automaticMessage);
     assert.equal(restoredB.antiSpam.enabled, true);
     assert.equal(restoredB.newUsers.enabled, false);
     assert.equal(restoredB.cleanup.autoDeleteServiceMessages, true);

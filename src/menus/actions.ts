@@ -21,6 +21,7 @@ import {
   buildCleanupPanel,
   buildCleanupSettingsPanel,
   buildAutomaticMessagePanel,
+  buildAutomaticMessageHistoryPanel,
   buildDeleteHelpPanel,
   buildFilterConfirmPanel,
   buildFilterListPanel,
@@ -121,6 +122,19 @@ const NO_GROUP_SELECTED_MESSAGE =
   "Primero selecciona el grupo que quieres administrar.";
 const EMERGENCY_DURATION_OPTIONS = [15, 30, 60, 120, 360, 720, 1440] as const;
 const VERIFIED_PANEL_TIMEOUT_MS = 4_000;
+
+export function resolveAutomaticMessageGroupId(
+  selectedGroupId: number | undefined,
+  callbackData: string,
+): number | null | undefined {
+  const [namespace, , groupIdToken] = callbackData.split(":");
+  if (namespace !== "am" || groupIdToken === undefined) {
+    return selectedGroupId;
+  }
+  if (!/^-?\d+$/u.test(groupIdToken)) return null;
+  const groupId = Number(groupIdToken);
+  return Number.isSafeInteger(groupId) ? groupId : null;
+}
 
 async function setNativeVerifiedTitleIfSupported(
   ctx: MyContext,
@@ -353,7 +367,16 @@ moderationActions.on("callback_query:data", async (ctx) => {
     );
   }
 
-  const groupId = ctx.session.user.selectedGroupId;
+  const selectedGroupId = ctx.session.user.selectedGroupId;
+  const resolvedGroupId = resolveAutomaticMessageGroupId(
+    selectedGroupId,
+    ctx.callbackQuery.data,
+  );
+  if (resolvedGroupId === null) {
+    await ctx.answerCallbackQuery("Acción de mensajes recurrentes no válida.");
+    return;
+  }
+  const groupId = resolvedGroupId;
   if (typeof groupId !== "number" || !Number.isInteger(groupId)) {
     if (
       !verifiedPanelCallback &&
@@ -1199,13 +1222,77 @@ moderationActions.on("callback_query:data", async (ctx) => {
 
   if (parts[0] === "am") {
     if (
-      !["home", "toggle", "interval", "configure", "send-now"].includes(kind) ||
+      ![
+        "home",
+        "toggle",
+        "interval",
+        "configure",
+        "send-now",
+        "history",
+        "delete-confirm",
+        "delete",
+      ].includes(kind) ||
       ctx.chat?.type !== "private"
     ) {
       await ctx.answerCallbackQuery("Acción de mensajes recurrentes no válida.");
       return;
     }
+    const groupTitle =
+      groupId === selectedGroupId
+        ? ctx.session.user.selectedGroupTitle
+        : `Grupo ${groupId}`;
     const data = await getGroupData(groupId);
+    if (kind === "history") {
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildAutomaticMessageHistoryPanel(
+          data.automaticMessage,
+          groupTitle,
+          groupId,
+        ),
+      );
+      return;
+    }
+    if (kind === "delete-confirm") {
+      if (!data.automaticMessage) {
+        await ctx.answerCallbackQuery("No hay una programación que eliminar.");
+        await renderPanel(
+          ctx,
+          buildAutomaticMessagePanel(undefined, groupTitle, undefined, groupId),
+        );
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      await renderPanel(
+        ctx,
+        buildAutomaticMessagePanel(
+          data.automaticMessage,
+          groupTitle,
+          undefined,
+          groupId,
+          true,
+        ),
+      );
+      return;
+    }
+    if (kind === "delete") {
+      const result = await automaticMessageScheduler.deleteConfig(groupId);
+      if (!result.ok) {
+        await ctx.answerCallbackQuery(
+          result.reason === "sending"
+            ? "Hay un envío en curso; vuelve a intentarlo cuando termine."
+            : "La programación ya no existe.",
+        );
+        return;
+      }
+      await ctx.answerCallbackQuery("Programación e historial eliminados.");
+      await renderPanel(
+        ctx,
+        buildAutomaticMessagePanel(undefined, groupTitle, undefined, groupId),
+      );
+      return;
+    }
     if (kind === "configure") {
       ctx.session.user.pendingAction = { kind: "automaticMessage", groupId };
       await ctx.answerCallbackQuery();
@@ -1222,7 +1309,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
         await ctx.answerCallbackQuery("Primero configura el texto del mensaje.");
         await renderPanel(
           ctx,
-          buildAutomaticMessagePanel(data.automaticMessage, ctx.session.user.selectedGroupTitle),
+          buildAutomaticMessagePanel(data.automaticMessage, groupTitle, undefined, groupId),
         );
         return;
       }
@@ -1244,6 +1331,7 @@ moderationActions.on("callback_query:data", async (ctx) => {
       const currentIndex = intervals.indexOf(current);
       const nextInterval = intervals[(currentIndex + 1) % intervals.length] ?? 60;
       data.automaticMessage = {
+        ...data.automaticMessage,
         enabled: data.automaticMessage?.enabled ?? false,
         message: data.automaticMessage?.message ?? "",
         intervalMinutes: nextInterval,
@@ -1267,8 +1355,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
           ctx,
           buildAutomaticMessagePanel(
             data.automaticMessage,
-            ctx.session.user.selectedGroupTitle,
+            groupTitle,
             `⛔ ${note}`,
+            groupId,
           ),
         );
         return;
@@ -1278,8 +1367,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
         ctx,
         buildAutomaticMessagePanel(
           updated.automaticMessage,
-          ctx.session.user.selectedGroupTitle,
+          groupTitle,
           "✅ Mensaje enviado.",
+          groupId,
         ),
       );
       return;
@@ -1291,7 +1381,9 @@ moderationActions.on("callback_query:data", async (ctx) => {
       ctx,
       buildAutomaticMessagePanel(
         data.automaticMessage,
-        ctx.session.user.selectedGroupTitle,
+        groupTitle,
+        undefined,
+        groupId,
       ),
     );
     return;

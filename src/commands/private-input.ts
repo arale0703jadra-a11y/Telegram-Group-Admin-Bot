@@ -266,6 +266,7 @@ privateInput.on("message:text", async (ctx, next) => {
       const data = await getGroupData(pending.groupId);
       const current = data.automaticMessage;
       data.automaticMessage = {
+        ...current,
         enabled: current?.enabled ?? false,
         message,
         intervalMinutes: current?.intervalMinutes ?? 60,
@@ -283,7 +284,11 @@ privateInput.on("message:text", async (ctx, next) => {
         ctx,
         buildAutomaticMessagePanel(
           data.automaticMessage,
-          ctx.session.user.selectedGroupTitle,
+          pending.groupId === ctx.session.user.selectedGroupId
+            ? ctx.session.user.selectedGroupTitle
+            : `Grupo ${pending.groupId}`,
+          undefined,
+          pending.groupId,
         ),
       );
       return;

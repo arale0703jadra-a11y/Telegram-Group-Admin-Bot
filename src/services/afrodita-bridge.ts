@@ -44,6 +44,23 @@ export interface AfroditaEventFilter {
   pageSize?: number;
 }
 
+export interface AfroditaGlobalControlRow {
+  id: "global";
+  mode: "running" | "paused";
+  updated_at: string;
+  updated_by: string;
+  heartbeat_at: string;
+}
+
+export interface AfroditaGlobalCommand {
+  id: number;
+  command: "pause" | "resume";
+  status: "pending" | "applied" | "failed";
+  last_error: string | null;
+  created_at: string;
+  applied_at: string | null;
+}
+
 export function isAfroditaBridgeConfigured(): boolean {
   return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 }
@@ -99,6 +116,83 @@ export async function getAfroditaState(
     .maybeSingle();
   failIf(error);
   return (data ?? undefined) as AfroditaStateRow | undefined;
+}
+
+export async function getAfroditaGlobalControl(): Promise<
+  AfroditaGlobalControlRow | undefined
+> {
+  const { data, error } = await getClient()
+    .from("afrodita_control_state")
+    .select("id,mode,updated_at,updated_by,heartbeat_at")
+    .eq("id", "global")
+    .maybeSingle();
+  failIf(error);
+  return (data ?? undefined) as AfroditaGlobalControlRow | undefined;
+}
+
+async function findPendingGlobalCommand(): Promise<number | undefined> {
+  const { data, error } = await getClient()
+    .from("afrodita_commands")
+    .select("id")
+    .eq("status", "pending")
+    .filter("payload->>scope", "eq", "global")
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  failIf(error);
+  const id = (data as { id?: number } | null)?.id;
+  return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
+}
+
+export async function getLatestAfroditaGlobalCommand(): Promise<
+  AfroditaGlobalCommand | undefined
+> {
+  const { data, error } = await getClient()
+    .from("afrodita_commands")
+    .select("id,command,status,last_error,created_at,applied_at")
+    .filter("payload->>scope", "eq", "global")
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  failIf(error);
+  return (data ?? undefined) as AfroditaGlobalCommand | undefined;
+}
+
+export async function enqueueAfroditaGlobalCommand(
+  command: "pause" | "resume",
+  actorUserId: number,
+): Promise<{ id?: number; pending: boolean; unchanged: boolean }> {
+  const pendingId = await findPendingGlobalCommand();
+  if (pendingId !== undefined) {
+    return { id: pendingId, pending: true, unchanged: false };
+  }
+  const current = await getAfroditaGlobalControl();
+  const targetMode = command === "pause" ? "paused" : "running";
+  if ((current?.mode ?? "paused") === targetMode) {
+    return { pending: false, unchanged: true };
+  }
+  const { data, error } = await getClient()
+    .from("afrodita_commands")
+    .insert({
+      chat_id: 0,
+      command,
+      payload: { scope: "global" },
+      created_by: actorUserId,
+    })
+    .select("id")
+    .single();
+  if (error?.code === "23505") {
+    const duplicateId = await findPendingGlobalCommand();
+    if (duplicateId !== undefined) {
+      return { id: duplicateId, pending: true, unchanged: false };
+    }
+  }
+  failIf(error);
+  const id = Number((data as { id: number } | null)?.id ?? 0);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new AfroditaBridgeUnavailableError("query_failed");
+  }
+  return { id, pending: true, unchanged: false };
 }
 
 /**

@@ -319,6 +319,8 @@ menuNavigation.on("callback_query:data", async (ctx, next) => {
     panel = buildAutomaticMessagePanel(
       (await getGroupData(selectedGroupId)).automaticMessage,
       title,
+      undefined,
+      selectedGroupId,
     );
   } else {
     panel =

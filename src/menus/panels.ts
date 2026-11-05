@@ -259,10 +259,21 @@ export const CleanupAction = {
 
 export const AutomaticMessageAction = {
   home: "am:home",
-  configure: "am:configure",
-  toggle: "am:toggle",
-  interval: "am:interval",
-  sendNow: "am:send-now",
+  homeForGroup: (groupId: number): string => `am:home:${groupId}`,
+  configure: (groupId?: number): string =>
+    groupId === undefined ? "am:configure" : `am:configure:${groupId}`,
+  toggle: (groupId?: number): string =>
+    groupId === undefined ? "am:toggle" : `am:toggle:${groupId}`,
+  interval: (groupId?: number): string =>
+    groupId === undefined ? "am:interval" : `am:interval:${groupId}`,
+  sendNow: (groupId?: number): string =>
+    groupId === undefined ? "am:send-now" : `am:send-now:${groupId}`,
+  history: (groupId?: number): string =>
+    groupId === undefined ? "am:history" : `am:history:${groupId}`,
+  deleteConfirm: (groupId?: number): string =>
+    groupId === undefined ? "am:delete-confirm" : `am:delete-confirm:${groupId}`,
+  delete: (groupId?: number): string =>
+    groupId === undefined ? "am:delete" : `am:delete:${groupId}`,
 };
 
 const PANEL_TITLE = "🛡️ *PANEL DE ADMINISTRACIÓN*";
@@ -627,31 +638,139 @@ export function buildAutomaticMessagePanel(
   config: AutomaticMessageConfig | undefined,
   groupTitle?: string,
   note?: string,
+  groupId?: number,
+  confirmDelete = false,
 ): Panel {
   const enabled = config?.enabled === true;
   const intervalMinutes = config?.intervalMinutes ?? 60;
   const message = config?.message || "No hay mensaje configurado.";
-  const preview = message.length > 300 ? `${message.slice(0, 297)}…` : message;
+  const preview = escapeMarkdown(message.length > 300 ? `${message.slice(0, 297)}…` : message);
+  const stateLabel = !config?.message
+    ? "⚪ Sin configurar"
+    : config.status === "error"
+      ? "🔴 Error"
+      : config.status === "sending"
+        ? "🔵 Enviando"
+        : config.status === "unknown"
+          ? "🟡 Resultado incierto"
+          : !enabled
+            ? "⏸️ Pausado"
+            : config.status === "pending"
+              ? "🟡 Pendiente"
+              : "🟢 Activo";
+  const nextRun = formatAutomaticMessageDate(config?.nextRunAt);
+  const lastSent = formatAutomaticMessageDate(config?.lastSentAt);
+  const lastResult = config?.status === "sent"
+    ? "✅ Enviado"
+    : config?.status === "sending"
+      ? "🔵 Enviando"
+      : config?.status === "pending"
+        ? "🟡 Pendiente"
+        : config?.status === "unknown"
+          ? "🟡 No confirmado"
+          : config?.status === "error"
+            ? "🔴 Error"
+            : "Sin intentos registrados";
+  const keyboard = confirmDelete
+    ? new InlineKeyboard()
+        .text(
+          "🗑️ Sí, eliminar programación",
+          AutomaticMessageAction.delete(groupId),
+        )
+        .text(
+          "↩️ Cancelar",
+          groupId === undefined
+            ? AutomaticMessageAction.home
+            : AutomaticMessageAction.homeForGroup(groupId),
+        )
+        .row()
+        .add(...buildNavRow().inline_keyboard.flat())
+    : new InlineKeyboard()
+        .text(
+          enabled ? "⏸️ Desactivar" : "▶️ Activar",
+          AutomaticMessageAction.toggle(groupId),
+        )
+        .text(
+          `⏱️ Cada ${intervalMinutes} min`,
+          AutomaticMessageAction.interval(groupId),
+        )
+        .row()
+        .text("✏️ Configurar texto", AutomaticMessageAction.configure(groupId))
+        .text("📨 Enviar ahora", AutomaticMessageAction.sendNow(groupId))
+        .row()
+        .text("📜 Historial", AutomaticMessageAction.history(groupId))
+        .text("🗑️ Eliminar", AutomaticMessageAction.deleteConfirm(groupId))
+        .row()
+        .add(...buildNavRow().inline_keyboard.flat());
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "🔁 *MENSAJES RECURRENTES*\n\n" +
+      `Grupo ID: \`${groupId ?? "no seleccionado"}\`\n` +
+      `Estado: *${stateLabel}*\n` +
+      `Intervalo: ${intervalMinutes} minutos\n` +
+      `Próximo envío: ${nextRun}\n` +
+      `Último envío: ${lastSent}\n` +
+      `Resultado: ${lastResult}\n` +
+      `Intentos: ${config?.attemptCount ?? 0}\n` +
+      `Mensaje: ${preview}` +
+      (config?.lastError ? `\nÚltimo error: ${escapeMarkdown(config.lastError)}` : "") +
+      (confirmDelete
+        ? "\n\n⚠️ ¿Eliminar esta programación? La configuración y su historial se quitarán; los mensajes ya publicados no se borrarán."
+        : "") +
+      (note ? `\n\n${escapeMarkdown(note)}` : ""),
+    keyboard,
+  };
+}
+
+export function buildAutomaticMessageHistoryPanel(
+  config: AutomaticMessageConfig | undefined,
+  groupTitle?: string,
+  groupId?: number,
+): Panel {
+  const history = config?.history ?? [];
+  const rows = history.slice(-10).reverse().map((entry) => {
+    const status = entry.status === "sent"
+      ? "✅ Enviado"
+      : entry.status === "error"
+        ? "🔴 Error"
+        : "🟡 No confirmado";
+    const date = formatAutomaticMessageDate(entry.at);
+    const detail = entry.error
+      ? ` — ${escapeMarkdown(entry.error.slice(0, 120))}`
+      : "";
+    return `• ${date}: ${status}${detail}`;
+  });
   const keyboard = new InlineKeyboard()
-    .text(enabled ? "⏸️ Desactivar" : "▶️ Activar", AutomaticMessageAction.toggle)
-    .text(`⏱️ Cada ${intervalMinutes} min`, AutomaticMessageAction.interval)
-    .row()
-    .text("✏️ Configurar texto", AutomaticMessageAction.configure)
-    .text("📨 Enviar ahora", AutomaticMessageAction.sendNow)
+    .text(
+      "↩️ Volver",
+      groupId === undefined
+        ? AutomaticMessageAction.home
+        : AutomaticMessageAction.homeForGroup(groupId),
+    )
     .row()
     .add(...buildNavRow().inline_keyboard.flat());
   return {
     text:
       `${formatGroupHeader(groupTitle)}\n\n` +
-      "🔁 *MENSAJES RECURRENTES*\n\n" +
-      `Estado: *${enabled ? "activo" : "inactivo"}*\n` +
-      `Intervalo: ${intervalMinutes} minutos\n` +
-      `Mensaje: ${preview}` +
-      (note ? `\n\n${note}` : ""),
+      "📜 *HISTORIAL DE MENSAJES RECURRENTES*\n\n" +
+      `Grupo ID: \`${groupId ?? "no seleccionado"}\`\n` +
+      (rows.length > 0 ? rows.join("\n") : "Aún no hay intentos registrados."),
     keyboard,
   };
 }
 
+function escapeMarkdown(value: string): string {
+  return value.replace(/([_*`[\]])/gu, "\\$1");
+}
+
+function formatAutomaticMessageDate(value: string | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleString("es-ES", { timeZone: "UTC", timeZoneName: "short" })
+    : "fecha inválida";
+}
 /**
  * Submenú de una categoría dada.
  * Devuelve `undefined` si la sección no existe.

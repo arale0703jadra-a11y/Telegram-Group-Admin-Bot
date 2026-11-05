@@ -22,6 +22,18 @@ el entorno privado del servidor de ZEUS/CERBERO. No la pongas en AFRODITA, en
 un archivo versionado ni en una aplicación cliente. Para otras opciones,
 consulta los `.env.example` de cada proyecto.
 
+## Control global de AFRODITA
+
+La sección `ZEUS → 🌸 AFRODITA` usa un estado global persistente en
+`public.afrodita_control_state` y órdenes en `public.afrodita_commands`.
+Antes de habilitar este control en los servicios, una persona autorizada debe
+revisar y aplicar las migraciones locales `017_afrodita_integration.sql` y
+`018_afrodita_global_control.sql` en Supabase. Esta tarea no aplica cambios
+remotos. La migración 018 inicializa el estado global como pausado; AFRODITA
+solo reanuda la actividad automática después de leer un estado `running`
+persistido o aplicar una orden `resume`. La sincronización, el heartbeat y la
+cola de control continúan funcionando durante la pausa.
+
 ## Instalación, compilación y arranque
 
 En cada proyecto, desde su propia carpeta:

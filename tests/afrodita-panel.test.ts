@@ -14,6 +14,10 @@ interface CapturedCall {
 }
 
 const calls: CapturedCall[] = [];
+let controlMode: "running" | "paused" = "running";
+let latestGlobalCommand: Record<string, unknown> | undefined;
+let pendingGlobalCommand: Record<string, unknown> | undefined;
+let successfulGlobalInserts = 0;
 
 const stateRow = {
   chat_id: -100500,
@@ -81,11 +85,53 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   calls.push({ url, method, ...(body !== undefined ? { body } : {}) });
 
+  if (url.includes("/rest/v1/afrodita_control_state")) {
+    if (method === "GET") {
+      return jsonResponse([{
+        id: "global",
+        mode: controlMode,
+        updated_at: "2026-11-02T10:00:00+00:00",
+        updated_by: "afrodita",
+        heartbeat_at: "2026-11-02T10:00:00+00:00",
+      }]);
+    }
+    return jsonResponse({});
+  }
+  if (url.includes("/rest/v1/afrodita_commands") && method === "GET") {
+    if (url.includes("status=eq.pending")) {
+      return jsonResponse(pendingGlobalCommand ? [pendingGlobalCommand] : []);
+    }
+    return jsonResponse(latestGlobalCommand ? [latestGlobalCommand] : []);
+  }
   if (url.includes("/rest/v1/system_owner")) {
     return jsonResponse([{ owner_user_id: 900000031 }]);
   }
   if (url.includes("/rest/v1/afrodita_commands") && method === "POST") {
+    const command = body as Record<string, unknown>;
+    if ((command.payload as Record<string, unknown> | undefined)?.scope === "global") {
+      if (pendingGlobalCommand) {
+        return jsonResponse({ code: "23505" }, 409);
+      }
+      successfulGlobalInserts += 1;
+      latestGlobalCommand = {
+        id: 7,
+        command: command.command,
+        status: "pending",
+        last_error: null,
+        created_at: "2026-11-03T10:00:00+00:00",
+        applied_at: null,
+      };
+      pendingGlobalCommand = latestGlobalCommand;
+    }
     return jsonResponse({ id: 7 }, 201);
+  }
+  if (url.includes("/rest/v1/afrodita_commands") && method === "PATCH") {
+    latestGlobalCommand = {
+      ...latestGlobalCommand,
+      status: (body as { status?: string }).status,
+    };
+    pendingGlobalCommand = undefined;
+    return jsonResponse({});
   }
   if (url.includes("/rest/v1/afrodita_events")) {
     // Devuelve más de una página (9 > PAGE_SIZE_EVENTS) para poder comprobar
@@ -241,6 +287,59 @@ test("snapshotFromRow convierte defensivamente el estado publicado", () => {
   assert.equal(snapshot.publications?.commercial_poll?.history?.length, 1);
 });
 
+test("la pantalla principal muestra el estado global confirmado y una sola acción", async () => {
+  const active = buildAfroditaSummaryPanel({
+    rows: [],
+    control: {
+      id: "global",
+      mode: "running",
+      updated_at: "2026-11-02T10:00:00+00:00",
+      updated_by: "afrodita",
+      heartbeat_at: "2026-11-02T10:00:00+00:00",
+    },
+  });
+  assert.match(active.text, /Estado general: 🟢 ACTIVA/u);
+  assert.equal(buttonCallbacks(active as never).filter((value) =>
+    value.includes("ask:global-"),
+  ).join(), "menu:action:afrodita:ask:global-pause");
+
+  const paused = buildAfroditaSummaryPanel({
+    rows: [],
+    control: {
+      id: "global",
+      mode: "paused",
+      updated_at: "2026-11-02T10:00:00+00:00",
+      updated_by: "afrodita",
+      heartbeat_at: "2026-11-02T10:00:00+00:00",
+    },
+  });
+  assert.match(paused.text, /Estado general: 🔴 PAUSADA/u);
+  assert.match(paused.text, /Todas las actividades automáticas están detenidas/u);
+  assert.equal(buttonCallbacks(paused as never).filter((value) =>
+    value.includes("ask:global-"),
+  ).join(), "menu:action:afrodita:ask:global-resume");
+
+  const failed = buildAfroditaSummaryPanel({
+    rows: [],
+    control: {
+      id: "global",
+      mode: "paused",
+      updated_at: "2026-11-02T10:00:00+00:00",
+      updated_by: "afrodita",
+      heartbeat_at: "2026-11-02T10:00:00+00:00",
+    },
+    latestCommand: {
+      id: 8,
+      command: "resume",
+      status: "failed",
+      last_error: "AFRODITA_CONTROL_WRITE_HTTP_500",
+      created_at: "2026-11-03T10:00:00+00:00",
+      applied_at: null,
+    },
+  });
+  assert.match(failed.text, /La última orden falló: AFRODITA CONTROL WRITE HTTP 500/u);
+});
+
 test("el resumen muestra las 8 secciones y datos sincronizados", () => {
   const panel = buildAfroditaSummaryPanel({
     rows: [stateRow as never],
@@ -294,37 +393,72 @@ test("una cuenta no propietaria no puede ejecutar acciones de mutación", async 
   assert.equal(h.edited.length, 0);
 });
 
-test("la propiedad puede abrir la confirmación de pausa", async () => {
+test("una cuenta no propietaria no puede pausar ni reanudar el estado global", async () => {
+  for (const item of [
+    "ask:global-pause",
+    "ask:global-resume",
+    "do:global-pause",
+    "do:global-resume",
+  ]) {
+    calls.length = 0;
+    const h = createCtx({ fromId: 555666777 });
+    await handleAfroditaMenuAction(
+      { kind: "action", section: "afrodita", item },
+      h.ctx,
+    );
+    assert.match(h.answers[0] ?? "", /Solo la propiedad de ZEUS/u);
+    assert.equal(
+      calls.some((call) =>
+        call.method === "POST" && call.url.includes("/rest/v1/afrodita_commands"),
+      ),
+      false,
+    );
+  }
+});
+
+test("la propiedad puede abrir confirmación de pausa global sin seleccionar grupo", async () => {
   const h = createCtx({
     fromId: 900000031,
-    selectedGroupId: -100500,
-    selectedGroupTitle: "Grupo Uno",
   });
   await handleAfroditaMenuAction(
-    { kind: "action", section: "afrodita", item: "ask:pause" },
+    { kind: "action", section: "afrodita", item: "ask:global-pause" },
     h.ctx,
   );
   assert.equal(h.edited.length, 1);
   assert.match(h.edited[0]?.text ?? "", /CONFIRMAR/u);
-  assert.match(h.edited[0]?.text ?? "", /Pausar AFRODITA/u);
+  assert.match(h.edited[0]?.text ?? "", /Pausar AFRODITA por completo/u);
+  assert.match(h.edited[0]?.text ?? "", /heartbeat/u);
   const keyboard = h.edited[0]?.keyboard as
     | { inline_keyboard: Array<Array<{ callback_data?: string }>> }
     | undefined;
   const callbacks = keyboard
     ? keyboard.inline_keyboard.flat().map((b) => b.callback_data ?? "")
     : [];
-  assert.ok(callbacks.includes("menu:action:afrodita:do:pause"));
+  assert.ok(callbacks.includes("menu:action:afrodita:do:global-pause"));
 });
 
-test("confirmar la pausa encola la orden hacia AFRODITA", async () => {
+test("la propiedad también debe confirmar la reanudación global", async () => {
+  const h = createCtx({ fromId: 900000031 });
+  await handleAfroditaMenuAction(
+    { kind: "action", section: "afrodita", item: "ask:global-resume" },
+    h.ctx,
+  );
+  assert.match(h.edited[0]?.text ?? "", /Reanudar AFRODITA/u);
+  assert.ok(buttonCallbacks(h.edited[0] as never).includes(
+    "menu:action:afrodita:do:global-resume",
+  ));
+});
+
+test("confirmar la pausa encola una orden global y muestra Procesando hasta confirmación", async () => {
   calls.length = 0;
+  pendingGlobalCommand = undefined;
+  latestGlobalCommand = undefined;
+  successfulGlobalInserts = 0;
   const h = createCtx({
     fromId: 900000031,
-    selectedGroupId: -100500,
-    selectedGroupTitle: "Grupo Uno",
   });
   await handleAfroditaMenuAction(
-    { kind: "action", section: "afrodita", item: "do:pause" },
+    { kind: "action", section: "afrodita", item: "do:global-pause" },
     h.ctx,
   );
   const insert = calls.find(
@@ -333,13 +467,31 @@ test("confirmar la pausa encola la orden hacia AFRODITA", async () => {
   );
   assert.ok(insert, "debe insertarse la orden en afrodita_commands");
   assert.deepEqual(insert?.body, {
-    chat_id: -100500,
+    chat_id: 0,
     command: "pause",
-    payload: {},
+    payload: { scope: "global" },
     created_by: 900000031,
   });
-  assert.match(h.answers[0] ?? "", /Orden de pausa enviada/u);
+  assert.match(h.answers[0] ?? "", /Orden encolada/u);
   assert.equal(h.edited.length, 1);
+  assert.match(h.edited[0]?.text ?? "", /Estado general: 🟡 PROCESANDO/u);
+});
+
+test("los clics repetidos durante una orden pendiente no insertan órdenes duplicadas", async () => {
+  calls.length = 0;
+  pendingGlobalCommand = undefined;
+  latestGlobalCommand = undefined;
+  successfulGlobalInserts = 0;
+  const first = createCtx({ fromId: 900000031 });
+  const second = createCtx({ fromId: 900000031 });
+  for (const h of [first, second]) {
+    await handleAfroditaMenuAction(
+      { kind: "action", section: "afrodita", item: "do:global-pause" },
+      h.ctx,
+    );
+  }
+  assert.equal(successfulGlobalInserts, 1);
+  assert.match(second.answers[0] ?? "", /Procesando/u);
 });
 
 test("sin credenciales Supabase el panel muestra NO DISPONIBLE", async () => {
@@ -387,4 +539,76 @@ test("el historial pagina eventos con botones anterior/siguiente", async () => {
     ? keyboard.inline_keyboard.flat().map((b) => b.callback_data ?? "")
     : [];
   assert.ok(callbacks.includes("menu:action:afrodita:historial:1"));
+});
+
+test("confirmar la reanudación encola una orden resume y nunca pause", async () => {
+  calls.length = 0;
+  pendingGlobalCommand = undefined;
+  latestGlobalCommand = undefined;
+  successfulGlobalInserts = 0;
+  controlMode = "paused";
+  try {
+    const h = createCtx({ fromId: 900000031 });
+    await handleAfroditaMenuAction(
+      { kind: "action", section: "afrodita", item: "do:global-resume" },
+      h.ctx,
+    );
+    const insert = calls.find(
+      (call) =>
+        call.method === "POST" && call.url.includes("/rest/v1/afrodita_commands"),
+    );
+    assert.ok(insert, "debe insertarse la orden en afrodita_commands");
+    assert.deepEqual(insert?.body, {
+      chat_id: 0,
+      command: "resume",
+      payload: { scope: "global" },
+      created_by: 900000031,
+    });
+    assert.match(h.answers[0] ?? "", /Orden encolada/u);
+    assert.equal(h.edited.length, 1);
+    assert.match(h.edited[0]?.text ?? "", /Estado general: 🟡 PROCESANDO/u);
+  } finally {
+    controlMode = "running";
+    pendingGlobalCommand = undefined;
+    latestGlobalCommand = undefined;
+    successfulGlobalInserts = 0;
+  }
+});
+
+test("el resumen del panel refleja el estado global real confirmado por AFRODITA", async () => {
+  pendingGlobalCommand = undefined;
+  latestGlobalCommand = undefined;
+  try {
+    controlMode = "paused";
+    const paused = createCtx({ fromId: 900000031 });
+    await handleAfroditaMenuAction(
+      { kind: "action", section: "afrodita", item: "resumen" },
+      paused.ctx,
+    );
+    assert.equal(paused.edited.length, 1);
+    assert.match(paused.edited[0]?.text ?? "", /Estado general: 🔴 PAUSADA/u);
+    assert.ok(
+      buttonCallbacks(paused.edited[0] as never).includes(
+        "menu:action:afrodita:ask:global-resume",
+      ),
+    );
+
+    controlMode = "running";
+    const active = createCtx({ fromId: 900000031 });
+    await handleAfroditaMenuAction(
+      { kind: "action", section: "afrodita", item: "resumen" },
+      active.ctx,
+    );
+    assert.equal(active.edited.length, 1);
+    assert.match(active.edited[0]?.text ?? "", /Estado general: 🟢 ACTIVA/u);
+    assert.ok(
+      buttonCallbacks(active.edited[0] as never).includes(
+        "menu:action:afrodita:ask:global-pause",
+      ),
+    );
+  } finally {
+    controlMode = "running";
+    pendingGlobalCommand = undefined;
+    latestGlobalCommand = undefined;
+  }
 });
