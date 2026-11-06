@@ -2,7 +2,6 @@ import { InlineKeyboard } from "grammy";
 import {
   AfroditaBridgeUnavailableError,
   enqueueAfroditaGlobalCommand,
-  enqueueAfroditaCommand,
   getAfroditaGlobalControl,
   getLatestAfroditaGlobalCommand,
   getAfroditaState,
@@ -203,10 +202,6 @@ function categoryLabel(category: string): string {
   return CATEGORY_LABELS[category] ?? clean(category, 40);
 }
 
-function yesNo(value: boolean | undefined): string {
-  return value ? "🟢 sí" : "🔴 no";
-}
-
 /** Callbacks de la sección (prefijo único `menu:*` para el router). */
 export const AfroditaAction = {
   home: MenuAction.sub(AFRODITA_SECTION),
@@ -261,9 +256,11 @@ export function buildAfroditaSummaryPanel(
     groupTitle?: string;
     control?: AfroditaGlobalControlRow;
     latestCommand?: AfroditaGlobalCommand;
+    latestEvent?: AfroditaEventRow;
   },
 ): Panel {
-  const { rows, selectedState, groupTitle, control, latestCommand } = input;
+  const { rows, selectedState, groupTitle, control, latestCommand, latestEvent } =
+    input;
   const latest = rows[0];
   const snapshot = selectedState ? snapshotFromRow(selectedState) : undefined;
   const pending = latestCommand?.status === "pending";
@@ -287,14 +284,19 @@ export function buildAfroditaSummaryPanel(
   }
   lines.push(
     `Grupos sincronizados: ${rows.length}`,
+    `Estado del ejecutor: ${control ? "🟢 conectado" : "⚪ sin señal"} — ` +
+      `último heartbeat: ${formatTimestamp(control?.heartbeat_at)}`,
     `Última sincronización global: ${formatTimestamp(latest?.updated_at)}`,
-    `Último heartbeat de AFRODITA: ${formatTimestamp(control?.heartbeat_at)}`,
+    `Última actividad: ${
+      latestEvent ? formatTimestamp(latestEvent.created_at) : "ninguna registrada"
+    }`,
   );
   if (selectedState && snapshot) {
     lines.push(
       "",
-      `Estado del grupo: ${snapshot.enabled ? "🟢 activa" : "🔴 pausada"}` +
-        `${snapshot.activityPaused ? " (pausa de actividad)" : ""}`,
+      `Estado del grupo: ${
+        running ? "🟢 activa (control global)" : "🔴 pausada (control global)"
+      }`,
       `Zona horaria: ${clean(snapshot.timeZone ?? "UTC", 40)}`,
       `Mensajes observados: ${snapshot.messageCount ?? 0}`,
       `Encuestas publicadas: ${snapshot.pollCount ?? 0}`,
@@ -363,7 +365,6 @@ export function buildAfroditaPublicationsPanel(
     const settings = snapshot.publications?.[category] ?? {};
     lines.push(
       `*${clean(categoryLabel(category), 40)}*`,
-      `Activa: ${yesNo(settings.enabled)} · Programación: ${yesNo(settings.scheduledEnabled)}`,
       `Hoy: ${settings.publishedToday ?? 0}/${settings.maxPerDay ?? "—"} · ` +
         `Horarios: ${(settings.scheduleTimes ?? []).join(", ") || "sin programación"}`,
       `Última: ${formatTimestamp(settings.lastPublishedAt)}`,
@@ -495,9 +496,15 @@ export function buildAfroditaMentionsPanel(
 
 /** 5. Grupos sincronizados (paginado). */
 export function buildAfroditaGroupsPanel(
-  input: { rows: AfroditaStateRow[]; page: number; groupTitle?: string },
+  input: {
+    rows: AfroditaStateRow[];
+    page: number;
+    groupTitle?: string;
+    control?: AfroditaGlobalControlRow;
+  },
 ): Panel {
-  const { rows, page, groupTitle } = input;
+  const { rows, page, groupTitle, control } = input;
+  const running = control?.mode === "running";
   const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE_GROUPS));
   const currentPage = Math.min(Math.max(0, page), pageCount - 1);
   const pageRows = rows.slice(
@@ -513,10 +520,10 @@ export function buildAfroditaGroupsPanel(
   ];
   if (pageRows.length === 0) lines.push("Sin grupos sincronizados todavía.");
   for (const row of pageRows) {
-    const snapshot = snapshotFromRow(row);
     lines.push(
-      `• ID ${row.chat_id} — ${snapshot.enabled ? "🟢 activa" : "🔴 pausada"} — ` +
-        `${formatTimestamp(row.updated_at)}`,
+      `• ID ${row.chat_id} — ${
+        running ? "🟢 activa (control global)" : "🔴 pausada (control global)"
+      } — ${formatTimestamp(row.updated_at)}`,
     );
   }
   const keyboard = new InlineKeyboard();
@@ -566,8 +573,6 @@ export function buildAfroditaSchedulePanel(
     const settings = snapshot.publications?.[category] ?? {};
     lines.push(
       `*${clean(categoryLabel(category), 40)}*`,
-      `Programación: ${yesNo(settings.scheduledEnabled)} · ` +
-        `Actividad: ${yesNo(settings.activityEnabled)}`,
       `Horarios: ${(settings.scheduleTimes ?? []).join(", ") || "sin programación"} · ` +
         `Máx./día: ${settings.maxPerDay ?? "—"}`,
       `Intervalo mínimo: ${
@@ -579,18 +584,6 @@ export function buildAfroditaSchedulePanel(
     );
   }
   const keyboard = new InlineKeyboard();
-  for (const category of pageCategories) {
-    const settings = snapshot.publications?.[category] ?? {};
-    keyboard
-      .text(
-        `${settings.scheduledEnabled ? "⏸ Pausar" : "▶️ Activar"} horario · ${clean(
-          categoryLabel(category),
-          24,
-        )}`,
-        AfroditaAction.ask(`sched:${category}`),
-      )
-      .row();
-  }
   if (currentPage > 0) {
     keyboard.text("⬅️ Anterior", AfroditaAction.view("programacion", currentPage - 1));
   }
@@ -665,33 +658,27 @@ export function buildAfroditaSettingsPanel(
   const lines = [
     sectionHeader("CONFIGURACIÓN", groupTitle),
     "",
-    `AFRODITA en este grupo: ${snapshot.enabled ? "🟢 habilitada" : "🔴 deshabilitada"}`,
-    `Pausa de actividad: ${snapshot.activityPaused ? "🔴 activa" : "🟢 inactiva"}`,
     `Zona horaria: ${clean(snapshot.timeZone ?? "UTC", 40)}`,
     `Silencio hasta: ${formatTimestamp(snapshot.quietUntil || undefined)}`,
     "",
-    "*Categorías:*",
+    "*Categorías (solo lectura):*",
   ];
-  const keyboard = new InlineKeyboard();
   for (const [category, settings] of Object.entries(snapshot.publications ?? {})) {
     lines.push(
-      `• ${clean(categoryLabel(category), 40)}: ${yesNo(settings.enabled)}`,
+      `• ${clean(categoryLabel(category), 40)} — máx. ${settings.maxPerDay ?? "—"}/día` +
+        ` · intervalo ${
+          settings.minIntervalMs !== undefined
+            ? Math.round(settings.minIntervalMs / 3_600_000)
+            : "—"
+        } h`,
     );
-    keyboard
-      .text(
-        `${settings.enabled ? "⏸ Pausar" : "▶️ Activar"} · ${clean(
-          categoryLabel(category),
-          26,
-        )}`,
-        AfroditaAction.ask(`cat:${category}`),
-      )
-      .row();
   }
   lines.push(
     "",
-    "Toda acción pide confirmación y se aplica en la próxima sincronización " +
-      "de AFRODITA (≈1 min).",
+    "La pausa individual fue eliminada: el único control es el interruptor " +
+      "global del resumen, que actúa sobre TODOS los grupos a la vez.",
   );
+  const keyboard = new InlineKeyboard();
   keyboard
     .text("🔄 Actualizar", AfroditaAction.view("configuracion"))
     .row()
@@ -789,14 +776,16 @@ export async function handleAfroditaMenuAction(
     const tail = rest.join(":");
 
     if (view === "resumen") {
-      const [rows, selectedState, control, latestCommand] = await Promise.all([
-        listAfroditaStates(),
-        ctx.session.user.selectedGroupId
-          ? getAfroditaState(ctx.session.user.selectedGroupId)
-          : Promise.resolve(undefined),
-        getAfroditaGlobalControl(),
-        getLatestAfroditaGlobalCommand(),
-      ]);
+      const [rows, selectedState, control, latestCommand, latestEvents] =
+        await Promise.all([
+          listAfroditaStates(),
+          ctx.session.user.selectedGroupId
+            ? getAfroditaState(ctx.session.user.selectedGroupId)
+            : Promise.resolve(undefined),
+          getAfroditaGlobalControl(),
+          getLatestAfroditaGlobalCommand(),
+          listAfroditaEvents({ page: 0, pageSize: 1 }),
+        ]);
       await answerAndRender(
         buildAfroditaSummaryPanel({
           rows,
@@ -804,15 +793,24 @@ export async function handleAfroditaMenuAction(
           groupTitle,
           control,
           latestCommand,
+          latestEvent: latestEvents[0],
         }),
       );
       return;
     }
 
     if (view === "grupos") {
-      const rows = await listAfroditaStates();
+      const [rows, control] = await Promise.all([
+        listAfroditaStates(),
+        getAfroditaGlobalControl(),
+      ]);
       await answerAndRender(
-        buildAfroditaGroupsPanel({ rows, page: parsePage(tail), groupTitle }),
+        buildAfroditaGroupsPanel({
+          rows,
+          page: parsePage(tail),
+          groupTitle,
+          control,
+        }),
       );
       return;
     }
@@ -836,7 +834,7 @@ export async function handleAfroditaMenuAction(
     }
 
     if (view === "ask" && /^(?:global-pause|global-resume)$/u.test(tail)) {
-      await renderAskConfirmation(ctx, tail, undefined, groupTitle);
+      await renderAskConfirmation(ctx, tail, groupTitle);
       return;
     }
 
@@ -914,12 +912,12 @@ export async function handleAfroditaMenuAction(
     }
 
     if (view === "ask") {
-      await renderAskConfirmation(ctx, tail, snapshot, groupTitle);
+      await renderAskConfirmation(ctx, tail, groupTitle);
       return;
     }
 
     if (view === "do") {
-      await executeAfroditaAction(ctx, tail, snapshot);
+      await executeAfroditaAction(ctx, tail);
       return;
     }
 
@@ -943,11 +941,9 @@ export async function handleAfroditaMenuAction(
 async function renderAskConfirmation(
   ctx: MyContext,
   target: string,
-  snapshot: AfroditaSnapshot | undefined,
   groupTitle?: string,
 ): Promise<void> {
-  const [kind, ...parts] = target.split(":");
-  const arg = parts.join(":");
+  const kind = target.split(":")[0];
 
   if (kind === "global-pause" || kind === "global-resume") {
     const pausing = kind === "global-pause";
@@ -955,7 +951,7 @@ async function renderAskConfirmation(
       title: pausing ? "Pausar AFRODITA por completo" : "Reanudar AFRODITA",
       description: pausing
         ? "Se detendrán las respuestas de IA, encuestas, publicaciones, menciones y campañas automáticas en todos los grupos. La sincronización, el heartbeat y las órdenes de control seguirán activos."
-        : "AFRODITA volverá a operar en todos los grupos que sigan habilitados, conservando las configuraciones individuales.",
+        : "AFRODITA se reactivará en TODOS los grupos registrados: los bloqueos individuales heredados se limpian y todas las funciones vuelven a operar.",
       confirmAction: AfroditaAction.do(kind),
       backView: "resumen",
       groupTitle,
@@ -965,57 +961,30 @@ async function renderAskConfirmation(
     return;
   }
 
-  const group = ctx.session.user.selectedGroupId;
-  if (!group) {
-    await ctx.answerCallbackQuery(NO_GROUP_TEXT);
-    return;
-  }
-  if (kind === "cat" || kind === "sched") {
-    if (!snapshot) {
-      await ctx.answerCallbackQuery("⚠️ No se pudo cargar la configuración del grupo.");
-      return;
-    }
-    const settings = snapshot.publications?.[arg];
-    if (!settings) {
-      await ctx.answerCallbackQuery("⚠️ Categoría no reconocida.");
-      return;
-    }
-    const isCat = kind === "cat";
-    const currently = isCat ? settings.enabled : settings.scheduledEnabled;
-    const panel = buildConfirmPanel({
-      title:
-        `${currently ? "Pausar" : "Activar"} ${isCat ? "categoría" : "horario"}: ` +
-        `${categoryLabel(arg)}`,
-      description: isCat
-        ? "La categoría dejará de generar publicaciones hasta que se reactive."
-        : "La programación por horarios de esta categoría cambiará de estado.",
-      confirmAction: AfroditaAction.do(`${kind}:${arg}`),
-      backView: isCat ? "configuracion" : "programacion",
-      groupTitle,
-    });
-    await ctx.answerCallbackQuery();
-    await renderPanel(ctx, panel);
-    return;
-  }
-
+  // Los controles individuales (categoría/horario) fueron eliminados: la
+  // única confirmación posible es la global, resuelta al inicio de esta
+  // función. Cualquier otro objetivo se rechaza sin fingir éxito.
   await ctx.answerCallbackQuery("⚠️ Acción no reconocida.");
 }
 
 async function buildGlobalSummaryForContext(ctx: MyContext): Promise<Panel> {
-  const [rows, selectedState, control, latestCommand] = await Promise.all([
-    listAfroditaStates(),
-    ctx.session.user.selectedGroupId
-      ? getAfroditaState(ctx.session.user.selectedGroupId)
-      : Promise.resolve(undefined),
-    getAfroditaGlobalControl(),
-    getLatestAfroditaGlobalCommand(),
-  ]);
+  const [rows, selectedState, control, latestCommand, latestEvents] =
+    await Promise.all([
+      listAfroditaStates(),
+      ctx.session.user.selectedGroupId
+        ? getAfroditaState(ctx.session.user.selectedGroupId)
+        : Promise.resolve(undefined),
+      getAfroditaGlobalControl(),
+      getLatestAfroditaGlobalCommand(),
+      listAfroditaEvents({ page: 0, pageSize: 1 }),
+    ]);
   return buildAfroditaSummaryPanel({
     rows,
     selectedState,
     groupTitle: ctx.session.user.selectedGroupTitle,
     control,
     latestCommand,
+    latestEvent: latestEvents[0],
   });
 }
 
@@ -1023,15 +992,13 @@ async function buildGlobalSummaryForContext(ctx: MyContext): Promise<Panel> {
 async function executeAfroditaAction(
   ctx: MyContext,
   target: string,
-  snapshot?: AfroditaSnapshot,
 ): Promise<void> {
   const userId = ctx.from?.id;
   if (!userId) {
     await ctx.answerCallbackQuery(NO_GROUP_TEXT);
     return;
   }
-  const [kind, ...parts] = target.split(":");
-  const arg = parts.join(":");
+  const kind = target.split(":")[0];
 
   if (kind === "global-pause" || kind === "global-resume") {
     const result = await enqueueAfroditaGlobalCommand(
@@ -1058,37 +1025,7 @@ async function executeAfroditaAction(
     return;
   }
 
-  const group = ctx.session.user.selectedGroupId;
-  if (!group || !snapshot) {
-    await ctx.answerCallbackQuery(NO_GROUP_TEXT);
-    return;
-  }
-
-  if (kind === "cat" || kind === "sched") {
-    const settings = snapshot.publications?.[arg];
-    if (!settings) {
-      await ctx.answerCallbackQuery("⚠️ Categoría no reconocida.");
-      return;
-    }
-    const field = kind === "cat" ? "enabled" : "scheduledEnabled";
-    const current = kind === "cat" ? settings.enabled : settings.scheduledEnabled;
-    await enqueueAfroditaCommand(
-      group,
-      "set_category",
-      { category: arg, field, value: !current },
-      userId,
-    );
-    await ctx.answerCallbackQuery("✅ Orden enviada a AFRODITA.");
-    const panel = kind === "cat"
-      ? buildAfroditaSettingsPanel({ snapshot, groupTitle: ctx.session.user.selectedGroupTitle })
-      : buildAfroditaSchedulePanel({
-        snapshot,
-        page: 0,
-        groupTitle: ctx.session.user.selectedGroupTitle,
-      });
-    await renderPanel(ctx, panel);
-    return;
-  }
-
+  // Los controles individuales (categoría/horario) fueron eliminados: solo
+  // existen las órdenes globales, resueltas al inicio de esta función.
   await ctx.answerCallbackQuery("⚠️ Acción no reconocida.");
 }

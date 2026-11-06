@@ -215,30 +215,3 @@ export async function listAfroditaEvents(
   failIf(error);
   return (data ?? []) as AfroditaEventRow[];
 }
-
-/**
- * Encola una orden para AFRODITA. Toda operación pasará por la cola y será
- * aplicada por AFRODITA en su siguiente sincronización.
- */
-export async function enqueueAfroditaCommand(
-  chatId: number,
-  command: "pause" | "resume" | "set_category",
-  payload: Record<string, unknown>,
-  actorUserId: number,
-): Promise<number> {
-  if (!Number.isSafeInteger(chatId) || chatId === 0) {
-    throw new AfroditaBridgeUnavailableError("query_failed");
-  }
-  const { data, error } = await getClient()
-    .from("afrodita_commands")
-    .insert({
-      chat_id: chatId,
-      command,
-      payload,
-      created_by: actorUserId,
-    })
-    .select("id")
-    .single();
-  failIf(error);
-  return Number((data as { id: number } | null)?.id ?? 0);
-}
