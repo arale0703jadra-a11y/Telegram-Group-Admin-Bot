@@ -1,5 +1,6 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
+import { getInternalSupabaseClient } from "../supabase.js";
 import { isActiveVerifiedRecord } from "./verified-user-policy.js";
 import { unmarkUserVerified } from "./user-registry.js";
 import { flushStorage } from "../storage/index.js";
@@ -95,7 +96,6 @@ export const DEFAULT_VERIFIED_PERMISSIONS: VerifiedUserPermissions = {
   bypass_automatic_deletion: false,
 };
 
-let client: SupabaseClient | undefined;
 const permissionsCache = new Map<
   string,
   {
@@ -122,15 +122,15 @@ function getVerifiedCacheExpiry(
   return Math.min(ttlExpiry, Date.parse(record.valid_until));
 }
 
+/**
+ * Sin caché local (auditoría Fase 7): el cliente se resuelve en cada llamada
+ * para que un cambio de configuración nunca reutilice credenciales anteriores.
+ */
 function getClient(): SupabaseClient {
-  if (client) return client;
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error("Faltan credenciales de Supabase para verificadas.");
-  client = createClient(url, key, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-  return client;
+  return getInternalSupabaseClient();
 }
 
 export function normalizeVerifiedPermissions(

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { getInternalSupabaseClient } from "../supabase.js";
 
 export type VerifiedTagReviewStatus =
   | "pending"
@@ -28,19 +29,17 @@ export interface VerifiedTagReview {
   review_claim_previous_status: "pending" | "revoked_tag" | null;
 }
 
-let client: SupabaseClient | undefined;
-
+/**
+ * Sin caché local (auditoría Fase 7): el cliente se resuelve en cada llamada y
+ * `getInternalSupabaseClient()` decide si la configuración cambió.
+ */
 function getClient(): SupabaseClient {
-  if (client) return client;
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
     throw new Error("Faltan credenciales de Supabase para revisar etiquetas verificadas.");
   }
-  client = createClient(url, key, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-  return client;
+  return getInternalSupabaseClient();
 }
 
 function makeEventKey(values: Array<string | number | null>): string {

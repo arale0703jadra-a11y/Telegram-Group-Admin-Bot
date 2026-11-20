@@ -115,6 +115,7 @@ import {
   restoreEmergencyRestrictions,
 } from "../services/emergency-mode.js";
 import { automaticMessageScheduler } from "../services/automatic-messages.js";
+import { buildAutomaticMessageMediaConfig } from "../services/automatic-message-config.js";
 import { setServiceMessageCleanupEnabled } from "../commands/clean-service-messages.js";
 import { isAuthorizedPanelUser } from "../security/panel-authorization.js";
 
@@ -1317,6 +1318,8 @@ moderationActions.on("callback_query:data", async (ctx) => {
         "history",
         "delete-confirm",
         "delete",
+        "save",
+        "preview-cancel",
       ].includes(kind) ||
       ctx.chat?.type !== "private"
     ) {
@@ -1379,19 +1382,63 @@ moderationActions.on("callback_query:data", async (ctx) => {
       );
       return;
     }
+    if (kind === "save") {
+      const pending = ctx.session.user.pendingAction;
+      if (
+        !pending ||
+        pending.kind !== "automaticMessageMedia" ||
+        pending.groupId !== groupId
+      ) {
+        await ctx.answerCallbackQuery("La vista previa ya no es válida.");
+        await renderPanel(
+          ctx,
+          buildAutomaticMessagePanel(data.automaticMessage, groupTitle, undefined, groupId),
+        );
+        return;
+      }
+      if (!(await isUserAdminOf(ctx, groupId))) {
+        ctx.session.user.pendingAction = undefined;
+        await ctx.answerCallbackQuery(NO_ADMIN_MESSAGE);
+        return;
+      }
+      data.automaticMessage = buildAutomaticMessageMediaConfig(
+        data.automaticMessage,
+        pending.draft,
+      );
+      await saveGroupData(groupId, data);
+      await automaticMessageScheduler.refreshGroup(groupId);
+      ctx.session.user.pendingAction = undefined;
+      await ctx.answerCallbackQuery("Publicación multimedia guardada.");
+      await renderPanel(
+        ctx,
+        buildAutomaticMessagePanel(data.automaticMessage, groupTitle, undefined, groupId),
+      );
+      return;
+    }
+
+    if (kind === "preview-cancel") {
+      ctx.session.user.pendingAction = undefined;
+      await ctx.answerCallbackQuery("Vista previa cancelada.");
+      await renderPanel(
+        ctx,
+        buildAutomaticMessagePanel(data.automaticMessage, groupTitle, undefined, groupId),
+      );
+      return;
+    }
+
     if (kind === "configure") {
       ctx.session.user.pendingAction = { kind: "automaticMessage", groupId };
       await ctx.answerCallbackQuery();
       await renderPanel(
         ctx,
         buildPromptPanel(
-          "✏️ *MENSAJE RECURRENTE*\n\nEscribe el texto que ZEUS publicará periódicamente en el grupo.",
+          "✏️ *MENSAJE RECURRENTE*\n\nEnvía el texto, una fotografía o un vídeo que ZEUS publicará periódicamente en el grupo.",
         ),
       );
       return;
     }
     if (kind === "toggle") {
-      if (!data.automaticMessage?.message) {
+      if (!data.automaticMessage?.message?.trim() && !data.automaticMessage?.fileId?.trim()) {
         await ctx.answerCallbackQuery("Primero configura el texto del mensaje.");
         await renderPanel(
           ctx,

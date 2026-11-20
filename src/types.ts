@@ -1,4 +1,5 @@
 import type { Context, SessionFlavor } from "grammy";
+import type { MessageEntity } from "@grammyjs/types";
 
 /**
  * Datos de configuración independientes por grupo.
@@ -20,10 +21,22 @@ export interface GroupConfig {
  */
 export type PickAction = "search" | "warn" | "mute" | "unmute" | "ban";
 
+export interface AutomaticMessageMediaDraft {
+  type: "photo" | "video";
+  fileId: string;
+  caption?: string;
+  captionEntities?: MessageEntity[];
+}
+
 export type PendingAction =
   | { kind: "search"; groupId: number; messageId?: number }
   | { kind: "promotionTest"; groupId: number }
   | { kind: "automaticMessage"; groupId: number }
+  | {
+      kind: "automaticMessageMedia";
+      groupId: number;
+      draft: AutomaticMessageMediaDraft;
+    }
   | { kind: "verifiedMarkers"; groupId: number }
   | { kind: "verifiedSearch"; groupId: number }
   | { kind: "verifiedManualAdd"; groupId: number }

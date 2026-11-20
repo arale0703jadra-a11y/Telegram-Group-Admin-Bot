@@ -100,6 +100,35 @@ mantiene intacto y no se sobrescribe automáticamente; requiere recuperación
 manual. La durabilidad de `data/` depende del almacenamiento persistente del
 entorno donde se ejecute ZEUS.
 
+## Revisión de infraestructura Supabase/Railway (2026-11-17)
+
+Alcance: sólo repositorio local. No se aplicaron migraciones remotas, no se
+cambiaron variables de producción, no se reinició ni desplegó ningún servicio.
+
+- **Migración `020` reescrita.** La versión anterior estaba corrupta: el cuerpo
+  de `zeus_get_inactive_activity_candidates` quedó abierto y las secciones 2 y 3
+  acabaron dentro del literal `$$`; además no revocaba `EXECUTE` de
+  `public/anon/authenticated`. En PostgreSQL una función nace ejecutable por
+  `PUBLIC`, así que en Supabase habría quedado invocable con la clave `anon`.
+  La versión actual cierra cada función, revoca y concede explícitamente y
+  añade guardas de retención mínima y de tamaño de lote.
+- **`020` y `021` están PREPARADAS y NO aplicadas.** Ambas incluyen preflight y
+  fallan de forma explícita si falta una dependencia (índice único de CERBERO
+  `009`, `execution_started_at` de CERBERO `011`).
+- **Sin PostgreSQL local disponible.** El equipo no tiene Docker ni `psql`, así
+  que la sintaxis SQL se validó por estructura con
+  `tests/migrations-permissions.test.ts` (permisos, `search_path`, cierre de
+  `$$`, guardas), no por ejecución. Las pruebas de integración PostgreSQL siguen
+  omitidas por diseño.
+- **Railway no verificado.** No hay acceso autorizado a servicios, variables,
+  réplicas, despliegues ni logs. No se afirma nada sobre su estado real.
+- **AFRODITA (pausado).** `017_afrodita_integration.sql` sólo revoca `DELETE` a
+  `anon/authenticated` y conserva `SELECT/INSERT/UPDATE`. Aislarlo exige cambiar
+  su contrato de autenticación: queda como propuesta documentada, no
+  implementada.
+- **Cliente Supabase centralizado** en `src/supabase.ts`; ningún servicio crea
+  ya su propio cliente ni duplica la lectura de credenciales.
+
 ## BLOCK
 
 - Aplicar la migración 008 en producción sin haberla ejecutado primero en una base de pruebas aislada.

@@ -1,4 +1,5 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { getInternalSupabaseClient, isSupabaseConfigured } from "../supabase.js";
 
 /**
  * Puente ZEUS ↔ AFRODITA sobre Supabase/PostgreSQL.
@@ -13,7 +14,6 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
  * el panel muestre un aviso claro en lugar de fallar en silencio.
  */
 
-let cachedClient: SupabaseClient | undefined;
 
 export class AfroditaBridgeUnavailableError extends Error {
   constructor(reason: "not_configured" | "query_failed") {
@@ -62,25 +62,33 @@ export interface AfroditaGlobalCommand {
 }
 
 export function isAfroditaBridgeConfigured(): boolean {
-  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+  return isSupabaseConfigured();
 }
 
+/**
+ * Resuelve el cliente del puente AFRODITA.
+ *
+ * La comprobación de configuración va **antes** de cualquier caché: sin esto un
+ * cliente cacheado podía responder por un proyecto cuyas credenciales ya no
+ * existían (auditoría Fase 7). No hay caché local: la fábrica central aplica
+ * el fingerprint de URL+clave.
+ */
 function getClient(): SupabaseClient {
-  if (cachedClient) return cachedClient;
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) {
+  if (!isAfroditaBridgeConfigured()) {
+    // Preserve the bridge's typed "not configured" signal: the panel maps it to
+    // its NO DISPONIBLE state instead of pretending a snapshot is authoritative.
     throw new AfroditaBridgeUnavailableError("not_configured");
   }
-  cachedClient = createClient(url, key, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-  return cachedClient;
+  return getInternalSupabaseClient();
 }
 
-/** Reinicia la caché del cliente (solo para pruebas). */
+/**
+ * Compatibilidad: el puente ya no guarda un cliente propio. Se conserva para
+ * que las pruebas y el panel no tengan que cambiar, y para documentar que el
+ * aislamiento de AFRODITA se mantiene.
+ */
 export function resetAfroditaBridgeClient(): void {
-  cachedClient = undefined;
+  // Sin estado que reiniciar.
 }
 
 function failIf(error: { message: string } | null): void {

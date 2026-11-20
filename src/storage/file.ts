@@ -12,12 +12,14 @@ import type {
   ActivityMessage,
   AutomaticMessageAttempt,
   AutomaticMessageConfig,
+  AutomaticMessageContentType,
   GroupData,
   IndexedUser,
   ModerationEvent,
   MuteRecord,
   WarningEntry,
 } from "./types.js";
+import type { MessageEntity } from "@grammyjs/types";
 import { MAX_ACTIVITY_MESSAGES } from "./types.js";
 import type { PersistenceStore } from "./interface.js";
 import { DEFAULT_PROMOTION_STATISTICS, initialGroupData } from "./initial.js";
@@ -176,7 +178,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * secciones existan con su forma actual. Normaliza también el formato
  * antiguo de advertencias (número suelto) al nuevo (lista de entradas).
  */
-function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
+export function normalizeGroupData(parsed: Record<string, unknown>): GroupData {
   const base = initialGroupData();
 
   return {
@@ -285,81 +287,167 @@ function normalizeActivityMessages(value: unknown): ActivityMessage[] {
   }).slice(-MAX_ACTIVITY_MESSAGES);
 }
 
-function normalizeAutomaticMessage(value: unknown): AutomaticMessageConfig | undefined {
-  if (!isRecord(value) || typeof value.message !== "string") return undefined;
-  const status = value.status;
-  return {
-    enabled: value.enabled === true,
-    message: value.message,
-    ...(typeof value.intervalMinutes === "number" &&
-      Number.isSafeInteger(value.intervalMinutes) &&
-      value.intervalMinutes > 0 &&
-      value.intervalMinutes <= 525_600
-      ? { intervalMinutes: value.intervalMinutes }
-      : {}),
-    ...(typeof value.nextRunAt === "string" &&
-      Number.isFinite(Date.parse(value.nextRunAt))
-      ? { nextRunAt: value.nextRunAt }
-      : {}),
-    ...(typeof value.lastSentAt === "string" &&
-      Number.isFinite(Date.parse(value.lastSentAt))
-      ? { lastSentAt: value.lastSentAt }
-      : {}),
-    ...(typeof value.lastMessageId === "number" &&
-      Number.isSafeInteger(value.lastMessageId)
-      ? { lastMessageId: value.lastMessageId }
-      : {}),
-    ...(status === "pending" ||
-      status === "sending" ||
-      status === "sent" ||
-      status === "error" ||
-      status === "unknown"
-      ? { status }
-      : {}),
-    ...(typeof value.lastAttemptAt === "string" &&
-      Number.isFinite(Date.parse(value.lastAttemptAt))
-      ? { lastAttemptAt: value.lastAttemptAt }
-      : {}),
-    ...(typeof value.attemptCount === "number" &&
-      Number.isSafeInteger(value.attemptCount) &&
-      value.attemptCount >= 0
-      ? { attemptCount: value.attemptCount }
-      : {}),
-    ...(typeof value.lastError === "string"
-      ? { lastError: value.lastError.slice(0, 500) }
-      : {}),
-    ...(typeof value.consecutiveFailures === "number" &&
-      Number.isSafeInteger(value.consecutiveFailures) &&
-      value.consecutiveFailures >= 0 &&
-      value.consecutiveFailures <= 100
-      ? { consecutiveFailures: value.consecutiveFailures }
-      : {}),
-    ...(Array.isArray(value.history)
-      ? {
-          history: value.history.flatMap((entry) => {
-            if (
-              !isRecord(entry) ||
-              typeof entry.at !== "string" ||
-              !Number.isFinite(Date.parse(entry.at)) ||
-              (entry.status !== "sent" &&
-                entry.status !== "error" &&
-                entry.status !== "unknown")
-            ) return [];
-            return [{
-              at: entry.at,
-              status: entry.status as AutomaticMessageAttempt["status"],
-              ...(typeof entry.error === "string"
-                ? { error: entry.error.slice(0, 500) }
-                : {}),
-              ...(typeof entry.messageId === "number" &&
-                Number.isSafeInteger(entry.messageId)
-                ? { messageId: entry.messageId }
-                : {}),
-            }];
-          }).slice(-20),
-        }
-      : {}),
+/**
+ * Entidades de formato (`entities` o `caption_entities`). Se conserva la
+ * lista solo si cada entrada tiene `type`, `offset` y `length` válidos; en
+ * caso contrario se descarta completa para no reenviar offsets corruptos.
+ */
+function normalizeMessageEntities(value: unknown): MessageEntity[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const isValidEntity = (item: unknown): item is MessageEntity => {
+    if (!isRecord(item)) return false;
+    return (
+      typeof item.type === "string" &&
+      typeof item.offset === "number" &&
+      Number.isSafeInteger(item.offset) &&
+      item.offset >= 0 &&
+      typeof item.length === "number" &&
+      Number.isSafeInteger(item.length) &&
+      item.length >= 0
+    );
   };
+  return value.every(isValidEntity) ? (value as MessageEntity[]) : undefined;
+}
+
+function isAutomaticMessageContentType(
+  value: unknown,
+): value is AutomaticMessageContentType {
+  return value === "text" || value === "photo" || value === "video";
+}
+
+export function normalizeAutomaticMessage(
+  value: unknown,
+): AutomaticMessageConfig | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const message = typeof value.message === "string" ? value.message : undefined;
+  const fileId = typeof value.fileId === "string" ? value.fileId.trim() : undefined;
+
+  // Discriminador. Los registros antiguos (con `message` y sin `type`) se
+  // interpretan como texto para conservar la compatibilidad.
+  let type: AutomaticMessageContentType | undefined;
+  if (isAutomaticMessageContentType(value.type)) {
+    type = value.type;
+  } else if (value.type === undefined) {
+    if (message !== undefined && message.trim().length > 0) {
+      type = "text";
+    }
+  } else {
+    // Discriminador desconocido (p. ej. "sticker").
+    return undefined;
+  }
+
+  if (type === undefined) return undefined;
+
+  // Validación del contenido según el tipo.
+  if (type === "text") {
+    if (message === undefined || message.trim().length === 0) return undefined;
+  } else if (fileId === undefined || fileId.length === 0) {
+    return undefined;
+  }
+
+  const status = value.status;
+  const result: AutomaticMessageConfig = {
+    enabled: value.enabled === true,
+    type,
+  };
+
+  if (type === "text") {
+    result.message = message;
+    const entities = normalizeMessageEntities(value.entities);
+    if (entities !== undefined) result.entities = entities;
+  } else {
+    result.fileId = fileId;
+    if (typeof value.caption === "string") result.caption = value.caption;
+    const captionEntities = normalizeMessageEntities(value.captionEntities);
+    if (captionEntities !== undefined) result.captionEntities = captionEntities;
+  }
+
+  // Programación, estado, errores e historial (mismo comportamiento previo).
+  if (
+    typeof value.intervalMinutes === "number" &&
+    Number.isSafeInteger(value.intervalMinutes) &&
+    value.intervalMinutes > 0 &&
+    value.intervalMinutes <= 525_600
+  ) {
+    result.intervalMinutes = value.intervalMinutes;
+  }
+  if (
+    typeof value.nextRunAt === "string" &&
+    Number.isFinite(Date.parse(value.nextRunAt))
+  ) {
+    result.nextRunAt = value.nextRunAt;
+  }
+  if (
+    typeof value.lastSentAt === "string" &&
+    Number.isFinite(Date.parse(value.lastSentAt))
+  ) {
+    result.lastSentAt = value.lastSentAt;
+  }
+  if (
+    typeof value.lastMessageId === "number" &&
+    Number.isSafeInteger(value.lastMessageId)
+  ) {
+    result.lastMessageId = value.lastMessageId;
+  }
+  if (
+    status === "pending" ||
+    status === "sending" ||
+    status === "sent" ||
+    status === "error" ||
+    status === "unknown"
+  ) {
+    result.status = status;
+  }
+  if (
+    typeof value.lastAttemptAt === "string" &&
+    Number.isFinite(Date.parse(value.lastAttemptAt))
+  ) {
+    result.lastAttemptAt = value.lastAttemptAt;
+  }
+  if (
+    typeof value.attemptCount === "number" &&
+    Number.isSafeInteger(value.attemptCount) &&
+    value.attemptCount >= 0
+  ) {
+    result.attemptCount = value.attemptCount;
+  }
+  if (typeof value.lastError === "string") {
+    result.lastError = value.lastError.slice(0, 500);
+  }
+  if (
+    typeof value.consecutiveFailures === "number" &&
+    Number.isSafeInteger(value.consecutiveFailures) &&
+    value.consecutiveFailures >= 0 &&
+    value.consecutiveFailures <= 100
+  ) {
+    result.consecutiveFailures = value.consecutiveFailures;
+  }
+  if (Array.isArray(value.history)) {
+    result.history = value.history.flatMap((entry) => {
+      if (
+        !isRecord(entry) ||
+        typeof entry.at !== "string" ||
+        !Number.isFinite(Date.parse(entry.at)) ||
+        (entry.status !== "sent" &&
+          entry.status !== "error" &&
+          entry.status !== "unknown")
+      ) return [];
+      return [{
+        at: entry.at,
+        status: entry.status as AutomaticMessageAttempt["status"],
+        ...(typeof entry.error === "string"
+          ? { error: entry.error.slice(0, 500) }
+          : {}),
+        ...(typeof entry.messageId === "number" &&
+          Number.isSafeInteger(entry.messageId)
+          ? { messageId: entry.messageId }
+          : {}),
+      }];
+    }).slice(-20);
+  }
+
+  return result;
 }
 
 function normalizeInactivity(

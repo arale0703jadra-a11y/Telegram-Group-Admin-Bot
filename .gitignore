@@ -18,3 +18,13 @@ npm-debug.log*
 # Sistema operativo
 .DS_Store
 Thumbs.db
+
+# Artefactos locales del CLI de Supabase (incluye la referencia del proyecto
+# enlazado). `supabase/.gitignore` ya los ignora; esta entrada lo hace explícito
+# y sobrevive si ese archivo se elimina. Ver supabase/README.md: NO se debe usar
+# el CLI de Supabase desde este workspace.
+supabase/.temp/
+
+# Artefactos de la suite PostgreSQL (diario persistente de bindings). Nunca se
+# versiona: contiene identificadores del proyecto de pruebas.
+tests/.artifacts/

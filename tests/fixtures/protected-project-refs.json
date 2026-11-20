@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "protectedRefs": [
+    {
+      "ref": "npruzbrrrvdrleslpivr",
+      "label": "produccion-compartida-zeus",
+      "reason": "Proyecto real compartido por ZEUS y CERBERO. La referencia procede de supabase/.temp/linked-project.json (artefacto local del CLI de Supabase). El marcador de proyecto desechable puede copiarse por error a este proyecto, así que la suite nunca debe ejecutarse contra él."
+    }
+  ]
+}

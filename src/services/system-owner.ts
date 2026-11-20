@@ -1,6 +1,8 @@
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { getInternalSupabaseClient } from "../supabase.js";
 import { isConfiguredAdminId } from "../config.js";
+
 
 const KEY_LENGTH = 64;
 const SCRYPT_OPTIONS = { N: 16_384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
@@ -35,11 +37,13 @@ export async function verifyRecoveryKey(key: string, stored: KeyHash): Promise<b
   }
 }
 
+/**
+ * Sin caché local: `getInternalSupabaseClient()` valida la configuración y
+ * devuelve un cliente distinto cuando cambian URL/clave, de modo que
+ * `resetSupabaseClients()` invalida también este módulo (auditoría Fase 7).
+ */
 function getClient(): SupabaseClient {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) throw new Error("Falta la configuración de Supabase.");
-  return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+  return getInternalSupabaseClient();
 }
 
 async function recordAudit(

@@ -52,6 +52,7 @@ interface SnapshotSettings {
   minIntervalMs?: number;
   publishedToday?: number;
   lastPublishedAt?: number;
+  nextScheduledAt?: number;
   history?: { id?: string; at?: number; status?: string }[];
 }
 
@@ -71,6 +72,12 @@ export interface AfroditaSnapshot {
   messagesSincePromotion?: number;
   recentPromotedUserIds?: unknown[];
   authorizedProfiles?: Record<string, unknown>;
+  /** Estado global de la función conversacional (inyectado por AFRODITA). */
+  conversationEnabled?: boolean;
+  conversationReplies?: number;
+  conversationExcludedVerified?: number;
+  conversationExcludedAdmin?: number;
+  conversationErrors?: number;
   publications?: Record<string, SnapshotSettings>;
 }
 
@@ -120,6 +127,7 @@ export function snapshotFromRow(row: AfroditaStateRow): AfroditaSnapshot {
       const minIntervalMs = asNumber(settings.minIntervalMs);
       const publishedToday = asNumber(settings.publishedToday);
       const lastPublishedAt = asNumber(settings.lastPublishedAt);
+      const nextScheduledAt = asNumber(settings.nextScheduledAt);
       publications[category] = {
         ...(typeof settings.enabled === "boolean"
           ? { enabled: settings.enabled }
@@ -137,6 +145,7 @@ export function snapshotFromRow(row: AfroditaStateRow): AfroditaSnapshot {
         ...(minIntervalMs !== undefined ? { minIntervalMs } : {}),
         ...(publishedToday !== undefined ? { publishedToday } : {}),
         ...(lastPublishedAt !== undefined ? { lastPublishedAt } : {}),
+        ...(nextScheduledAt !== undefined ? { nextScheduledAt } : {}),
         history: rawHistory.flatMap((entry) => {
           const historyEntry = asRecord(entry);
           if (!historyEntry) return [];
@@ -161,6 +170,16 @@ export function snapshotFromRow(row: AfroditaStateRow): AfroditaSnapshot {
   const usefulReplies = asNumber(state.usefulReplies);
   const messagesSincePromotion = asNumber(state.messagesSincePromotion);
   const authorizedProfiles = asRecord(state.authorizedProfiles);
+  const conversationEnabled =
+    typeof state.conversationEnabled === "boolean"
+      ? state.conversationEnabled
+      : undefined;
+  const conversationReplies = asNumber(state.conversationReplies);
+  const conversationExcludedVerified = asNumber(
+    state.conversationExcludedVerified,
+  );
+  const conversationExcludedAdmin = asNumber(state.conversationExcludedAdmin);
+  const conversationErrors = asNumber(state.conversationErrors);
   return {
     ...(enabled !== undefined ? { enabled } : {}),
     ...(activityPaused !== undefined ? { activityPaused } : {}),
@@ -179,6 +198,15 @@ export function snapshotFromRow(row: AfroditaStateRow): AfroditaSnapshot {
       ? { recentPromotedUserIds: state.recentPromotedUserIds }
       : {}),
     ...(authorizedProfiles ? { authorizedProfiles } : {}),
+    ...(conversationEnabled !== undefined ? { conversationEnabled } : {}),
+    ...(conversationReplies !== undefined ? { conversationReplies } : {}),
+    ...(conversationExcludedVerified !== undefined
+      ? { conversationExcludedVerified }
+      : {}),
+    ...(conversationExcludedAdmin !== undefined
+      ? { conversationExcludedAdmin }
+      : {}),
+    ...(conversationErrors !== undefined ? { conversationErrors } : {}),
     publications,
   };
 }
@@ -248,6 +276,146 @@ function noStatePanel(groupTitle?: string): Panel {
   };
 }
 
+/** Próxima ancla HH:MM (en la zona horaria del grupo) posterior a `now`. */
+function nextAnchorAfter(
+  now: number,
+  timeZone: string,
+  scheduleTimes: readonly string[],
+): number | undefined {
+  const minutes = scheduleTimes
+    .map((value) => /^([01]\d|2[0-3]):([0-5]\d)$/u.exec(value))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => Number(match[1]) * 60 + Number(match[2]))
+    .sort((left, right) => left - right);
+  if (minutes.length === 0) return undefined;
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now);
+  } catch {
+    parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "UTC",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now);
+  }
+  const hour = Number(parts.find((part) => part.type === "hour")?.value);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return undefined;
+  const nowMinute = hour * 60 + minute;
+  const next = minutes.find((value) => value > nowMinute) ?? minutes[0]! + 1440;
+  return now + (next - nowMinute) * 60_000;
+}
+
+/** Última publicación (o evento fallido) registrada en un snapshot. */
+export function lastPublicationAtOfSnapshot(
+  snapshot: AfroditaSnapshot,
+): number {
+  let lastAt = 0;
+  for (const settings of Object.values(snapshot.publications ?? {})) {
+    if ((settings.lastPublishedAt ?? 0) > lastAt) {
+      lastAt = settings.lastPublishedAt ?? 0;
+    }
+    for (const entry of settings.history ?? []) {
+      if ((entry.at ?? 0) > lastAt) lastAt = entry.at ?? 0;
+    }
+  }
+  return lastAt;
+}
+
+/**
+ * Planificación a partir de los snapshots de TODOS los grupos registrados:
+ * próximas publicaciones (anclas por categoría + próxima encuesta), última
+ * publicación, estado de la función conversacional, respuestas, excluidos por
+ * verificación/administración y errores. Todo se calcula del snapshot JSON
+ * publicado por AFRODITA (sin migraciones).
+ */
+export function afroditaPlanningOverview(
+  rows: AfroditaStateRow[],
+  now = Date.now(),
+): string[] {
+  let lastPublishedAt = 0;
+  let failedPublications = 0;
+  let replies = 0;
+  let excludedVerified = 0;
+  let excludedAdmin = 0;
+  let conversationErrors = 0;
+  let conversationEnabled: boolean | undefined;
+  let nextPollAt: number | undefined;
+  const nextAnchors = new Map<string, number>();
+
+  for (const row of rows) {
+    const snapshot = snapshotFromRow(row);
+    if (
+      conversationEnabled === undefined &&
+      snapshot.conversationEnabled !== undefined
+    ) {
+      conversationEnabled = snapshot.conversationEnabled;
+    }
+    replies += snapshot.conversationReplies ?? 0;
+    excludedVerified += snapshot.conversationExcludedVerified ?? 0;
+    excludedAdmin += snapshot.conversationExcludedAdmin ?? 0;
+    conversationErrors += snapshot.conversationErrors ?? 0;
+    const rowLast = lastPublicationAtOfSnapshot(snapshot);
+    if (rowLast > lastPublishedAt) lastPublishedAt = rowLast;
+    for (const [category, settings] of Object.entries(
+      snapshot.publications ?? {},
+    )) {
+      for (const entry of settings.history ?? []) {
+        if (entry.status === "failed") failedPublications += 1;
+      }
+      if (
+        category === "commercial_poll" &&
+        settings.nextScheduledAt !== undefined &&
+        (nextPollAt === undefined || settings.nextScheduledAt < nextPollAt)
+      ) {
+        nextPollAt = settings.nextScheduledAt;
+      }
+      const anchor = nextAnchorAfter(
+        now,
+        snapshot.timeZone ?? "UTC",
+        settings.scheduleTimes ?? [],
+      );
+      if (anchor !== undefined) {
+        const label = categoryLabel(category);
+        const existing = nextAnchors.get(label);
+        if (existing === undefined || anchor < existing) {
+          nextAnchors.set(label, anchor);
+        }
+      }
+    }
+  }
+
+  const upcoming: string[] = [];
+  if (nextPollAt !== undefined) {
+    upcoming.push(`encuestas ${formatTimestamp(nextPollAt)}`);
+  }
+  const anchors = [...nextAnchors.entries()].sort((left, right) => left[1] - right[1]);
+  for (const [label, at] of anchors) {
+    upcoming.push(`${label} ${formatTimestamp(at)}`);
+  }
+  const lines = [
+    upcoming.length > 0
+      ? `Próximas publicaciones: ${upcoming.join(" · ")}`
+      : "Próximas publicaciones: ninguna programada",
+    `Última publicación: ${
+      lastPublishedAt > 0 ? formatTimestamp(lastPublishedAt) : "ninguna"
+    }`,
+    `Conversación IA: ${
+      conversationEnabled === true ? "habilitada" : "deshabilitada"
+    }`,
+    `Respuestas conversacionales: ${replies}`,
+    `Excluidos: verificados ${excludedVerified} · administradores ${excludedAdmin}`,
+    `Errores: publicaciones fallidas ${failedPublications} · conversación ${conversationErrors}`,
+  ];
+  return lines;
+}
+
 /**1. Resumen general de la integración. */
 export function buildAfroditaSummaryPanel(
   input: {
@@ -291,6 +459,7 @@ export function buildAfroditaSummaryPanel(
       latestEvent ? formatTimestamp(latestEvent.created_at) : "ninguna registrada"
     }`,
   );
+  lines.push(...afroditaPlanningOverview(rows));
   if (selectedState && snapshot) {
     lines.push(
       "",
@@ -520,9 +689,12 @@ export function buildAfroditaGroupsPanel(
   ];
   if (pageRows.length === 0) lines.push("Sin grupos sincronizados todavía.");
   for (const row of pageRows) {
+    const rowLast = lastPublicationAtOfSnapshot(snapshotFromRow(row));
     lines.push(
       `• ID ${row.chat_id} — ${
         running ? "🟢 activa (control global)" : "🔴 pausada (control global)"
+      } — última: ${
+        rowLast > 0 ? formatTimestamp(rowLast) : "ninguna"
       } — ${formatTimestamp(row.updated_at)}`,
     );
   }

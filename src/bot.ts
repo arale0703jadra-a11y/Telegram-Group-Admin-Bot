@@ -3,6 +3,8 @@ import {
   validateConfig,
   BOT_NAME,
   getIdentityConfigurationDiagnostics,
+  getServiceBotProtectionDiagnostic,
+  getServiceBotConfigWarnings,
 } from "./config.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import { registerCommands } from "./commands/index.js";
@@ -34,6 +36,12 @@ import {
   runInactivityCleaner,
 } from "./services/inactivity-cleaner.js";
 import { recordUserActivity } from "./services/user-activity.js";
+import { reconcileStaleSecurityCommands } from "./services/security-commands.js";
+import { isSupabaseConfigured } from "./supabase.js";
+import {
+  isTelegramPollingConflict,
+  TELEGRAM_POLLING_CONFLICT_HINT,
+} from "./utils/telegram-conflict.js";
 import { getGroupData, saveGroupData, store } from "./storage/index.js";
 import {
   markUserAsAdmin,
@@ -69,6 +77,17 @@ async function main(): Promise<void> {
       ...getIdentityConfigurationDiagnostics(),
     }),
   );
+  // Fase 1.2 A: estado de la protección de bots. Solo estados y recuentos;
+  // nunca tokens, credenciales ni IDs individuales.
+  console.info(
+    JSON.stringify({
+      event: "service_bot_protection_diagnostic",
+      ...getServiceBotProtectionDiagnostic(),
+    }),
+  );
+  for (const warning of getServiceBotConfigWarnings()) {
+    console.warn(warning);
+  }
   validateConfig();
 
   const bot = new Bot<MyContext>(process.env.BOT_TOKEN as string);
@@ -90,6 +109,15 @@ async function main(): Promise<void> {
   };
 
   bot.catch((err) => {
+    // Un 409 en getUpdates significa que otro proceso usa el mismo token: es la
+    // señal más fiable de instancia duplicada (auditoría Fase 3). Se registra
+    // una indicación operativa, nunca el token ni el contenido del update.
+    const raw = `${err.message} ${
+      (err as { error?: { message?: string } }).error?.message ?? ""
+    }`;
+    if (isTelegramPollingConflict(raw)) {
+      console.error(`[ERROR] ${TELEGRAM_POLLING_CONFLICT_HINT}`);
+    }
     console.error(`[ERROR] ${err.message}`);
   });
 
@@ -440,6 +468,43 @@ async function main(): Promise<void> {
   const verifiedAutoRevocationTimer = setInterval(() => {
     void processAutoRevokedVerifiedUsers();
   }, 60_000);
+
+  // Reconciliación de órdenes CERBERO abandonadas (auditoría Fase 2-C).
+  //
+  // Sólo marca `result_state='unknown'` órdenes cuyo lease venció y que no
+  // dejaron marca de inicio. No repite ninguna sanción, no habla con Telegram y
+  // es idempotente: la condición se repite en el WHERE del UPDATE, así que una
+  // reclamación concurrente de CERBERO nunca se pisa. Se activa únicamente si
+  // Supabase está configurado, para no registrar errores en cada ciclo en
+  // entornos sin base de datos.
+  const SECURITY_COMMAND_RECONCILE_INTERVAL_MS = 60_000;
+  let securityReconcileInFlight = false;
+  const reconcileSecurityCommands = async (): Promise<void> => {
+    if (securityReconcileInFlight) return;
+    securityReconcileInFlight = true;
+    try {
+      const result = await reconcileStaleSecurityCommands();
+      if (result.reconciled > 0) {
+        console.log(
+          `[SECURITY_RECONCILE] matched=${result.matched} reconciled=${result.reconciled} unchanged=${result.unchanged}`,
+        );
+      }
+    } catch (error) {
+      console.error(
+        "[SECURITY_RECONCILE] No se pudo reconciliar órdenes abandonadas:",
+        error,
+      );
+    } finally {
+      securityReconcileInFlight = false;
+    }
+  };
+  const securityReconcileTimer = isSupabaseConfigured()
+    ? setInterval(() => {
+        void reconcileSecurityCommands();
+      }, SECURITY_COMMAND_RECONCILE_INTERVAL_MS)
+    : undefined;
+  if (securityReconcileTimer) void reconcileSecurityCommands();
+
   void rescanVerifiedMarkers();
   void processAutoRevokedVerifiedUsers();
   automaticMessageScheduler.start(bot.api);
@@ -460,6 +525,7 @@ async function main(): Promise<void> {
       clearInterval(inactivityTimer);
       clearInterval(verifiedMarkerRescanTimer);
       clearInterval(verifiedAutoRevocationTimer);
+      if (securityReconcileTimer) clearInterval(securityReconcileTimer);
       console.log("🤖 Bot detenido correctamente.");
     } catch (error) {
       console.error("❌ Error al detener bot:", error);

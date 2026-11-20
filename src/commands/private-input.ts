@@ -1,4 +1,5 @@
 import { Composer } from "grammy";
+import type { Message } from "@grammyjs/types";
 import { isUserAdminOf } from "../utils/permissions.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
 import { normalizeFilterTerm } from "../filters/detector.js";
@@ -15,6 +16,7 @@ import {
   buildIllegalPanel,
   buildMuteMenuPanel,
   buildAutomaticMessagePanel,
+  buildAutomaticMessagePreviewPanel,
   buildManualVerifiedConfirmPanel,
   buildVerifiedSearchResultsPanel,
   buildVerifiedTitleConfigPanel,
@@ -29,9 +31,10 @@ import {
   unmuteUser,
   warnUser,
 } from "../moderation/actions.js";
-import type { MyContext, PickAction } from "../types.js";
+import type { AutomaticMessageMediaDraft, MyContext, PickAction } from "../types.js";
 import { consumeRecoveryKey } from "../services/system-owner.js";
 import { automaticMessageScheduler } from "../services/automatic-messages.js";
+import { buildAutomaticMessageTextConfig } from "../services/automatic-message-config.js";
 import { normalizeConfiguredVerifiedMarkers } from "../services/verified-marker-detection.js";
 import {
   getVerifiedUserRecord,
@@ -291,17 +294,7 @@ privateInput.on("message:text", async (ctx, next) => {
       }
       const data = await getGroupData(pending.groupId);
       const current = data.automaticMessage;
-      data.automaticMessage = {
-        ...current,
-        enabled: current?.enabled ?? false,
-        message,
-        intervalMinutes: current?.intervalMinutes ?? 60,
-        nextRunAt: current?.enabled
-          ? new Date(Date.now() + (current.intervalMinutes ?? 60) * 60_000).toISOString()
-          : current?.nextRunAt,
-        lastSentAt: current?.lastSentAt,
-        lastMessageId: current?.lastMessageId,
-      };
+      data.automaticMessage = buildAutomaticMessageTextConfig(current, message);
       await saveGroupData(pending.groupId, data);
       await automaticMessageScheduler.refreshGroup(pending.groupId);
       ctx.session.user.pendingAction = undefined;
@@ -578,3 +571,85 @@ async function sendPanel(ctx: MyContext, panel: Panel): Promise<void> {
     parse_mode: "Markdown",
   });
 }
+
+function extractMediaDraft(message: Message): AutomaticMessageMediaDraft | undefined {
+  if ("photo" in message && Array.isArray(message.photo) && message.photo.length > 0) {
+    const fileId = message.photo[message.photo.length - 1]?.file_id;
+    if (typeof fileId === "string" && fileId.trim().length > 0) {
+      return {
+        type: "photo",
+        fileId,
+        ...(typeof message.caption === "string" ? { caption: message.caption } : {}),
+        ...(Array.isArray(message.caption_entities) && message.caption_entities.length > 0
+          ? { captionEntities: message.caption_entities }
+          : {}),
+      };
+    }
+  }
+  if ("video" in message && message.video) {
+    const fileId = message.video.file_id;
+    if (typeof fileId === "string" && fileId.trim().length > 0) {
+      return {
+        type: "video",
+        fileId,
+        ...(typeof message.caption === "string" ? { caption: message.caption } : {}),
+        ...(Array.isArray(message.caption_entities) && message.caption_entities.length > 0
+          ? { captionEntities: message.caption_entities }
+          : {}),
+      };
+    }
+  }
+  return undefined;
+}
+
+async function tryHandleAutomaticMessageMedia(ctx: MyContext): Promise<boolean> {
+  if (ctx.chat?.type !== "private" || !ctx.from || !ctx.message) return false;
+  const pending = ctx.session.user.pendingAction;
+  if (!pending || pending.kind !== "automaticMessage") return false;
+
+  const draft = extractMediaDraft(ctx.message);
+  if (!draft) {
+    await ctx.reply("❌ No se pudo obtener un archivo válido. Envía una fotografía o un vídeo.");
+    return true;
+  }
+
+  if (!(await isAuthorizedPanelUser(ctx.from.id))) {
+    ctx.session.user.pendingAction = undefined;
+    await ctx.reply("⛔ No autorizado para continuar esta acción.");
+    return true;
+  }
+
+  if (!(await isUserAdminOf(ctx, pending.groupId))) {
+    ctx.session.user.pendingAction = undefined;
+    await ctx.reply("⛔ Ya no eres administrador de ese grupo.");
+    return true;
+  }
+
+  ctx.session.user.pendingAction = {
+    kind: "automaticMessageMedia",
+    groupId: pending.groupId,
+    draft,
+  };
+
+  await sendPanel(
+    ctx,
+    buildAutomaticMessagePreviewPanel(
+      draft,
+      pending.groupId === ctx.session.user.selectedGroupId
+        ? ctx.session.user.selectedGroupTitle
+        : `Grupo ${pending.groupId}`,
+      pending.groupId,
+    ),
+  );
+  return true;
+}
+
+privateInput.on("message:photo", async (ctx, next) => {
+  if (await tryHandleAutomaticMessageMedia(ctx)) return;
+  await next();
+});
+
+privateInput.on("message:video", async (ctx, next) => {
+  if (await tryHandleAutomaticMessageMedia(ctx)) return;
+  await next();
+});

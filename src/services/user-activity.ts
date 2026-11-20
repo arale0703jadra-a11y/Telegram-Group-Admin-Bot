@@ -1,5 +1,10 @@
 import type { ChatMember } from "@grammyjs/types";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { isConfiguredAdminId } from "../config.js";
+import {
+  getInternalSupabaseClient,
+  isSupabaseConfigured,
+} from "../supabase.js";
 import {
   getMemberSafely,
   isProtectedMember,
@@ -26,59 +31,118 @@ export interface UserActivityCandidate {
   lastActiveAt: string;
 }
 
-const ACTIVITY_TABLE = "security_user_activity";
 const REQUEST_TIMEOUT_MS = 8_000;
 let warnedMissingConfiguration = false;
-
-function activityConfig(): UserActivityConfig {
-  return {
-    url: process.env.SUPABASE_URL,
-    key: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  };
-}
-
-function activityEndpoint(config: UserActivityConfig): URL {
-  if (!config.url || !config.key) {
-    throw new Error("ZEUS_USER_ACTIVITY_SUPABASE_NOT_CONFIGURED");
-  }
-  return new URL(`/rest/v1/${ACTIVITY_TABLE}`, config.url);
-}
-
-function activityHeaders(
-  config: UserActivityConfig,
-  extra?: Record<string, string>,
-): HeadersInit {
-  if (!config.key) throw new Error("ZEUS_USER_ACTIVITY_SUPABASE_NOT_CONFIGURED");
-  return {
-    apikey: config.key,
-    authorization: `Bearer ${config.key}`,
-    "content-type": "application/json",
-    ...extra,
-  };
-}
-
-async function request(
-  url: URL,
-  init: RequestInit,
-  fetcher: typeof fetch,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetcher(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function throwIfHttpError(response: Response): void {
-  if (!response.ok) {
-    throw new Error(`ZEUS_USER_ACTIVITY_HTTP_${response.status}`);
-  }
-}
+let warnedMissingActivityRpc = false;
 
 function validTimestamp(value: string): boolean {
   return Number.isFinite(Date.parse(value));
+}
+
+interface PostgrestLikeError {
+  code?: string;
+  message?: string;
+}
+
+export interface UserActivityRequestOptions {
+  /** Legacy REST fallback credentials. Defaults to the environment. */
+  config?: UserActivityConfig;
+  /** Injectable fetch used by the legacy REST fallback (tests/offline). */
+  fetcher?: typeof fetch;
+  /** Injectable Supabase client (RPC path). Defaults to the internal one. */
+  client?: SupabaseClient;
+}
+
+/**
+ * PostgREST reports a missing function with PGRST202 (schema cache miss) or
+ * PostgreSQL 42883 (undefined_function).
+ *
+ * The RPC-first path is the least-privilege design, but ZEUS must keep working
+ * while migration 020 is not applied remotely, so an absent RPC falls back to
+ * the previous table-level path instead of failing every activity write.
+ */
+function isMissingRpc(error: PostgrestLikeError | null): boolean {
+  if (!error) return false;
+  const code = error.code ?? "";
+  const message = error.message ?? "";
+  return (
+    code === "PGRST202" ||
+    code === "42883" ||
+    /could not find the function|function .* does not exist/iu.test(message)
+  );
+}
+
+function warnMissingActivityRpc(): void {
+  if (warnedMissingActivityRpc) return;
+  warnedMissingActivityRpc = true;
+  console.warn(
+    "[ZEUS] La función zeus_upsert_user_activity no está desplegada; " +
+      "se usa la ruta compatible sobre security_user_activity. " +
+      "Aplica la migración 020 para operar con permisos mínimos.",
+  );
+}
+
+function resolveRequestTarget(options: UserActivityRequestOptions):
+  | { url: string; key: string; fetcher: typeof fetch }
+  | undefined {
+  const url = options.config?.url ?? process.env.SUPABASE_URL;
+  const key = options.config?.key ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return undefined;
+  return {
+    url: url.replace(/\/+$/u, ""),
+    key,
+    fetcher: options.fetcher ?? fetch,
+  };
+}
+
+function authorizationHeaders(key: string): Record<string, string> {
+  return {
+    apikey: key,
+    authorization: `Bearer ${key}`,
+  };
+}
+
+function resolveClient(options: UserActivityRequestOptions):
+  | SupabaseClient
+  | undefined {
+  if (options.client) return options.client;
+  return isSupabaseConfigured() ? getInternalSupabaseClient() : undefined;
+}
+
+function mapActivityCandidates(
+  groupId: number,
+  data: unknown,
+): UserActivityCandidate[] {
+  if (!Array.isArray(data)) return [];
+  const candidates: UserActivityCandidate[] = [];
+  for (const row of data) {
+    if (
+      typeof row !== "object" ||
+      row === null ||
+      !("group_id" in row) ||
+      !("user_id" in row) ||
+      !("last_active_at" in row)
+    ) {
+      throw new Error("ZEUS_USER_ACTIVITY_RESPONSE_INVALID");
+    }
+    const value = row as Record<string, unknown>;
+    if (
+      value.group_id !== groupId ||
+      typeof value.user_id !== "number" ||
+      !Number.isSafeInteger(value.user_id) ||
+      value.user_id <= 0 ||
+      typeof value.last_active_at !== "string" ||
+      !validTimestamp(value.last_active_at)
+    ) {
+      throw new Error("ZEUS_USER_ACTIVITY_RESPONSE_INVALID");
+    }
+    candidates.push({
+      groupId,
+      userId: value.user_id,
+      lastActiveAt: value.last_active_at,
+    });
+  }
+  return candidates;
 }
 
 export function shouldTrackUserActivity(
@@ -100,10 +164,7 @@ export async function upsertUserActivity(
   groupId: number,
   userId: number,
   lastActiveAt: string,
-  options: {
-    config?: UserActivityConfig;
-    fetcher?: typeof fetch;
-  } = {},
+  options: UserActivityRequestOptions = {},
 ): Promise<void> {
   if (
     !Number.isSafeInteger(groupId) ||
@@ -114,27 +175,46 @@ export async function upsertUserActivity(
   ) {
     throw new Error("ZEUS_USER_ACTIVITY_INPUT_INVALID");
   }
-  const config = options.config ?? activityConfig();
-  const endpoint = activityEndpoint(config);
-  endpoint.searchParams.set("on_conflict", "group_id,user_id");
-  const response = await request(
-    endpoint,
+
+  const client = resolveClient(options);
+  if (client) {
+    const { error } = await client.rpc("zeus_upsert_user_activity", {
+      p_group_id: groupId,
+      p_user_id: userId,
+      p_last_active_at: lastActiveAt,
+    });
+    if (!error) return;
+    if (!isMissingRpc(error)) throw error;
+    warnMissingActivityRpc();
+  }
+
+  const target = resolveRequestTarget(options);
+  if (!target) throw new Error("ZEUS_USER_ACTIVITY_NOT_CONFIGURED");
+  const response = await target.fetcher(
+    `${target.url}/rest/v1/security_user_activity?on_conflict=group_id%2Cuser_id`,
     {
       method: "POST",
-      headers: activityHeaders(config, {
+      headers: {
+        ...authorizationHeaders(target.key),
+        "content-type": "application/json",
         prefer: "resolution=merge-duplicates,return=minimal",
-      }),
+      },
       body: JSON.stringify({
         group_id: groupId,
         user_id: userId,
         last_active_at: lastActiveAt,
         is_deleted: false,
       }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     },
-    options.fetcher ?? fetch,
   );
-  throwIfHttpError(response);
+  if (!response.ok) {
+    throw new Error(
+      `No se pudo registrar la actividad del usuario (HTTP ${response.status}).`,
+    );
+  }
 }
+
 
 export async function recordUserActivity(
   ctx: MyContext,
@@ -167,71 +247,51 @@ export async function recordUserActivity(
 export async function getInactiveActivityCandidates(
   groupId: number,
   cutoff: string,
-  options: {
-    limit?: number;
-    config?: UserActivityConfig;
-    fetcher?: typeof fetch;
-  } = {},
+  options: UserActivityRequestOptions & { limit?: number } = {},
 ): Promise<UserActivityCandidate[]> {
   if (!Number.isSafeInteger(groupId) || groupId === 0 || !validTimestamp(cutoff)) {
     throw new Error("ZEUS_USER_ACTIVITY_QUERY_INVALID");
   }
-  const config = options.config ?? activityConfig();
-  const endpoint = activityEndpoint(config);
-  endpoint.searchParams.set(
-    "select",
-    "group_id,user_id,last_active_at",
-  );
-  endpoint.searchParams.set("group_id", `eq.${groupId}`);
-  endpoint.searchParams.set("last_active_at", `lt.${cutoff}`);
-  endpoint.searchParams.set("order", "last_active_at.asc");
-  endpoint.searchParams.set(
-    "limit",
-    String(Math.min(200, Math.max(1, Math.floor(options.limit ?? 100)))),
-  );
+  const limit = Math.min(200, Math.max(1, Math.floor(options.limit ?? 100)));
 
-  const response = await request(
-    endpoint,
+  const client = resolveClient(options);
+  if (client) {
+    const { data, error } = await client.rpc(
+      "zeus_get_inactive_activity_candidates",
+      {
+        p_group_id: groupId,
+        p_cutoff: cutoff,
+        p_limit: limit,
+      },
+    );
+    if (!error) return mapActivityCandidates(groupId, data);
+    if (!isMissingRpc(error)) throw error;
+    warnMissingActivityRpc();
+  }
+
+  const target = resolveRequestTarget(options);
+  if (!target) throw new Error("ZEUS_USER_ACTIVITY_NOT_CONFIGURED");
+  const query = new URLSearchParams({
+    select: "group_id,user_id,last_active_at",
+    group_id: `eq.${groupId}`,
+    last_active_at: `lt.${cutoff}`,
+    is_deleted: "eq.false",
+    order: "last_active_at.asc",
+    limit: String(limit),
+  });
+  const response = await target.fetcher(
+    `${target.url}/rest/v1/security_user_activity?${query.toString()}`,
     {
-      method: "GET",
-      headers: activityHeaders(config, { accept: "application/json" }),
+      headers: authorizationHeaders(target.key),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     },
-    options.fetcher ?? fetch,
   );
-  throwIfHttpError(response);
-  const payload: unknown = await response.json();
-  if (!Array.isArray(payload)) {
-    throw new Error("ZEUS_USER_ACTIVITY_RESPONSE_INVALID");
+  if (!response.ok) {
+    throw new Error(
+      `No se pudo consultar la actividad de usuarios (HTTP ${response.status}).`,
+    );
   }
-  const candidates: UserActivityCandidate[] = [];
-  for (const row of payload) {
-    if (
-      typeof row !== "object" ||
-      row === null ||
-      !("group_id" in row) ||
-      !("user_id" in row) ||
-      !("last_active_at" in row)
-    ) {
-      throw new Error("ZEUS_USER_ACTIVITY_RESPONSE_INVALID");
-    }
-    const value = row as Record<string, unknown>;
-    if (
-      value.group_id !== groupId ||
-      typeof value.user_id !== "number" ||
-      !Number.isSafeInteger(value.user_id) ||
-      value.user_id <= 0 ||
-      typeof value.last_active_at !== "string" ||
-      !validTimestamp(value.last_active_at)
-    ) {
-      throw new Error("ZEUS_USER_ACTIVITY_RESPONSE_INVALID");
-    }
-    candidates.push({
-      groupId,
-      userId: value.user_id,
-      lastActiveAt: value.last_active_at,
-    });
-  }
-  return candidates;
+  return mapActivityCandidates(groupId, await response.json());
 }
 
 export function warnMissingActivityConfiguration(): void {

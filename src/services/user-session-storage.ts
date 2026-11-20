@@ -4,9 +4,11 @@ import {
   hkdfSync,
   randomBytes,
 } from "node:crypto";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { StorageAdapter } from "grammy";
+import { getInternalSupabaseClient } from "../supabase.js";
 import type {
+  AutomaticMessageMediaDraft,
   PendingAction,
   PickAction,
   UserPanelState,
@@ -98,6 +100,24 @@ function validOptionalMessageId(value: unknown): boolean {
     (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
 }
 
+function validMediaDraft(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.type !== "photo" && value.type !== "video") return false;
+  if (typeof value.fileId !== "string" || value.fileId.trim().length === 0) return false;
+  if (value.caption !== undefined && typeof value.caption !== "string") return false;
+  if (value.captionEntities !== undefined && !Array.isArray(value.captionEntities)) return false;
+  return true;
+}
+
+function sanitizeMediaDraft(draft: AutomaticMessageMediaDraft): AutomaticMessageMediaDraft {
+  return {
+    type: draft.type,
+    fileId: draft.fileId,
+    caption: draft.caption,
+    captionEntities: draft.captionEntities,
+  };
+}
+
 function validPendingAction(value: unknown): value is PendingAction {
   if (!isRecord(value) || typeof value.kind !== "string") return false;
   if (value.kind === "recoveryKey") return true;
@@ -114,6 +134,8 @@ function validPendingAction(value: unknown): value is PendingAction {
     case "promotionTest":
     case "automaticMessage":
       return validOptionalMessageId(value.messageId);
+    case "automaticMessageMedia":
+      return validMediaDraft(value.draft);
     case "illegalDelete":
     case "filterDelete":
       return Number.isSafeInteger(value.index) &&
@@ -193,6 +215,12 @@ function sanitizePendingAction(action: PendingAction): PendingAction {
     case "verifiedSearch":
     case "verifiedManualAdd":
       return { kind: action.kind, groupId: action.groupId };
+    case "automaticMessageMedia":
+      return {
+        kind: action.kind,
+        groupId: action.groupId,
+        draft: sanitizeMediaDraft(action.draft),
+      };
   }
 }
 
@@ -470,8 +498,6 @@ function firstRow<T>(value: unknown): T | undefined {
 
 export class SupabaseUserSessionStorage
 implements StorageAdapter<UserPanelState> {
-  private cachedClient: SupabaseClient | undefined;
-
   constructor(
     private readonly now: () => number = Date.now,
     private readonly warn: (message: string) => void = (message) =>
@@ -482,16 +508,14 @@ implements StorageAdapter<UserPanelState> {
 
   private getClient(operation: SessionOperation): SupabaseClient {
     if (this.clientProvider) return this.clientProvider();
-    if (this.cachedClient) return this.cachedClient;
     const url = process.env.SUPABASE_URL;
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!url || !key) {
       throw new UserSessionPersistenceError(operation, "not_configured");
     }
-    this.cachedClient = createClient(url, key, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
-    return this.cachedClient;
+    // Sin caché propia (auditoría Fase 7): la fábrica central ya cachea por
+    // fingerprint de URL+clave y descarta el cliente anterior.
+    return getInternalSupabaseClient();
   }
 
   async read(key: string): Promise<UserPanelState | undefined> {

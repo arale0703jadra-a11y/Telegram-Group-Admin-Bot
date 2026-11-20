@@ -15,7 +15,7 @@ import type {
   WarningEntry,
 } from "../storage/types.js";
 import type { ResolvedUser, UserCardData } from "../utils/users.js";
-import type { MyContext } from "../types.js";
+import type { AutomaticMessageMediaDraft, MyContext } from "../types.js";
 import { getGroupData } from "../storage/index.js";
 import {
   BUYING_SIGNAL_EXAMPLES,
@@ -278,6 +278,10 @@ export const AutomaticMessageAction = {
     groupId === undefined ? "am:delete-confirm" : `am:delete-confirm:${groupId}`,
   delete: (groupId?: number): string =>
     groupId === undefined ? "am:delete" : `am:delete:${groupId}`,
+  save: (groupId?: number): string =>
+    groupId === undefined ? "am:save" : `am:save:${groupId}`,
+  previewCancel: (groupId?: number): string =>
+    groupId === undefined ? "am:preview-cancel" : `am:preview-cancel:${groupId}`,
 };
 
 const PANEL_TITLE = "🛡️ *PANEL DE ADMINISTRACIÓN*";
@@ -646,6 +650,31 @@ export function buildCleanupSettingsPanel(
   };
 }
 
+function automaticMessageHasContent(config: AutomaticMessageConfig | undefined): boolean {
+  if (!config) return false;
+  if (config.type === "photo" || config.type === "video") {
+    return typeof config.fileId === "string" && config.fileId.trim().length > 0;
+  }
+  return typeof config.message === "string" && config.message.trim().length > 0;
+}
+
+function automaticMessagePreview(config: AutomaticMessageConfig | undefined): string {
+  if (config?.type === "photo" || config?.type === "video") {
+    const kind = config.type === "photo" ? "📷 Fotografía" : "🎬 Vídeo";
+    if (config.caption && config.caption.length > 0) {
+      const caption = escapeMarkdown(
+        config.caption.length > 300
+          ? `${config.caption.slice(0, 297)}…`
+          : config.caption,
+      );
+      return `${kind} — ${caption}`;
+    }
+    return `${kind} — Sin descripción`;
+  }
+  const message = config?.message || "No hay mensaje configurado.";
+  return escapeMarkdown(message.length > 300 ? `${message.slice(0, 297)}…` : message);
+}
+
 export function buildAutomaticMessagePanel(
   config: AutomaticMessageConfig | undefined,
   groupTitle?: string,
@@ -655,19 +684,18 @@ export function buildAutomaticMessagePanel(
 ): Panel {
   const enabled = config?.enabled === true;
   const intervalMinutes = config?.intervalMinutes ?? 60;
-  const message = config?.message || "No hay mensaje configurado.";
-  const preview = escapeMarkdown(message.length > 300 ? `${message.slice(0, 297)}…` : message);
-  const stateLabel = !config?.message
+  const preview = automaticMessagePreview(config);
+  const stateLabel = !automaticMessageHasContent(config)
     ? "⚪ Sin configurar"
-    : config.status === "error"
+    : config?.status === "error"
       ? "🔴 Error"
-      : config.status === "sending"
+      : config?.status === "sending"
         ? "🔵 Enviando"
-        : config.status === "unknown"
+        : config?.status === "unknown"
           ? "🟡 Resultado incierto"
           : !enabled
             ? "⏸️ Pausado"
-            : config.status === "pending"
+            : config?.status === "pending"
               ? "🟡 Pendiente"
               : "🟢 Activo";
   const nextRun = formatAutomaticMessageDate(config?.nextRunAt);
@@ -707,7 +735,7 @@ export function buildAutomaticMessagePanel(
           AutomaticMessageAction.interval(groupId),
         )
         .row()
-        .text("✏️ Configurar texto", AutomaticMessageAction.configure(groupId))
+        .text("✏️ Configurar contenido", AutomaticMessageAction.configure(groupId))
         .text("📨 Enviar ahora", AutomaticMessageAction.sendNow(groupId))
         .row()
         .text("📜 Historial", AutomaticMessageAction.history(groupId))
@@ -768,6 +796,30 @@ export function buildAutomaticMessageHistoryPanel(
       "📜 *HISTORIAL DE MENSAJES RECURRENTES*\n\n" +
       `Grupo ID: \`${groupId ?? "no seleccionado"}\`\n` +
       (rows.length > 0 ? rows.join("\n") : "Aún no hay intentos registrados."),
+    keyboard,
+  };
+}
+
+export function buildAutomaticMessagePreviewPanel(
+  draft: AutomaticMessageMediaDraft,
+  groupTitle?: string,
+  groupId?: number,
+): Panel {
+  const keyboard = new InlineKeyboard()
+    .text("💾 Guardar", AutomaticMessageAction.save(groupId))
+    .text("❌ Cancelar", AutomaticMessageAction.previewCancel(groupId))
+    .row()
+    .add(...buildNavRow().inline_keyboard.flat());
+  const caption = draft.caption && draft.caption.length > 0
+    ? escapeMarkdown(draft.caption.length > 300 ? `${draft.caption.slice(0, 297)}…` : draft.caption)
+    : "Sin descripción";
+  return {
+    text:
+      `${formatGroupHeader(groupTitle)}\n\n` +
+      "👁️ *VISTA PREVIA DEL MENSAJE RECURRENTE*\n\n" +
+      `Grupo ID: \`${groupId ?? "no seleccionado"}\`\n` +
+      `Tipo: ${draft.type === "photo" ? "📷 Fotografía" : "🎬 Vídeo"}\n` +
+      `Descripción: ${caption}`,
     keyboard,
   };
 }

@@ -1,4 +1,4 @@
-import type { ChatPermissions } from "@grammyjs/types";
+import type { ChatPermissions, MessageEntity } from "@grammyjs/types";
 
 export const MAX_ACTIVITY_MESSAGES = 10_000;
 
@@ -80,9 +80,35 @@ export interface ActivityMessage {
   timestamp: number;
 }
 
+/** Tipo de contenido de una publicación recurrente. */
+export type AutomaticMessageContentType = "text" | "photo" | "video";
+
+/**
+ * Configuración de una publicación recurrente.
+ *
+ * El contenido se describe con el discriminador `type`:
+ * - "text": solo `message` (y, opcionalmente, `entities` para el formato).
+ * - "photo" | "video": `fileId` obligatorio y `caption`/`captionEntities`
+ *   opcionales. Telegram permite reutilizar el `file_id`, por lo que no se
+ *   almacena ningún binario.
+ *
+ * Los registros antiguos carecen de `type`; la normalización los interpreta
+ * como "text" para conservar la compatibilidad.
+ */
 export interface AutomaticMessageConfig {
   enabled: boolean;
-  message: string;
+  /** Texto de la publicación (solo `type: "text"` o registros antiguos). */
+  message?: string;
+  /** Discriminador de contenido ("text", "photo" o "video"). */
+  type?: AutomaticMessageContentType;
+  /** file_id de Telegram del archivo (obligatorio en "photo" y "video"). */
+  fileId?: string;
+  /** Descripción opcional de la foto o el vídeo. */
+  caption?: string;
+  /** Entidades de formato del texto (solo `type: "text"`). */
+  entities?: MessageEntity[];
+  /** Entidades de formato del caption (solo "photo" y "video"). */
+  captionEntities?: MessageEntity[];
   intervalMinutes?: number;
   nextRunAt?: string;
   lastSentAt?: string;

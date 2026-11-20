@@ -1,4 +1,5 @@
 import type { Api } from "grammy";
+import type { MessageEntity } from "@grammyjs/types";
 import { getAllKnownGroups } from "./group-registry.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
 import type {
@@ -14,6 +15,7 @@ const MAX_RATE_LIMIT_RETRIES = 3;
 const MAX_RETRY_AFTER_SECONDS = 86_400;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
 const TELEGRAM_TEXT_LIMIT = 4_096;
+const TELEGRAM_CAPTION_LIMIT = 1_024;
 
 type SendResult = { ok: true } | { ok: false; error: unknown };
 type DeleteConfigResult =
@@ -75,9 +77,84 @@ function nextRunAt(now: number, intervalMinutes: number): string {
   return new Date(now + intervalMinutes * 60_000).toISOString();
 }
 
-function isValidMessage(config: AutomaticMessageConfig): boolean {
-  const message = config.message.trim();
-  return message.length > 0 && Array.from(message).length <= TELEGRAM_TEXT_LIMIT;
+type ResolvedContent =
+  | { kind: "text"; text: string; entities?: MessageEntity[] }
+  | {
+      kind: "photo" | "video";
+      fileId: string;
+      caption?: string;
+      captionEntities?: MessageEntity[];
+    };
+
+type ContentResolution =
+  | { ok: true; content: ResolvedContent }
+  | { ok: false; reason: string };
+
+/**
+ * Valida el contenido según el discriminador `type` y devuelve los
+ * parámetros concretos de envío. Los registros antiguos (sin `type`) se
+ * tratan como texto para conservar la compatibilidad. Nunca se descarga ni
+ * almacena contenido binario.
+ */
+function resolveContent(config: AutomaticMessageConfig): ContentResolution {
+  const rawType: unknown = config.type;
+  const type = rawType === undefined ? "text" : rawType;
+
+  if (type === "text") {
+    const text = typeof config.message === "string" ? config.message : "";
+    if (text.trim().length === 0) {
+      return { ok: false, reason: "El mensaje de texto está vacío." };
+    }
+    if (Array.from(text).length > TELEGRAM_TEXT_LIMIT) {
+      return {
+        ok: false,
+        reason: "El mensaje de texto supera el límite de Telegram.",
+      };
+    }
+    return {
+      ok: true,
+      content: {
+        kind: "text",
+        text,
+        ...(config.entities && config.entities.length > 0
+          ? { entities: config.entities }
+          : {}),
+      },
+    };
+  }
+
+  if (type === "photo" || type === "video") {
+    const fileId = typeof config.fileId === "string" ? config.fileId.trim() : "";
+    if (!fileId) {
+      return {
+        ok: false,
+        reason: "La publicación multimedia no tiene un file_id válido.",
+      };
+    }
+    const caption = typeof config.caption === "string" ? config.caption : undefined;
+    if (
+      caption !== undefined &&
+      Array.from(caption).length > TELEGRAM_CAPTION_LIMIT
+    ) {
+      return { ok: false, reason: "El caption supera el límite de Telegram." };
+    }
+    return {
+      ok: true,
+      content: {
+        kind: type,
+        fileId,
+        ...(caption !== undefined ? { caption } : {}),
+        ...(config.captionEntities && config.captionEntities.length > 0
+          ? { captionEntities: config.captionEntities }
+          : {}),
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    reason: `Tipo de contenido desconocido: ${String(type)}.`,
+  };
 }
 
 function validInterval(config: AutomaticMessageConfig): number | undefined {
@@ -369,12 +446,13 @@ export class AutomaticMessageScheduler {
     config: AutomaticMessageConfig,
   ): Promise<SendResult> {
     if (!this.api) return { ok: false, error: new Error("Scheduler no iniciado.") };
-    if (!isValidMessage(config)) {
+    const resolution = resolveContent(config);
+    if (!resolution.ok) {
       config.status = "error";
-      config.lastError = "El mensaje está vacío o supera el límite de Telegram.";
+      config.lastError = resolution.reason;
       config.enabled = false;
       config.nextRunAt = undefined;
-      return { ok: false, error: new Error(config.lastError) };
+      return { ok: false, error: new Error(resolution.reason) };
     }
     const interval = validInterval(config);
     if (!interval) {
@@ -393,7 +471,27 @@ export class AutomaticMessageScheduler {
     await this.dependencies.saveGroupData(chatId, data);
 
     try {
-      const sent = await this.api.sendMessage(chatId, config.message);
+      const content = resolution.content;
+      let sent: { message_id: number };
+      if (content.kind === "text") {
+        sent = await this.api.sendMessage(chatId, content.text, {
+          ...(content.entities ? { entities: content.entities } : {}),
+        });
+      } else if (content.kind === "photo") {
+        sent = await this.api.sendPhoto(chatId, content.fileId, {
+          ...(content.caption !== undefined ? { caption: content.caption } : {}),
+          ...(content.captionEntities
+            ? { caption_entities: content.captionEntities }
+            : {}),
+        });
+      } else {
+        sent = await this.api.sendVideo(chatId, content.fileId, {
+          ...(content.caption !== undefined ? { caption: content.caption } : {}),
+          ...(content.captionEntities
+            ? { caption_entities: content.captionEntities }
+            : {}),
+        });
+      }
       const now = this.dependencies.now();
       config.status = "sent";
       config.lastError = undefined;
