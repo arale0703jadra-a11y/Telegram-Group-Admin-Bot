@@ -2,7 +2,11 @@ import type { ChatMember, ChatPermissions } from "@grammyjs/types";
 import type { MyContext } from "../types.js";
 import { isConfiguredAdminId } from "../config.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
-import { callWithRetryAfter, runChatActionExclusive } from "../utils/safety.js";
+import {
+  callWithRetryAfter,
+  isMessageNotFoundError,
+  runChatActionExclusive,
+} from "../utils/safety.js";
 import {
   getCachedBotRights,
   getCachedChatMember,
@@ -722,7 +726,11 @@ export async function deleteMessageById(
       callWithRetryAfter(() => ctx.api.deleteMessage(chatId, messageId)),
     );
     return { ok: true };
-  } catch {
+  } catch (error) {
+    if (isMessageNotFoundError(error)) {
+      // El mensaje ya no existe (borrado o demasiado antiguo): resultado benigno.
+      return { ok: true };
+    }
     return {
       ok: false,
       error: "Permisos insuficientes o mensaje demasiado antiguo.",

@@ -146,6 +146,15 @@ export function isRateLimitError(error: unknown): boolean {
   return describeTelegramError(error).code === 429;
 }
 
+/** Indica si el 400 es un "mensaje inexistente/ya borrado" (no un error de formato o parámetros). */
+export function isMessageNotFoundError(error: unknown): boolean {
+  const info = describeTelegramError(error);
+  return (
+    info.code === 400 &&
+    /message (?:to delete |is )?not found/i.test(info.message)
+  );
+}
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

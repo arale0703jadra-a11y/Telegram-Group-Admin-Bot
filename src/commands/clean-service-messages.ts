@@ -1,5 +1,5 @@
 import { Composer } from "grammy";
-import { callWithRetryAfter } from "../utils/safety.js";
+import { callWithRetryAfter, isMessageNotFoundError } from "../utils/safety.js";
 import { getGroupData, saveGroupData } from "../storage/index.js";
 import { getAllKnownGroups } from "../services/group-registry.js";
 import type { MyContext } from "../types.js";
@@ -100,6 +100,10 @@ function safeErrorCode(error: unknown): string {
   return "unknown";
 }
 
+function isAlreadyDeleted(error: unknown): boolean {
+  return isMessageNotFoundError(error);
+}
+
 export async function cleanTelegramServiceMessage(
   ctx: ServiceMessageContext,
   next: () => Promise<void>,
@@ -128,7 +132,9 @@ export async function cleanTelegramServiceMessage(
         sleep,
       );
     } catch (error) {
-      reportFailure(ctx.chat.id, ctx.message.message_id, error);
+      if (!isAlreadyDeleted(error)) {
+        reportFailure(ctx.chat.id, ctx.message.message_id, error);
+      }
     }
   }
 
@@ -165,6 +171,7 @@ async function cleanupServiceMessage(ctx: MyContext, next: () => Promise<void>):
     const message = ctx.message;
     if (autoDeleteEnabledByGroup.get(chat.id) !== false) {
       void ctx.api.deleteMessage(chat.id, message.message_id).catch((error: unknown) => {
+        if (isAlreadyDeleted(error)) return;
         console.error(
           `[ZEUS] No se pudo borrar el mensaje de servicio groupId=${chat.id} messageId=${message.message_id} error=${safeErrorCode(error)}`,
         );

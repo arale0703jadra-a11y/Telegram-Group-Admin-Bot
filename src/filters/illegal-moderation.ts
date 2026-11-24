@@ -12,7 +12,12 @@ import {
 import { logEvent } from "../moderation/events.js";
 import { isConfiguredAdminId } from "../config.js";
 import { isGroupChat } from "../utils/permissions.js";
-import { CooldownTracker, KeyedMutex } from "../utils/safety.js";
+import {
+  callWithRetryAfter,
+  CooldownTracker,
+  describeTelegramError,
+  KeyedMutex,
+} from "../utils/safety.js";
 import { detectIllegalContent } from "./illegal-detector.js";
 import type { MyContext } from "../types.js";
 
@@ -112,7 +117,20 @@ function auditDetail(
   ].join(";");
 }
 
-async function notifyAdminsForReview(
+function classifyAlertFailure(
+  info: ReturnType<typeof describeTelegramError>,
+): "blocked" | "unavailable" | "other" {
+  if (info.code === 403) return "blocked";
+  if (
+    info.code === 400 &&
+    /(?:chat not found|user not found|peer_id invalid|chat_id is empty)/i.test(info.message)
+  ) {
+    return "unavailable";
+  }
+  return "other";
+}
+
+export async function notifyAdminsForReview(
   ctx: MyContext,
   chatId: number,
   messageId: number,
@@ -121,28 +139,45 @@ async function notifyAdminsForReview(
 ): Promise<void> {
   let admins;
   try {
-    admins = await ctx.api.getChatAdministrators(chatId);
+    admins = await callWithRetryAfter(() => ctx.api.getChatAdministrators(chatId));
   } catch (error) {
+    const info = describeTelegramError(error);
     console.error(
       `[ILLEGAL] No se pudieron consultar administradores groupId=${chatId} ` +
-        `messageId=${messageId} error=${error instanceof Error ? error.name : "unknown"}`,
+        `messageId=${messageId} code=${info.code ?? "unknown"} desc="${info.message}"`,
     );
     return;
   }
   for (const admin of admins) {
     if (admin.user.is_bot) continue;
     try {
-      await ctx.api.sendMessage(
-        admin.user.id,
-        `🔒 Alerta de seguridad: riesgo ${risk} (${category}).\n` +
-          `Grupo: ${chatId}\nMensaje: ${messageId}\n` +
-          "El aviso no contiene ni almacena el texto del mensaje.",
+      await callWithRetryAfter(() =>
+        ctx.api.sendMessage(
+          admin.user.id,
+          `🔒 Alerta de seguridad: riesgo ${risk} (${category}).\n` +
+            `Grupo: ${chatId}\nMensaje: ${messageId}\n` +
+            "El aviso no contiene ni almacena el texto del mensaje.",
+        ),
       );
     } catch (error) {
-      console.warn(
-        `[ILLEGAL] No se pudo enviar alerta groupId=${chatId} messageId=${messageId} ` +
-          `adminId=${admin.user.id} error=${error instanceof Error ? error.name : "unknown"}`,
-      );
+      const info = describeTelegramError(error);
+      const kind = classifyAlertFailure(info);
+      if (kind === "blocked") {
+        console.warn(
+          `[ILLEGAL] Alerta omitida (bot bloqueado o sin acceso) groupId=${chatId} ` +
+            `messageId=${messageId} adminId=${admin.user.id} code=403`,
+        );
+      } else if (kind === "unavailable") {
+        console.warn(
+          `[ILLEGAL] Alerta omitida (destinatario no disponible) groupId=${chatId} ` +
+            `messageId=${messageId} adminId=${admin.user.id} code=400`,
+        );
+      } else {
+        console.warn(
+          `[ILLEGAL] No se pudo enviar alerta groupId=${chatId} messageId=${messageId} ` +
+            `adminId=${admin.user.id} code=${info.code ?? "unknown"} desc="${info.message}"`,
+        );
+      }
     }
   }
 }
